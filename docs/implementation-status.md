@@ -96,6 +96,12 @@ migration was necessary. `FakeMailer` is bundled only for tests/examples.
 Raw tokens, passwords, hashes, recipient emails, and bearer links do not enter
 public results or audit metadata, and the browser root/export remains free of
 the Node-only lifecycle boundary.
+Review Fix Pass 2 preserves refresh replay containment for banned/deleted
+owners, makes email-change proof consumption and mutation one transaction,
+conceals expected issuance delivery/persistence/audit failures with a safe
+project-owned observability hook, and moves issuance rate-limit hooks before
+redirect validation. It also replaces the reset race fixture with the real
+recovery-reset transaction path and adds deterministic ban-vs-session races.
 
 ## Required dependency policy
 
@@ -139,7 +145,7 @@ local PostgreSQL 16 clusters.
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
-| 6. Users and recovery | Complete — Review Fix Pass 1 | Review-fix RED/GREEN and full verification recorded below |
+| 6. Users and recovery | Review Fix Pass 2 pending re-review | Pass 2 RED/GREEN and full verification are recorded below; no approval is claimed |
 | 7. OAuth and identities | Pending | Not run |
 | 8. Dynamic authorization | Pending | Not run |
 | 9. HTTP and OpenAPI | Pending | Not run |
@@ -151,8 +157,9 @@ local PostgreSQL 16 clusters.
 
 ## Blockers
 
-There is no product-code blocker for Task 5 or Task 6. The scoped post-fix security scan
-did not finalize because its canonical manifest was missing the required
+Task 6 Review Fix Pass 2 is pending re-review by the same independent reviewer;
+this status intentionally does not claim approval or a final blocker disposition.
+The scoped post-fix security scan did not finalize because its canonical manifest was missing the required
 `scan.target.snapshotDigest` value and the scanner returned exactly:
 `scan.target.snapshotDigest: expected a non-empty string`. The scan was not
 retried, and this handoff does not claim a no-findings result for the fix
@@ -208,7 +215,7 @@ verification, email/OTP/recovery, OAuth/provider exchange, authorization
 enforcement decisions, HTTP routes, browser clients, framework adapters,
 administration APIs, examples, or release artifacts.
 
-## Task 5 scope and verification — Review Fix Pass 1
+## Task 5 scope and verification — Review Fix Pass 1 (historical)
 
 Task 5 changes are:
 
@@ -343,15 +350,17 @@ Strict TDD evidence for Review Fix Pass 2:
   remains `scan.target.snapshotDigest: expected a non-empty string`; no
   finalized no-findings result is claimed for either fix pass.
 
-## Task 6 scope and verification — Review Fix Pass 1
+## Task 6 scope and verification — Review Fix Pass 2 pending re-review
 
-Task 6 is complete in this worktree. The implementation remains limited to
+Task 6 implementation is present in this worktree and is pending the same
+independent review. The scope remains limited to
 users, passwords, email verification, OTP, recovery, injected mail/rate-limit
 boundaries, and the narrow repository/session contracts needed by those flows.
 It does not add OAuth/provider adapters, RBAC APIs, HTTP routes, clients,
 framework adapters, administration APIs, or Task 7+ behavior.
 
-Pass 1 fixes the independent review findings:
+Pass 1 fixes the initial independent review findings, and Pass 2 fixes the
+follow-up findings:
 
 - validates and canonicalizes both configured redirect boundaries before any
   account lookup, preserving deep public-result equality for existing,
@@ -367,13 +376,24 @@ Pass 1 fixes the independent review findings:
 - re-reads the user and credential under lock before password sign-in session
   creation, and rejects banned/deleted users during session create/refresh;
 - leaves the current email active while issuing a purpose-bound pending
-  `email_change` token, then atomically applies the target only after exact
-  proof, with uniqueness-race handling and all-session revocation;
+  `email_change` token and applies the target only after exact proof, with
+  uniqueness-race handling and all-session revocation;
 - strictly parses/caps Argon2id PHC values before native verification and routes
   malformed, unsupported, oversized, or non-lane-1 hashes through fixed dummy
   work while still verifying valid weaker hashes for rehash;
 - reuses the Task 5 canonical IP normalization for limiter keys and audit
   context.
+- retains locked refresh lineage for banned/deleted owners so reused tokens
+  are classified and durably contained while unused tokens fail closed;
+- consumes email-change tokens inside the same transaction as user locking,
+  normalized-email uniqueness handling, session revocation, and audit, with
+  rollback/retryability on downstream failure;
+- maps expected mailer, persistence, and audit issuance failures to the same
+  concealed public success result as nonexistent accounts and exposes only
+  redacted action/template/outcome/request-fingerprint/error-class signals;
+- counts invalid redirects after the per-IP and per-identifier limiter hooks,
+  replaces the direct-SQL reset race with the real recovery-reset path, and
+  adds committed-ban races for session creation and refresh.
 
 Changed production files include `server/users.ts`, `passwords.ts`,
 `one-time-tokens.ts`, `sessions.ts`, `server/index.ts`, PostgreSQL users/session
@@ -395,6 +415,20 @@ Strict regression TDD evidence:
   email-change proof/replay/duplicate behavior, and mocked Argon2 work-path
   assertions. The mandated two-file Task 6 command also passes.
 
+Review Fix Pass 2 regression evidence:
+
+- RED command from clean baseline `71e9d2e`:
+  `pnpm vitest run packages/mrjim-auth/test/integration/user-lifecycle.spec.ts packages/mrjim-auth/test/contract/enumeration-resistance.spec.ts`
+  produced 2 files, 26 tests, 8 failed and 18 passed. Failures were the
+  banned/deleted replay oracle, pre-transaction email-change consumption
+  (duplicate, blocked-owner, and injected repository/audit failures), public
+  operational-failure leakage, and rate-limit-after-redirect ordering.
+- GREEN on the same mandated command after implementation: 2 files, 27/27
+  tests passed. The integration file is 18/18 and the enumeration contract is
+  10/10. The added tests include durable replay read-back, real recovery-reset
+  ordering, committed-ban create/refresh races, normalized-email uniqueness
+  races, rollback/retryability, observer redaction, and deep public equality.
+
 No schema change was required. Migrations `0001`-`0004`, their manifest
 checksums, schema contract, verifier, packing/copy checks, and incremental
 migration tests remain byte-identical/unchanged. The existing unique
@@ -413,9 +447,11 @@ approval claim and returns to the same independent reviewer.
 Final command evidence and the remaining Tasks 7-14 are recorded in
 `.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-6-report.md`.
 
-Task 6 implementation/tests commit: `f674967` (`fix: harden task 6 auth lifecycle`).
+The Pass 1 implementation commit is historical: `f674967` (`fix: harden task 6 auth lifecycle`).
+Pass 2 code/tests are committed as `601599e`; this status and the detailed
+report are the tracked/force-added documentation follow-up pending re-review.
 
-## Task 3 scope and verification
+## Task 3 scope and verification (historical)
 
 Task 3 adds the exact 15-table `auth` schema in three ordered SQL migrations;
 Task 4 preserves those three files byte-for-byte and adds the explicit fourth
