@@ -13,8 +13,9 @@ import {
   redactedMetadataSchema,
   safeIdentityDataSchema,
 } from "../../shared/types.js";
-import type { InsertObject, Selectable, UpdateObject } from "kysely";
+import { sql, type InsertObject, type Selectable, type UpdateObject } from "kysely";
 import { PostgresRepositoryError, mapDuplicateNormalizedEmail } from "./errors.js";
+import type { OneTimeTokenInput } from "../../shared/contracts.js";
 import {
   assertDigest,
   authDb,
@@ -164,6 +165,7 @@ function createUsersRepository(context: RepositoryContext): UserRepository {
         if (patch.email_confirmed_at === undefined) values.email_confirmed_at = patch.confirmed_at;
         if (patch.phone_confirmed_at === undefined) values.phone_confirmed_at = patch.confirmed_at;
       }
+      if (patch.last_sign_in_at !== undefined) values.last_sign_in_at = patch.last_sign_in_at;
       if (patch.banned_until !== undefined) values.banned_until = patch.banned_until;
       if (patch.user_metadata !== undefined) values.user_metadata = patch.user_metadata;
       if (patch.app_metadata !== undefined) values.app_metadata = patch.app_metadata;
@@ -331,31 +333,93 @@ function createOneTimeTokenRepository(context: RepositoryContext): OneTimeTokenR
     },
 
     async consume(tokenHash, purpose, now) {
+      return consumeOneTimeToken(context, tokenHash, purpose, now);
+    },
+
+    async consumeBound(tokenHash, purpose, target, redirect, now) {
+      return consumeOneTimeToken(context, tokenHash, purpose, now, { target, redirect });
+    },
+
+    async recordFailure(purpose, target, redirect, now) {
       return withTransaction(context, async (transaction) => {
-        const row = await authDb(transaction)
-          .updateTable("one_time_tokens")
-          .set({ consumed_at: now })
-          .where("token_hash", "=", assertDigest(tokenHash, "one-time token hash"))
-          .where("purpose", "=", purpose)
-          .where("consumed_at", "is", null)
-          .where("expires_at", ">", now)
-          .where("attempt_count", "<", 5)
-          .where((expression) => expression.or([
-            expression("user_id", "is", null),
-            expression.exists(
-              expression
-                .selectFrom("users")
-                .select("id")
-                .whereRef("users.id", "=", "one_time_tokens.user_id")
-                .where("deleted_at", "is", null),
-            ),
-          ]))
-          .returning(ONE_TIME_TOKEN_COLUMNS)
-          .executeTakeFirst();
-        return row === undefined ? null : mapConsumedOneTimeToken(row);
+        const result = await sql<{ attempt_count: number; consumed_at: Date | null }>`
+          WITH candidate AS (
+            SELECT token.id
+              FROM auth.one_time_tokens AS token
+             WHERE token.purpose = ${purpose}
+               AND token.target = ${target}
+               AND (
+                 (CAST(${redirect} AS text) IS NULL AND token.redirect IS NULL)
+                 OR token.redirect = ${redirect}
+               )
+               AND token.consumed_at IS NULL
+               AND token.expires_at > ${now}
+               AND token.attempt_count < 5
+               AND (
+                 token.user_id IS NULL
+                 OR EXISTS (
+                   SELECT 1 FROM auth.users AS owner
+                    WHERE owner.id = token.user_id AND owner.deleted_at IS NULL
+                 )
+               )
+             ORDER BY token.created_at DESC, token.id DESC
+             LIMIT 1
+             FOR UPDATE
+          ), updated AS (
+            UPDATE auth.one_time_tokens AS token
+               SET attempt_count = token.attempt_count + 1,
+                   consumed_at = CASE WHEN token.attempt_count + 1 >= 5 THEN CAST(${now} AS timestamptz) ELSE NULL END
+              FROM candidate
+             WHERE token.id = candidate.id
+             RETURNING token.attempt_count, token.consumed_at
+          )
+          SELECT attempt_count, consumed_at FROM updated
+        `.execute(transaction.db);
+        const row = result.rows[0];
+        return row === undefined ? null : { attempt_count: row.attempt_count, consumed: row.consumed_at !== null };
       });
     },
   } satisfies OneTimeTokenRepository;
+}
+
+async function consumeOneTimeToken(
+  context: RepositoryContext,
+  tokenHash: Uint8Array,
+  purpose: OneTimeTokenInput["purpose"],
+  now: Date,
+  binding?: { readonly target: string; readonly redirect: string | null },
+): Promise<Omit<OneTimeTokenInput, "token_hash"> | null> {
+  return withTransaction(context, async (transaction) => {
+    const query = authDb(transaction)
+      .updateTable("one_time_tokens")
+      .set({ consumed_at: now })
+      .where("token_hash", "=", assertDigest(tokenHash, "one-time token hash"))
+      .where("purpose", "=", purpose)
+      .where("consumed_at", "is", null)
+      .where("expires_at", ">", now)
+      .where("attempt_count", "<", 5)
+      .where((expression) => expression.or([
+        expression("user_id", "is", null),
+        expression.exists(
+          expression
+            .selectFrom("users")
+            .select("id")
+            .whereRef("users.id", "=", "one_time_tokens.user_id")
+            .where("deleted_at", "is", null),
+        ),
+      ]));
+    let boundQuery = query;
+    if (binding !== undefined) {
+      boundQuery = boundQuery.where("target", "=", binding.target);
+      boundQuery = binding.redirect === null
+        ? boundQuery.where("redirect", "is", null)
+        : boundQuery.where("redirect", "=", binding.redirect);
+    }
+    const row = await boundQuery
+      .returning(ONE_TIME_TOKEN_COLUMNS)
+      .executeTakeFirst();
+    return row === undefined ? null : mapConsumedOneTimeToken(row);
+  });
 }
 
 function createOAuthStateRepository(context: RepositoryContext): OAuthStateRepository {

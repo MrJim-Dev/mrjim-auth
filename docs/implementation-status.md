@@ -68,6 +68,28 @@ programming throws. Browser exports remain unchanged and do not import the
 server boundary.
 No Task 6+ behavior has been added.
 
+Task 6 implements the Node-only user/password and email lifecycle boundary.
+`UserService` now orchestrates signup with configured default roles, optional
+email confirmation, password sign-in with opportunistic Argon2id rehash,
+generic duplicate-signup concealment, OTP/magic-link verification, resend and
+recovery, profile/password updates, banned/soft-deleted rejection, and
+default all-session revocation after password changes. `PasswordService` uses
+the exact-pinned free/open-source `argon2@0.44.0` package with an Argon2id
+floor of 64 MiB, three iterations, and one lane. `EmailService` applies only
+Unicode normalization, trim, and lowercase and enforces exact configured
+redirects.
+
+`OneTimeTokenService` generates 32-byte random bearer values, persists only
+HMAC-SHA-256 digests, binds purpose/target/redirect, enforces the 15-minute
+recovery and 24-hour signup limits, and delivers the five project-owned mail
+templates through the injected `Mailer` boundary. The PostgreSQL repository
+uses the existing `attempt_count`/maximum-five schema contract with an atomic
+row-locking CTE for redirect-bound OTP failure increments; no schema migration
+was necessary. `FakeMailer` is bundled only for tests/examples. Raw tokens,
+passwords, hashes, recipient emails, and bearer links do not enter public
+results or audit metadata, and the browser root/export remains free of the
+Node-only lifecycle boundary.
+
 ## Required dependency policy
 
 - Required runtime, build, test, documentation, and release dependencies must be free/open-source.
@@ -93,6 +115,14 @@ Task 5 adds the free/open-source, exact-pinned `jose@6.2.8` runtime
 dependency (MIT; project `panva/jose`). It is used only by the Node server
 token/JWKS boundary; no paid or hosted service is required.
 
+Task 6 adds the free/open-source, exact-pinned `argon2@0.44.0` runtime
+dependency (MIT; project `ranisalt/node-argon2`). It is a self-hostable native
+Argon2 implementation used only by the Node server password boundary. Mail
+delivery and rate limiting remain injected project-owned interfaces; no paid
+mailer, hosted identity provider, hosted rate limiter, Redis service, or remote
+database is required. The lifecycle integration tests use only disposable
+local PostgreSQL 16 clusters.
+
 ## Task progress
 
 | Task | Status | Verification |
@@ -102,7 +132,7 @@ token/JWKS boundary; no paid or hosted service is required.
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
-| 6. Users and recovery | Pending | Not run |
+| 6. Users and recovery | Complete | Task 6 RED/GREEN and full verification recorded below |
 | 7. OAuth and identities | Pending | Not run |
 | 8. Dynamic authorization | Pending | Not run |
 | 9. HTTP and OpenAPI | Pending | Not run |
@@ -114,7 +144,7 @@ token/JWKS boundary; no paid or hosted service is required.
 
 ## Blockers
 
-There is no product-code blocker for Task 5. The scoped post-fix security scan
+There is no product-code blocker for Task 5 or Task 6. The scoped post-fix security scan
 did not finalize because its canonical manifest was missing the required
 `scan.target.snapshotDigest` value and the scanner returned exactly:
 `scan.target.snapshotDigest: expected a non-empty string`. The scan was not
@@ -123,7 +153,9 @@ range; an independent reviewer will re-review the code separately. Task 5
 deliberately does not start users/passwords/recovery, OAuth provider exchanges,
 authorization enforcement, HTTP routes, browser refresh orchestration,
 framework adapters, administration, or the broader Task 13 documentation
-surface.
+surface. The optional security scanner was not invoked for Task 6, per the
+Task 6 handoff constraint; the independent reviewer remains responsible for
+that review path.
 
 ## Remaining work
 
@@ -301,6 +333,62 @@ Strict TDD evidence for Review Fix Pass 2:
 - The failed post-fix security scanner was not retried. Its documented error
   remains `scan.target.snapshotDigest: expected a non-empty string`; no
   finalized no-findings result is claimed for either fix pass.
+
+## Task 6 scope and verification
+
+Task 6 changes are:
+
+- `packages/mrjim-auth/src/server/users.ts` — user signup/sign-in/update,
+  confirmation, OTP/magic-link, resend, recovery, password reset/change,
+  default-role assignment, rate-limit hooks, enumeration concealment, and
+  session revocation orchestration;
+- `packages/mrjim-auth/src/server/passwords.ts` — Argon2id hashing,
+  equivalent dummy verification for unknown credentials, policy checks, and
+  opportunistic rehash support;
+- `packages/mrjim-auth/src/server/email.ts` — Unicode-only email normalization,
+  shape validation, and exact redirect allowlist/link derivation;
+- `packages/mrjim-auth/src/server/one-time-tokens.ts` — HMAC-digested
+  purpose/target/redirect-bound tokens, TTLs, mail template dispatch, and OTP
+  failure handling;
+- `packages/mrjim-auth/src/testing/fake-mailer.ts` — disposable in-memory
+  mailer inbox for test/example delivery variables;
+- shared/repository contracts, the PostgreSQL one-time-token repository,
+  server/testing exports, package dependency/lock metadata, and focused
+  lifecycle, enumeration, primitive, contract, and export tests.
+
+The implementation does not add OAuth/provider adapters, RBAC APIs, HTTP
+routes, clients, framework adapters, administration APIs, or later-task
+behavior. Existing migrations `0001`-`0004`, their manifest checksums, schema
+contract, verifier, packing/copy checks, and incremental migration tests remain
+unchanged. The existing `attempt_count` check (`0..5`) plus the repository's
+transactional `SELECT ... FOR UPDATE`/update CTE is sufficient to enforce the
+OTP concurrency invariant, so no `0005` migration was introduced.
+
+Strict TDD evidence:
+
+- RED at the clean Task 6 baseline: the required lifecycle/enumeration command
+  failed during collection because `../../src/server/email.js` and
+  `../../src/testing/fake-mailer.js` did not exist; both requested suites had
+  zero collected tests.
+- GREEN: the same required command passed with both files and 8/8 tests,
+  including real disposable PostgreSQL lifecycle coverage and the 10-way OTP
+  failure race. The race leaves exactly five attempts, consumes the token, and
+  produces no successful verification.
+- Primitive coverage verifies Unicode normalization without Gmail/provider
+  rewriting, malformed-email redaction, exact Argon2id parameters, unknown
+  credential verification, and redirect allowlist behavior.
+
+Security and operational checks cover generic public results for recovery,
+resend, OTP issue, and signup concealment; banned/deleted fail-closed paths;
+exact token binding and single-use replay; raw-token/hash/password/email/link
+redaction from results, token persistence, and audit rows; bounded hashed
+user-agent context; per-IP/per-identifier project rate-limit hooks; browser
+export boundaries; and stable `internal_error` mapping. The injected Mailer and
+RateLimiter are project-owned interfaces; `FakeMailer` is the only bundled
+transport and no paid or hosted service is required.
+
+Final Task 6 verification and dependency/license evidence are recorded in
+`.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-6-report.md`.
 
 ## Task 3 scope and verification
 

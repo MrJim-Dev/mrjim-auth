@@ -1,4 +1,5 @@
 import type { RepositoryOperationOptions } from "../../shared/contracts.js";
+import { normalizeEmailParts } from "../../server/email.js";
 import type { QueryCreator } from "kysely";
 import type { Database, DatabaseExecutor, RepositoryContext } from "./schema.js";
 
@@ -36,10 +37,7 @@ export function normalizeEmail(email: string | null | undefined): {
   readonly display: string | null;
   readonly normalized: string | null;
 } {
-  if (email === undefined || email === null) return { display: null, normalized: null };
-  const display = email.trim();
-  if (display === "") return { display: null, normalized: null };
-  return { display, normalized: display.toLowerCase() };
+  return normalizeEmailParts(email);
 }
 
 /** Normalize an optional phone value according to the Task 3 schema contract. */

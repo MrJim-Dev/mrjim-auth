@@ -172,7 +172,7 @@ const requiredRepositoryMethods = {
     "revokeFamily",
     "revokeUserSessions",
   ],
-  oneTimeTokens: ["issue", "consume"],
+  oneTimeTokens: ["issue", "consume", "consumeBound", "recordFailure"],
   oauthStates: ["create", "consume"],
   authorization: [
     "effectivePermissions",

@@ -192,13 +192,23 @@ describe("package export boundaries", () => {
     }
   });
 
-  it("exposes only the Node-only Task 5 token and session services", async () => {
+  it("exposes the Node-only Task 6 lifecycle services without browser dependencies", async () => {
     const server = await import("mrjim-auth/server");
     expect(Object.keys(server).sort()).toEqual([
+      "ARGON2ID_PASSWORD_POLICY",
       "ES256_ALGORITHM",
+      "EmailService",
+      "OneTimeTokenService",
+      "PasswordService",
       "SessionService",
       "TokenService",
+      "UserService",
     ]);
+  });
+
+  it("exposes only the bundled fake mailer from the testing subpath", async () => {
+    const testing = await import("mrjim-auth/testing");
+    expect(Object.keys(testing)).toEqual(["FakeMailer"]);
   });
 
   it("keeps the canonical forbidden-name list in reviewable documentation", async () => {
@@ -209,7 +219,7 @@ describe("package export boundaries", () => {
   it("does not expose unfinished behavior from later-task subpaths", async () => {
     for (const exportKey of requiredExportKeys
       .slice(1)
-      .filter((key) => key !== "./postgres" && key !== "./server")) {
+      .filter((key) => key !== "./postgres" && key !== "./server" && key !== "./testing")) {
       expect(Object.keys(await import(packageSpecifier(exportKey)))).toEqual([]);
     }
   });

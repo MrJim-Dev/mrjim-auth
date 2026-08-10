@@ -117,6 +117,7 @@ export interface UpdateUserInput {
   email_confirmed_at?: Date | null;
   phone_confirmed_at?: Date | null;
   confirmed_at?: Date | null;
+  last_sign_in_at?: Date | null;
   banned_until?: Date | null;
   user_metadata?: JsonObject;
   app_metadata?: JsonObject;
@@ -297,6 +298,27 @@ export interface OneTimeTokenRepository {
     now: Date,
     options?: RepositoryOperationOptions,
   ): Promise<Omit<OneTimeTokenInput, "token_hash"> | null>;
+  /** Consumes only when purpose, target, and exact redirect binding all match. */
+  consumeBound(
+    tokenHash: Uint8Array,
+    purpose: OneTimeTokenInput["purpose"],
+    target: string,
+    redirect: string | null,
+    now: Date,
+    options?: RepositoryOperationOptions,
+  ): Promise<Omit<OneTimeTokenInput, "token_hash"> | null>;
+  /**
+   * Atomically increments the newest active purpose/target/redirect-bound OTP
+   * and consumes it on the fifth failure. The operation returns only
+   * non-secret token state.
+   */
+  recordFailure(
+    purpose: OneTimeTokenInput["purpose"],
+    target: string,
+    redirect: string | null,
+    now: Date,
+    options?: RepositoryOperationOptions,
+  ): Promise<{ readonly attempt_count: number; readonly consumed: boolean } | null>;
 }
 
 /** An authorization role assignment with optional scope and expiry. */

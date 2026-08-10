@@ -94,6 +94,8 @@ const completeRepository = {
   oneTimeTokens: {
     issue: asyncMethod,
     consume: asyncMethod,
+    consumeBound: asyncMethod,
+    recordFailure: asyncMethod,
   },
   oauthStates: {
     create: asyncMethod,
