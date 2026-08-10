@@ -38,7 +38,7 @@ test.
 
 | Task | Status | Verification |
 | --- | --- | --- |
-| 1. Workspace and exports | Complete | Review Fix Pass 1 checks passed on 2026-08-11 |
+| 1. Workspace and exports | Complete | Review Fix Pass 2 checks passed on 2026-08-11 |
 | 2. Shared contracts | Pending | Not run |
 | 3. PostgreSQL schema and CLI | Pending | Not run |
 | 4. PostgreSQL repositories | Pending | Not run |
