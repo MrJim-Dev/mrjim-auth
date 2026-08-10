@@ -110,3 +110,54 @@ in an OS temporary directory; generic `DATABASE_URL` is ignored by the test
 fixture. The packed-install test runs `pnpm pack`, installs that tarball into
 a temporary consumer, and executes the installed `node_modules/.bin/mrjim-auth`
 against the disposable database.
+
+## PostgreSQL repository adapter
+
+Task 4 adds the complete internal repository aggregate behind the PostgreSQL
+subpath:
+
+```ts
+import { createPostgresAdapter } from "mrjim-auth/postgres";
+
+const repository = createPostgresAdapter({ connectionString });
+await repository.transaction(async (transaction) => {
+  const user = await transaction.users.create({ email: "user@example.com" });
+  await transaction.passwordCredentials.upsert(user.id, passwordHash);
+});
+await repository.close();
+```
+
+`createPostgresAdapter` accepts exactly one of a caller-owned `pg.Pool` or a
+connection string. It uses the exact-pinned, free/open-source `kysely` package
+with `PostgresDialect`, qualifies all statements to the `auth` schema, uses
+explicit column lists, and parameterizes values. Construction never runs
+migrations; call `migrate(pool, { direction: "up" })` explicitly first.
+
+The returned `transaction(callback)` aggregate is bound to one PostgreSQL
+transaction. A callback rejection rolls back all writes. `sessions.findRefreshForUpdate`
+throws an adapter `transaction_required` error outside that scope because a
+row lock returned after autocommit would be an unsafe lock illusion. Refresh
+rotation and protected role/relationship changes wrap themselves in an atomic
+transaction when called on the root aggregate. One-time-token and OAuth-state
+consumption use one conditional `UPDATE ... RETURNING` statement, so only one
+concurrent caller can consume a matching, unexpired, unconsumed, under-attempt
+record.
+
+The database remains authoritative for normalized-email uniqueness. The
+`users_email_normalized_key` violation maps to the internal `email_exists`
+adapter error; unrelated PostgreSQL errors, including JSON, foreign-key, and
+deferred role-cycle constraints, are preserved. Refresh rows retain their
+family, parent, replacement, used, expiry, and revocation invariants. Replay
+response policy is intentionally deferred to Task 5.
+
+Repository reads map snake_case rows to the shared Supabase-shaped user,
+identity, role, permission, session, and internal credential records. Public
+identity mapping validates the safe scalar identity allowlist and never
+returns password hashes, provider access tokens, refresh tokens, or raw key
+values. `appendAudit` accepts the branded redacted metadata contract while
+the Task 3 database validator and immutable triggers remain defense in depth.
+
+For lifecycle ownership, `close()` is idempotent and ends only a pool created
+from `connectionString`; it is a no-op for a caller-supplied pool, which the
+caller must close. No hosted database, paid service, Docker container, or
+automatic startup migration is required.

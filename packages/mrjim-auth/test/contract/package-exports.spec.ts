@@ -149,6 +149,7 @@ describe("package export boundaries", () => {
       "MigrationError",
       "PACKAGE_VERSION",
       "REQUIRED_TABLES",
+      "createPostgresAdapter",
       "migrate",
       "migrationStatus",
       "verifySchema",

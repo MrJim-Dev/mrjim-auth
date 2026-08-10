@@ -37,6 +37,16 @@ server, PostgreSQL, adapter, Next.js server, and testing subpaths remain
 loadable export-map targets but intentionally expose no unfinished public
 functions until their later tasks implement them.
 
+Task 4 implements the complete internal PostgreSQL repository aggregate with
+the exact-pinned free/open-source Kysely 0.29.5 PostgresDialect over the Task 3
+`auth` schema. The adapter has typed table/row mappings, explicit column
+lists, parameterized queries, transaction-scoped aggregates, atomic
+one-time/OAuth consumption, refresh rotation/revocation lineage, scoped
+recursive permission resolution, role-cycle-safe relationship writes,
+redacted immutable audit append, identity/password/API-key boundaries, and
+caller-owned versus internally owned pool lifecycle. It never runs migrations
+on construction and is exported only from the Node PostgreSQL subpath.
+
 ## Required dependency policy
 
 - Required runtime, build, test, documentation, and release dependencies must be free/open-source.
@@ -53,6 +63,11 @@ Task 2 adds the free/open-source, exact-pinned `zod@4.4.3` runtime dependency
 to the `mrjim-auth` package and records it in `pnpm-lock.yaml`. No paid SaaS or
 hosted service is required.
 
+Task 4 adds the free/open-source, exact-pinned `kysely@0.29.5` runtime
+dependency. PostgreSQL remains project-owned through the existing `pg` pool
+or a caller-selected local/project connection string; no hosted database,
+Docker service, or paid application is required.
+
 ## Task progress
 
 | Task | Status | Verification |
@@ -60,7 +75,7 @@ hosted service is required.
 | 1. Workspace and exports | Complete | Review Fix Pass 2 checks passed on 2026-08-11 |
 | 2. Shared contracts | Complete — Review Fix Pass 3 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
-| 4. PostgreSQL repositories | Pending | Not run |
+| 4. PostgreSQL repositories | Complete | Task 4 RED/GREEN integration, full suite (63 tests), build, typecheck, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Pending | Not run |
 | 6. Users and recovery | Pending | Not run |
 | 7. OAuth and identities | Pending | Not run |
@@ -74,18 +89,44 @@ hosted service is required.
 
 ## Blockers
 
-There is no external blocker for Task 3. Task 3 deliberately does not start
+There is no external blocker for Task 4. Task 4 deliberately does not start
 repositories, auth flows, OAuth exchanges, authorization enforcement, HTTP
 routes, clients, adapters, administration, or the broader Task 13 documentation
 surface.
 
 ## Remaining work
 
-Execute Tasks 4-14 with independent review after each task, then complete the
+Execute Tasks 5-14 with independent review after each task, then complete the
 whole-branch review and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement
 auth/session/OAuth/RBAC behavior, HTTP and browser/SSR surfaces,
 administration, examples, and release verification.
+
+## Task 4 scope and verification
+
+Task 4 changes and handoff evidence are recorded in
+`.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-4-report.md`. The focused
+integration test starts only a disposable local PostgreSQL cluster with
+`initdb`/`pg_ctl`, explicitly migrates it, and never reads generic
+`DATABASE_URL`. It covers the complete Task 2 aggregate, transaction rollback,
+normalized-email uniqueness races, one-time/OAuth consume races, refresh
+locking and rotation races, session/family/user revocation, role inheritance
+and scope expiry, cycle rollback, CRUD mappings, SQL-injection-like values,
+audit redaction/immutability, and pool ownership.
+
+Final evidence before commit:
+
+- `pnpm vitest run packages/mrjim-auth/test/integration/postgres-adapter.spec.ts` — 1 file, 11/11 tests passed.
+- `pnpm typecheck` — passed.
+- `pnpm build` — passed; browser and Node targets compiled and migration assets copied.
+- `pnpm docs:check` — passed (2 required documents).
+- `pnpm test` — 5 files, 63/63 tests passed; the first full-suite attempt found and corrected one unsorted export expectation, then the final run passed.
+- `git diff --check` — passed.
+
+Remaining work is Task 5 onward. Task 4 does not implement JWT issuance,
+refresh-token replay response policy, password hashing/verification, OAuth
+provider exchange, HTTP routes, authorization enforcement decisions, browser
+clients, administration APIs, or release artifacts.
 
 ## Task 3 scope and verification
 

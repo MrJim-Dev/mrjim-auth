@@ -15,3 +15,8 @@ export {
   PACKAGE_VERSION,
   type MigrationDefinition,
 } from "./manifest.js";
+export {
+  createPostgresAdapter,
+  type PostgresAdapter,
+  type PostgresAdapterOptions,
+} from "./adapter.js";

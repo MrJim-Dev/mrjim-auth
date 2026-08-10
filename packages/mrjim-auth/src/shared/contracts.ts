@@ -88,7 +88,12 @@ export interface RateLimiter {
  * tasks and are not exported from the package root in Task 2.
  */
 export interface RepositoryOperationOptions {
-  /** Adapter-owned transaction object; deliberately has no PostgreSQL type. */
+  /**
+   * Adapter-owned transaction object; deliberately has no PostgreSQL type.
+   * PostgreSQL adapters may reject lock-sensitive calls without their own
+   * active transaction-scoped repository instead of treating this value as a
+   * portable lock handle.
+   */
   transaction?: unknown;
   /** Clock value used for deterministic expiry and replay checks. */
   now?: Date;
@@ -508,7 +513,11 @@ export interface OAuthStateRepository {
  * subpath after implementing these boundaries.
  */
 export interface AuthRepository {
-  /** Runs a callback in an adapter-owned transaction. */
+  /**
+   * Runs a callback in one adapter-owned transaction and passes a complete
+   * transaction-scoped aggregate. A rejected callback rolls back every write
+   * made through that aggregate; lock-sensitive methods must use this scope.
+   */
   transaction<T>(callback: (repository: AuthRepository) => Promise<T>): Promise<T>;
   users: UserRepository;
   identities: IdentityRepository;
