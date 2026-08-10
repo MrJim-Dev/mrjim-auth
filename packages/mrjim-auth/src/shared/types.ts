@@ -1,34 +1,326 @@
+import { z } from "zod";
+
+/** A JSON primitive suitable for redacted metadata and safe claims. */
+export type JsonPrimitive = string | number | boolean | null;
+
 /** A JSON-compatible value suitable for user or application metadata. */
 export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
+  | JsonPrimitive
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
 
-/** A JSON object used for metadata that is safe to expose to the caller. */
+/** A JSON object used for application metadata. */
 export type JsonObject = { readonly [key: string]: JsonValue };
 
-/** A project UUID represented at the public TypeScript boundary. */
-export type UUID = string;
-
-/** A lowercase key validated by the server/database contract. */
-export type LowercaseKey = Lowercase<string>;
+declare const uuidBrand: unique symbol;
 
 /**
- * Provider claims after credential-bearing fields have been removed.
+ * A UUID that has passed the shared runtime validator.
  *
- * The reserved fields are rejected at the type boundary so an identity cannot
- * accidentally be modeled with provider tokens or client credentials.
+ * @compatibility Project-owned canonical identifier; the string wire format is
+ * compatible with PostgreSQL UUID values.
  */
-export type SafeIdentityData = JsonObject & {
-  readonly access_token?: never;
-  readonly refresh_token?: never;
-  readonly id_token?: never;
-  readonly client_id?: never;
-  readonly client_secret?: never;
+export type UUID = string & { readonly [uuidBrand]: "UUID" };
+
+/** Validates and brands a UUID for use by shared contracts. */
+export const uuidSchema = z.string().uuid().transform((value) => value as UUID);
+
+declare const lowercaseKeyBrand: unique symbol;
+
+/** A lowercase authorization key that has passed a shared runtime validator. */
+export type LowercaseKey = string & {
+  readonly [lowercaseKeyBrand]: "LowercaseKey";
 };
+
+/** Validates and brands any non-empty lowercase authorization key. */
+export const lowercaseKeySchema = z
+  .string()
+  .min(1)
+  .regex(/^[a-z0-9_.*-]+$/, "authorization keys must use lowercase characters")
+  .refine((value) => value === value.toLowerCase(), "authorization keys must be lowercase")
+  .transform((value) => value as LowercaseKey);
+
+/** Validates a simple lowercase role key. */
+export const roleKeySchema = z
+  .string()
+  .min(1)
+  .regex(/^[a-z][a-z0-9_-]*$/, "role keys must be lowercase identifiers")
+  .transform((value) => value as LowercaseKey);
+
+const permissionResourceSchema = z
+  .union([
+    z
+      .string()
+      .min(1)
+      .regex(/^[a-z][a-z0-9_-]*$/, "permission resources must be lowercase identifiers"),
+    z.literal("*"),
+  ])
+  .transform((value) => value as LowercaseKey);
+
+const permissionActionSchema = z
+  .union([
+    z
+      .string()
+      .min(1)
+      .regex(/^[a-z][a-z0-9_-]*$/, "permission actions must be lowercase identifiers"),
+    z.literal("*"),
+  ])
+  .transform((value) => value as LowercaseKey);
+
+/** Validates `resource.action`, `resource.*`, or `*.*` permission keys. */
+export const permissionKeySchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9_-]*\.(?:[a-z][a-z0-9_-]*|\*)$|^\*\.\*$/, "invalid permission key")
+  .transform((value) => value as LowercaseKey);
+
+const publicIdentityDataShape = {
+  sub: z.string().optional(),
+  email: z.string().optional(),
+  email_verified: z.boolean().optional(),
+  name: z.string().optional(),
+  given_name: z.string().optional(),
+  family_name: z.string().optional(),
+  picture: z.string().optional(),
+  avatar_url: z.string().optional(),
+  locale: z.string().optional(),
+  hd: z.string().optional(),
+  preferred_username: z.string().optional(),
+} as const;
+
+/**
+ * Runtime allowlist for public provider identity claims.
+ *
+ * Nested objects, arrays, unknown claims, and credential-bearing keys are not
+ * public identity data. Raw provider claims must be sanitized before creating
+ * an `Identity` value.
+ */
+export const safeIdentityDataSchema = z.object(publicIdentityDataShape).strict();
+
+/** Compatibility alias for the public identity-data schema. */
+export const publicIdentityDataSchema = safeIdentityDataSchema;
+
+/** The scalar, allowlisted claims that may be returned in `Identity`. */
+export type SafeIdentityData = z.infer<typeof safeIdentityDataSchema>;
+
+const sensitiveKeySegments = new Set([
+  "access",
+  "authorization",
+  "bearer",
+  "client",
+  "code",
+  "credential",
+  "hash",
+  "jwt",
+  "key",
+  "oauth",
+  "passcode",
+  "password",
+  "pem",
+  "private",
+  "refresh",
+  "secret",
+  "token",
+]);
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function keySegments(key: string): readonly string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .toLowerCase()
+    .split("_")
+    .filter(Boolean);
+}
+
+/** Returns true for token, secret, hash, password, code, or private-key keys. */
+export function isSensitiveKeyName(key: string): boolean {
+  return keySegments(key).some((segment) => sensitiveKeySegments.has(segment));
+}
+
+function isSensitiveString(value: string): boolean {
+  return (
+    value.includes("-----BEGIN ") ||
+    /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)
+  );
+}
+
+function containsForbiddenValue(value: unknown, seen = new Set<object>()): boolean {
+  if (typeof value === "string") {
+    return isSensitiveString(value);
+  }
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  if (seen.has(value)) {
+    return true;
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.some((item) => containsForbiddenValue(item, seen));
+  }
+  if (!isPlainRecord(value)) {
+    return true;
+  }
+  return Object.entries(value).some(
+    ([key, nested]) => isSensitiveKeyName(key) || containsForbiddenValue(nested, seen),
+  );
+}
+
+/**
+ * Removes credential-bearing values from raw provider claims and returns only
+ * the public scalar allowlist.
+ *
+ * @param input - Raw provider claims kept in memory by a server/provider
+ * adapter. The value is never returned from this function unchanged.
+ * @returns Public identity claims safe for `Identity.identity_data`.
+ *
+ * @example
+ * ```ts
+ * const identity_data = sanitizeIdentityData({
+ *   sub: "provider-subject",
+ *   name: "User",
+ *   accessToken: "never-public",
+ * });
+ * // { sub: "provider-subject", name: "User" }
+ * ```
+ *
+ * @since 0.1.0
+ */
+export function sanitizeIdentityData(input: unknown): SafeIdentityData {
+  if (!isPlainRecord(input)) {
+    return {};
+  }
+
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (
+      !(key in publicIdentityDataShape) ||
+      isSensitiveKeyName(key) ||
+      !(
+        typeof value === "string" ||
+        typeof value === "boolean" ||
+        value === undefined
+      ) ||
+      containsForbiddenValue(value)
+    ) {
+      continue;
+    }
+    output[key] = value;
+  }
+
+  return safeIdentityDataSchema.parse(output);
+}
+
+declare const redactedMetadataBrand: unique symbol;
+
+/**
+ * JSON metadata that has passed recursive redaction checks.
+ *
+ * Use `sanitizeRedactedMetadata` to create this branded value. Raw token,
+ * hash, password, OAuth-code, provider-secret, and private-key fields are not
+ * valid at any nesting level.
+ */
+export type RedactedMetadata = JsonObject & {
+  readonly [redactedMetadataBrand]: "RedactedMetadata";
+};
+
+function isJsonPrimitive(value: unknown): value is JsonPrimitive {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  );
+}
+
+function sanitizeMetadataValue(
+  value: unknown,
+  seen = new Set<object>(),
+): JsonValue | undefined {
+  if (isJsonPrimitive(value)) {
+    return typeof value === "string" && isSensitiveString(value) ? undefined : value;
+  }
+  if (typeof value !== "object" || value === null || seen.has(value)) {
+    return undefined;
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    const items = value
+      .map((item) => sanitizeMetadataValue(item, seen))
+      .filter((item): item is JsonValue => item !== undefined);
+    return items;
+  }
+  if (!isPlainRecord(value)) {
+    return undefined;
+  }
+
+  const output: Record<string, JsonValue> = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (isSensitiveKeyName(key)) {
+      continue;
+    }
+    const sanitized = sanitizeMetadataValue(nested, seen);
+    if (sanitized !== undefined) {
+      output[key] = sanitized;
+    }
+  }
+  if (Object.keys(value).length > 0 && Object.keys(output).length === 0) {
+    return undefined;
+  }
+  return output;
+}
+
+/** Returns whether metadata is JSON and contains no recursively forbidden values. */
+export function isRedactedMetadata(value: unknown): value is RedactedMetadata {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+  return !containsForbiddenValue(value) && sanitizeMetadataValue(value) !== undefined;
+}
+
+/**
+ * Runtime validator for metadata written to one-time-token/audit boundaries.
+ *
+ * @compatibility Project-specific redaction boundary used by later server
+ * operations; it is not a general-purpose public metadata schema.
+ */
+export const redactedMetadataSchema = z.custom<RedactedMetadata>(
+  isRedactedMetadata,
+  "metadata must be recursively redacted",
+);
+
+/**
+ * Recursively removes sensitive metadata keys and values.
+ *
+ * @param input - Arbitrary JSON-like metadata from an internal operation.
+ * @returns A branded metadata object safe for public contract boundaries.
+ *
+ * @example
+ * ```ts
+ * const metadata = sanitizeRedactedMetadata({
+ *   attempt: 1,
+ *   nested: { providerSecret: "removed", result: "accepted" },
+ * });
+ * ```
+ *
+ * @since 0.1.0
+ */
+export function sanitizeRedactedMetadata(input: unknown): RedactedMetadata {
+  const sanitized = sanitizeMetadataValue(input);
+  if (!isPlainRecord(sanitized)) {
+    return {} as RedactedMetadata;
+  }
+  return sanitized as RedactedMetadata;
+}
 
 /** An ISO-8601 timestamp returned by the public API. */
 export type IsoTimestamp = string;
@@ -72,7 +364,8 @@ export interface User {
  * A linked login identity with provider-safe profile data.
  *
  * @compatibility Supabase-inspired. Provider access tokens, refresh tokens,
- * client credentials, and other provider secrets must never be returned here.
+ * client credentials, raw claims, and other provider secrets are intentionally
+ * excluded; use `sanitizeIdentityData` before constructing this value.
  */
 export interface Identity {
   /** The project's UUID for the linked identity. */
@@ -85,7 +378,7 @@ export interface Identity {
   provider_subject: string;
   /** The provider email when the provider supplied one. */
   email: string | null;
-  /** Redacted, provider-safe claims suitable for the client. */
+  /** Redacted, scalar provider claims suitable for the client. */
   identity_data: SafeIdentityData;
   /** When the identity was linked. */
   created_at: IsoTimestamp;
@@ -114,7 +407,12 @@ export interface Session {
   user: User;
 }
 
-/** A data-driven role with a lowercase stable key. */
+/**
+ * A data-driven role with a lowercase stable key.
+ *
+ * @compatibility Project-specific RBAC contract; permissions are data-driven,
+ * not inferred from rank.
+ */
 export interface Role {
   /** The role UUID. */
   id: UUID;
@@ -134,7 +432,12 @@ export interface Role {
   updated_at: IsoTimestamp;
 }
 
-/** A data-driven permission with a lowercase `resource.action` key. */
+/**
+ * A data-driven permission with a lowercase `resource.action` key.
+ *
+ * @compatibility Project-specific RBAC contract. Supported wildcards are
+ * `resource.*` and `*.*`; there are no explicit denies in v1.
+ */
 export interface Permission {
   /** The permission UUID. */
   id: UUID;
@@ -152,7 +455,51 @@ export interface Permission {
   updated_at: IsoTimestamp;
 }
 
-/** Lifecycle events emitted by the client auth namespace. */
+/** Runtime validation for public role records. */
+export const roleSchema = z.object({
+  id: uuidSchema,
+  key: roleKeySchema,
+  name: z.string().trim().min(1),
+  description: z.string().nullable(),
+  rank: z.number().int().nonnegative(),
+  is_system: z.boolean(),
+  created_at: z.string().min(1),
+  updated_at: z.string().min(1),
+});
+
+/** Runtime validation for public permission records and wildcard relationships. */
+export const permissionSchema = z
+  .object({
+    id: uuidSchema,
+    key: permissionKeySchema,
+    resource: permissionResourceSchema,
+    action: permissionActionSchema,
+    description: z.string().nullable(),
+    created_at: z.string().min(1),
+    updated_at: z.string().min(1),
+  })
+  .superRefine((permission, context) => {
+    if (permission.key !== `${permission.resource}.${permission.action}`) {
+      context.addIssue({
+        code: "custom",
+        path: ["key"],
+        message: "permission key must equal resource.action",
+      });
+    }
+    if (permission.resource === ("*" as LowercaseKey) && permission.action !== ("*" as LowercaseKey)) {
+      context.addIssue({
+        code: "custom",
+        path: ["key"],
+        message: "only *.* is supported for a wildcard resource",
+      });
+    }
+  });
+
+/**
+ * Lifecycle events emitted by the client auth namespace.
+ *
+ * @compatibility Supabase-inspired event names.
+ */
 export type AuthChangeEvent =
   | "INITIAL_SESSION"
   | "SIGNED_IN"
@@ -191,7 +538,7 @@ export interface AuthorizationScope {
   /** The project-defined scope kind. */
   type: string;
   /** The project-defined scope identifier. */
-  id: string;
+  id: UUID;
 }
 
 /** The browser/SSR options accepted by the shared client contract. */

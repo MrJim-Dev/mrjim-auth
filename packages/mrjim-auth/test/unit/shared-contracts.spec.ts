@@ -1,11 +1,32 @@
 import { describe, expect, it } from "vitest";
 import { authFailure, authSuccess } from "../../src/shared/result.js";
-import { AuthApiError } from "../../src/shared/errors.js";
 import {
+  AUTH_ERROR_CODES,
+  INTERNAL_AUTH_ERROR_CODES,
+  AuthApiError,
+  AuthProgrammingError,
+  mapInternalAuthErrorCodeToPublic,
+  type AuthError,
+  type PublicAuthErrorCode,
+} from "../../src/shared/errors.js";
+import {
+  authRepositorySchema,
   authServerOptionsSchema,
+  clientBaseUrlSchema,
   clientOptionsSchema,
   type AuthServerOptions,
 } from "../../src/shared/config.js";
+import {
+  permissionSchema,
+  redactedMetadataSchema,
+  roleKeySchema,
+  roleSchema,
+  safeIdentityDataSchema,
+  sanitizeIdentityData,
+  sanitizeRedactedMetadata,
+  uuidSchema,
+} from "../../src/shared/types.js";
+import type { AuditEventInput, OneTimeTokenInput } from "../../src/shared/contracts.js";
 import type {
   AuthChangeEvent,
   Identity,
@@ -19,7 +40,7 @@ type TestServerOptions = {
   environment: "development" | "test" | "production";
   baseUrl: string;
   siteUrl: string;
-  database: Record<string, never>;
+  database: Record<string, unknown>;
   signingKeys: {
     issuer: string;
     audience: string;
@@ -36,11 +57,78 @@ type TestServerOptions = {
   refreshTokenTtlSeconds: number;
 };
 
+const asyncMethod = async (..._arguments: unknown[]): Promise<null> => null;
+
+const completeRepository = {
+  transaction: async (..._arguments: unknown[]): Promise<null> => null,
+  users: {
+    findById: asyncMethod,
+    findByNormalizedEmail: asyncMethod,
+    create: asyncMethod,
+    update: asyncMethod,
+    softDelete: asyncMethod,
+  },
+  identities: {
+    findByProviderSubject: asyncMethod,
+    listByUserId: asyncMethod,
+    create: asyncMethod,
+    deleteById: asyncMethod,
+  },
+  passwordCredentials: {
+    findByUserId: asyncMethod,
+    upsert: asyncMethod,
+    deleteByUserId: asyncMethod,
+  },
+  sessions: {
+    create: asyncMethod,
+    findRefreshForUpdate: asyncMethod,
+    rotate: asyncMethod,
+    revokeSession: asyncMethod,
+    revokeFamily: asyncMethod,
+    revokeUserSessions: asyncMethod,
+  },
+  oneTimeTokens: {
+    issue: asyncMethod,
+    consume: asyncMethod,
+  },
+  oauthStates: {
+    create: asyncMethod,
+    consume: asyncMethod,
+  },
+  authorization: {
+    effectivePermissions: asyncMethod,
+    assignRole: asyncMethod,
+    unassignRole: asyncMethod,
+    setRolePermissions: asyncMethod,
+    setRoleInheritance: asyncMethod,
+  },
+  roles: {
+    list: asyncMethod,
+    findById: asyncMethod,
+    create: asyncMethod,
+    update: asyncMethod,
+    delete: asyncMethod,
+  },
+  permissions: {
+    list: asyncMethod,
+    findById: asyncMethod,
+    create: asyncMethod,
+    update: asyncMethod,
+    delete: asyncMethod,
+  },
+  operations: {
+    appendAudit: asyncMethod,
+    findApiKeyByHash: asyncMethod,
+  },
+};
+
+const uuid = (value: string) => uuidSchema.parse(value);
+
 const validServerOptions = (): TestServerOptions => ({
   environment: "production" as const,
   baseUrl: "https://project.example.com/auth/v1",
   siteUrl: "https://project.example.com",
-  database: {},
+  database: completeRepository,
   signingKeys: {
     issuer: "https://project.example.com/auth/v1",
     audience: "project",
@@ -99,12 +187,51 @@ describe("AuthResult", () => {
       request_id: "request-123",
     });
   });
+
+  it("rejects arbitrary and enumeration-sensitive codes at the public boundary", () => {
+    const acceptsPublicCode = (code: PublicAuthErrorCode) => code;
+
+    // @ts-expect-error Arbitrary strings are not public API error codes.
+    acceptsPublicCode("application_secret_leaked");
+
+    expect(() =>
+      new AuthApiError(
+        "application_secret_leaked" as unknown as PublicAuthErrorCode,
+        500,
+        "Internal error",
+      ),
+    ).toThrow(AuthProgrammingError);
+    expect(() =>
+      new AuthApiError(
+        INTERNAL_AUTH_ERROR_CODES.email_exists as unknown as PublicAuthErrorCode,
+        400,
+        "Internal conflict",
+      ),
+    ).toThrow(AuthProgrammingError);
+
+    expect(AUTH_ERROR_CODES).not.toHaveProperty("email_exists");
+    expect(AUTH_ERROR_CODES).not.toHaveProperty("email_not_confirmed");
+    expect(mapInternalAuthErrorCodeToPublic(INTERNAL_AUTH_ERROR_CODES.email_exists)).toBe(
+      "invalid_request",
+    );
+    expect(mapInternalAuthErrorCodeToPublic(INTERNAL_AUTH_ERROR_CODES.email_not_confirmed)).toBe(
+      "invalid_credentials",
+    );
+
+    const unsafeError = {
+      name: "AuthError",
+      message: "not safe",
+      status: 400,
+      code: "email_exists",
+    } as unknown as AuthError;
+    expect(() => authFailure(unsafeError)).toThrow(AuthProgrammingError);
+  });
 });
 
 describe("shared identity and authorization types", () => {
   it("models safe user, identity, session, role, permission, and event values", () => {
     const user: User = {
-      id: "00000000-0000-4000-8000-000000000001",
+      id: uuid("00000000-0000-4000-8000-000000000001"),
       email: "user@example.com",
       phone: null,
       email_confirmed_at: "2026-08-11T00:00:00.000Z",
@@ -127,7 +254,7 @@ describe("shared identity and authorization types", () => {
       user,
     };
     const identity: Identity = {
-      id: "00000000-0000-4000-8000-000000000002",
+      id: uuid("00000000-0000-4000-8000-000000000002"),
       user_id: user.id,
       provider: "google",
       provider_subject: "google-subject",
@@ -137,8 +264,8 @@ describe("shared identity and authorization types", () => {
       updated_at: "2026-08-11T00:00:00.000Z",
     };
     const role: Role = {
-      id: "00000000-0000-4000-8000-000000000003",
-      key: "member",
+      id: uuid("00000000-0000-4000-8000-000000000003"),
+      key: roleKeySchema.parse("member"),
       name: "Member",
       description: null,
       rank: 10,
@@ -147,10 +274,10 @@ describe("shared identity and authorization types", () => {
       updated_at: "2026-08-11T00:00:00.000Z",
     };
     const permission: Permission = {
-      id: "00000000-0000-4000-8000-000000000004",
-      key: "invoice.read",
-      resource: "invoice",
-      action: "read",
+      id: uuid("00000000-0000-4000-8000-000000000004"),
+      key: "invoice.read" as Permission["key"],
+      resource: "invoice" as Permission["resource"],
+      action: "read" as Permission["action"],
       description: null,
       created_at: "2026-08-11T00:00:00.000Z",
       updated_at: "2026-08-11T00:00:00.000Z",
@@ -164,6 +291,232 @@ describe("shared identity and authorization types", () => {
     expect(role.key).toBe(role.key.toLowerCase());
     expect(permission.key).toBe(permission.key.toLowerCase());
     expect(event).toBe("SIGNED_IN");
+  });
+
+  it("sanitizes raw provider claims into a scalar public allowlist recursively", () => {
+    const sanitized = sanitizeIdentityData({
+      sub: "provider-subject",
+      email: "user@example.com",
+      name: "User",
+      access_token: "top-level-token",
+      accessToken: "camel-case-token",
+      privateKey: "-----BEGIN PRIVATE KEY-----",
+      provider_secret: "provider-secret",
+      nested: {
+        name: "nested-name",
+        refreshToken: "nested-refresh-token",
+        oauthCode: "nested-oauth-code",
+      },
+      claims: [{ id_token: "array-token" }],
+    });
+
+    expect(sanitized).toEqual({
+      sub: "provider-subject",
+      email: "user@example.com",
+      name: "User",
+    });
+    expect(safeIdentityDataSchema.safeParse(sanitized).success).toBe(true);
+    expect(safeIdentityDataSchema.safeParse({ accessToken: "secret" }).success).toBe(false);
+    expect(sanitized).not.toHaveProperty("access_token");
+    expect(sanitized).not.toHaveProperty("accessToken");
+    expect(sanitized).not.toHaveProperty("privateKey");
+  });
+
+  it("uses branded UUID and lowercase/RBAC schemas", () => {
+    expect(uuidSchema.safeParse("00000000-0000-4000-8000-000000000001").success).toBe(true);
+    expect(uuidSchema.safeParse("not-a-uuid").success).toBe(false);
+    expect(roleKeySchema.safeParse("member").success).toBe(true);
+    expect(roleKeySchema.safeParse("Member").success).toBe(false);
+    expect(roleKeySchema.safeParse("member.role").success).toBe(false);
+
+    const role = {
+      id: "00000000-0000-4000-8000-000000000003",
+      key: "Member",
+      name: "Member",
+      description: null,
+      rank: 10,
+      is_system: false,
+      created_at: "2026-08-11T00:00:00.000Z",
+      updated_at: "2026-08-11T00:00:00.000Z",
+    };
+    expect(roleSchema.safeParse(role).success).toBe(false);
+
+    expect(
+      permissionSchema.safeParse({
+        id: "00000000-0000-4000-8000-000000000004",
+        key: "invoice.read",
+        resource: "invoice",
+        action: "read",
+        description: null,
+        created_at: "2026-08-11T00:00:00.000Z",
+        updated_at: "2026-08-11T00:00:00.000Z",
+      }).success,
+    ).toBe(true);
+    expect(
+      permissionSchema.safeParse({
+        id: "00000000-0000-4000-8000-000000000004",
+        key: "invoice.*",
+        resource: "invoice",
+        action: "*",
+        description: null,
+        created_at: "2026-08-11T00:00:00.000Z",
+        updated_at: "2026-08-11T00:00:00.000Z",
+      }).success,
+    ).toBe(true);
+    expect(
+      permissionSchema.safeParse({
+        id: "00000000-0000-4000-8000-000000000004",
+        key: "*.*",
+        resource: "*",
+        action: "*",
+        description: null,
+        created_at: "2026-08-11T00:00:00.000Z",
+        updated_at: "2026-08-11T00:00:00.000Z",
+      }).success,
+    ).toBe(true);
+    expect(
+      permissionSchema.safeParse({
+        id: "00000000-0000-4000-8000-000000000004",
+        key: "invoice.write",
+        resource: "invoice",
+        action: "read",
+        description: null,
+        created_at: "2026-08-11T00:00:00.000Z",
+        updated_at: "2026-08-11T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+    expect(
+      permissionSchema.safeParse({
+        id: "00000000-0000-4000-8000-000000000004",
+        key: "*.read",
+        resource: "*",
+        action: "read",
+        description: null,
+        created_at: "2026-08-11T00:00:00.000Z",
+        updated_at: "2026-08-11T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("redacted metadata", () => {
+  it("redacts credential-bearing keys recursively for token and audit metadata", () => {
+    const sanitized = sanitizeRedactedMetadata({
+      safe: "keep",
+      provider: "google",
+      access_token: "raw-token",
+      tokenHash: "raw-hash",
+      password: "raw-password",
+      oauthCode: "oauth-code",
+      providerSecret: "provider-secret",
+      privateKey: "private-key",
+      nested: {
+        safe: true,
+        refresh_token: "nested-token",
+        authorizationCode: "nested-code",
+        deeper: { passwordHash: "nested-hash", keep: 1 },
+      },
+      list: [{ clientSecret: "nested-secret" }, "safe"],
+    });
+
+    expect(sanitized).toEqual({
+      safe: "keep",
+      provider: "google",
+      nested: { safe: true, deeper: { keep: 1 } },
+      list: ["safe"],
+    });
+    expect(redactedMetadataSchema.safeParse(sanitized).success).toBe(true);
+    expect(redactedMetadataSchema.safeParse({ nested: { accessToken: "secret" } }).success).toBe(
+      false,
+    );
+
+    const oneTimeToken: OneTimeTokenInput = {
+      purpose: "recovery",
+      token_hash: new Uint8Array([1]),
+      target: "user@example.com",
+      expires_at: new Date(),
+      metadata: sanitized,
+    };
+    const auditEvent: AuditEventInput = {
+      action: "recovery.requested",
+      target_type: "user",
+      outcome: "success",
+      metadata: sanitized,
+    };
+    expect(oneTimeToken.metadata).toBe(sanitized);
+    expect(auditEvent.metadata).toBe(sanitized);
+  });
+});
+
+describe("repository and URL boundaries", () => {
+  it("accepts a complete repository aggregate and rejects missing member methods", () => {
+    expect(authRepositorySchema.safeParse(completeRepository).success).toBe(true);
+    expect(authRepositorySchema.safeParse({}).success).toBe(false);
+
+    const missingPasswordMethod = {
+      ...completeRepository,
+      passwordCredentials: {
+        ...completeRepository.passwordCredentials,
+        upsert: undefined,
+      },
+    };
+    expect(authRepositorySchema.safeParse(missingPasswordMethod).success).toBe(false);
+
+    const malformedRoleMethod = {
+      ...completeRepository,
+      roles: {
+        ...completeRepository.roles,
+        delete: "not-a-function",
+      },
+    };
+    expect(authRepositorySchema.safeParse(malformedRoleMethod).success).toBe(false);
+
+    const missingOAuthState = {
+      ...completeRepository,
+      oauthStates: {
+        ...completeRepository.oauthStates,
+        consume: undefined,
+      },
+    };
+    expect(authRepositorySchema.safeParse(missingOAuthState).success).toBe(false);
+  });
+
+  it("accepts only HTTP(S) client URLs and applies HTTPS only in production", () => {
+    for (const url of [
+      "file:///tmp/auth",
+      "javascript:alert(1)",
+      "data:text/plain,auth",
+      "ftp://project.example.com/auth",
+    ]) {
+      expect(clientBaseUrlSchema.safeParse(url).success).toBe(false);
+    }
+    expect(clientBaseUrlSchema.safeParse("http://localhost:3000/auth/v1").success).toBe(true);
+    expect(clientBaseUrlSchema.safeParse("https://project.example.com/auth/v1").success).toBe(
+      true,
+    );
+
+    for (const field of ["baseUrl", "siteUrl"] as const) {
+      const invalid = validServerOptions();
+      invalid[field] = "file:///tmp/auth";
+      expect(authServerOptionsSchema.safeParse(invalid).success).toBe(false);
+    }
+    const invalidRedirect = validServerOptions();
+    invalidRedirect.redirects.allowed = ["javascript:alert(1)"];
+    expect(authServerOptionsSchema.safeParse(invalidRedirect).success).toBe(false);
+
+    const development = validServerOptions();
+    development.environment = "development";
+    development.baseUrl = "http://localhost:3000/auth/v1";
+    development.siteUrl = "http://localhost:3000";
+    development.redirects.allowed = ["http://localhost:3000/auth/callback"];
+    development.signingKeys.issuer = "local-issuer";
+    expect(authServerOptionsSchema.safeParse(development).success).toBe(true);
+  });
+
+  it("keeps repository contracts internal until a later package export task", async () => {
+    const root = await import("../../src/index.js");
+    expect(root).not.toHaveProperty("authRepositorySchema");
+    expect(root).not.toHaveProperty("UserRepository");
   });
 });
 

@@ -1,4 +1,4 @@
-import type { AuthError } from "./errors.js";
+import { assertPublicAuthError, type AuthError } from "./errors.js";
 
 /**
  * The mutually exclusive result returned by expected SDK operations.
@@ -48,5 +48,6 @@ export function authSuccess<T>(data: T): AuthResult<T> {
  * @since 0.1.0
  */
 export function authFailure(error: AuthError): AuthResult<never> {
+  assertPublicAuthError(error);
   return { data: null, error };
 }

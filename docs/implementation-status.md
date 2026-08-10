@@ -6,19 +6,24 @@
 
 ## Current state
 
-Task 1, Review Fix Pass 1, and Task 2 are complete in this worktree. The
+Task 1, its review fixes, Task 2, and Task 2 Review Fix Pass 1 are complete in
+this worktree. The
 package workspace, strict ESM TypeScript configuration, browser-safe public
 entrypoint, Node-only build targets, export map, shared auth contracts,
-validated Zod configuration, local verification commands, and handoff reports
-are present. The published package manifest is named exactly `mrjim-auth`.
+validated Zod configuration, recursive redaction boundaries, local verification
+commands, and handoff reports are present. The published package manifest is
+named exactly `mrjim-auth`.
 
 Task 2 defines the browser-safe result, error, identity, session, role,
 permission, client-option, server-option, adapter, mailer, limiter, and key
 provider contracts. Expected API failures use mutually exclusive `{ data,
 error }` values; configuration and programming failures remain throw-based.
 Production URL, PKCE, TTL, redirect, issuer/audience, and key-material rules
-are validated by Zod 4.4.3. No database, password hashing, migration, OAuth
-provider credential, or Node-only implementation was added.
+are validated by Zod 4.4.3. Public identity claims and one-time-token/audit
+metadata are runtime-sanitized and fail closed. Public error codes are
+constrained and enumeration-sensitive internal codes are mapped to generic
+public codes. No database, password hashing, migration, OAuth provider
+credential, or Node-only implementation was added.
 
 Task 1 does not implement authentication behavior or create database objects.
 The future PostgreSQL work must create only the clean `auth` schema; no `mrjim`
@@ -51,7 +56,7 @@ hosted service is required.
 | Task | Status | Verification |
 | --- | --- | --- |
 | 1. Workspace and exports | Complete | Review Fix Pass 2 checks passed on 2026-08-11 |
-| 2. Shared contracts | Complete | RED/GREEN unit tests, build, typecheck, lint, docs, and frozen-lockfile checks passed on 2026-08-11 |
+| 2. Shared contracts | Complete — Review Fix Pass 1 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
 | 3. PostgreSQL schema and CLI | Pending | Not run |
 | 4. PostgreSQL repositories | Pending | Not run |
 | 5. JWT and sessions | Pending | Not run |
@@ -96,8 +101,8 @@ The Task 2 changes are:
 - `packages/mrjim-auth/src/shared/contracts.ts` — mailer, limiter, key,
   transaction-neutral repository, session, token, authorization, and audit
   boundaries;
-- `packages/mrjim-auth/test/unit/shared-contracts.spec.ts` — 9 focused
-  contract tests;
+- `packages/mrjim-auth/test/unit/shared-contracts.spec.ts` — original 9 focused
+  contract tests plus review coverage;
 - `packages/mrjim-auth/package.json` and `pnpm-lock.yaml` — exact-pinned
   `zod@4.4.3` dependency;
 - `.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-2-report.md` — full handoff
@@ -109,6 +114,41 @@ collection because `../../src/shared/result.js` did not exist.
 
 GREEN evidence: the same focused command passed with 1 file and 9 tests;
 `pnpm typecheck` passed after implementation.
+
+## Task 2 Review Fix Pass 1
+
+Review Fix Pass 1 is complete and remains limited to Task 2 shared contracts.
+The review adds 16 focused tests covering the security and completeness
+findings:
+
+- `sanitizeIdentityData` and `safeIdentityDataSchema` now allow only documented
+  scalar public claims and remove top-level, camelCase, nested, private-key,
+  and provider-token fields from raw claims.
+- `PublicAuthErrorCode` is a closed union. Internal/admin-only codes are
+  separate and map enumeration-sensitive signup, login, recovery, OTP, resend,
+  and lookup outcomes to generic public codes before `AuthResult` creation.
+- `authRepositorySchema` requires every Task 2 aggregate/member function and
+  rejects `{}` or malformed/missing password, OAuth-state, role, permission,
+  and other repository methods.
+- `RedactedMetadata`, `redactedMetadataSchema`, and
+  `sanitizeRedactedMetadata` recursively remove token, hash, password, OAuth
+  code, provider-secret, and private-key metadata from one-time-token and audit
+  contracts.
+- UUIDs and lowercase keys are branded/validated at runtime; role keys are
+  lowercase and permission keys must match `resource.action`, `resource.*`, or
+  `*.*`.
+- Client, server base/site, issuer, OAuth issuer, and redirect URLs accept only
+  `http:`/`https:`; production requires HTTPS and redirects remain exact.
+
+Password credentials, OAuth state, role/permission CRUD, assignment, and audit
+repository boundaries are present but explicitly `@internal` and transaction
+neutral. They are not package-root exports until their later implementation
+tasks. No generated API/OpenAPI artifacts are claimed in this Task 2 status;
+those remain Task 13 work.
+
+Review RED evidence: the new focused test run failed with exit code 1 and 7
+contract failures before the review implementation. Review GREEN evidence:
+the focused run passed with 1 file and 16 tests, and `pnpm typecheck` passed.
 
 ## Task 1 scope
 
@@ -145,11 +185,24 @@ Node built-ins and bare server-only dependencies such as `pg`.
 - `pnpm lint` — passed.
 - `pnpm docs:check` — passed; 2 required documents found.
 
-Task 2 final verification:
+Task 2 original final verification before Review Fix Pass 1:
 
 - `pnpm install --frozen-lockfile` — passed; lockfile was up to date.
 - `pnpm test` — passed; browser and Node builds completed, 2 files and 15
   tests passed.
+- `pnpm typecheck` — passed.
+- `pnpm lint` — passed.
+- `pnpm docs:check` — passed; 2 required documents found.
+- `git diff --check` — passed with no whitespace errors.
+
+Task 2 Review Fix Pass 1 final verification:
+
+- `pnpm vitest run packages/mrjim-auth/test/unit/shared-contracts.spec.ts` —
+  passed; 1 file and 16 tests.
+- `pnpm build` — passed; browser and Node TypeScript builds completed.
+- `pnpm test` — passed; fresh build completed, 2 files and 22 tests passed.
+- `pnpm install --frozen-lockfile` — passed; lockfile was up to date and
+  resolution was skipped.
 - `pnpm typecheck` — passed.
 - `pnpm lint` — passed.
 - `pnpm docs:check` — passed; 2 required documents found.

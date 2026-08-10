@@ -5,17 +5,38 @@ import type {
   Mailer,
   RateLimiter,
 } from "./contracts.js";
+import { roleKeySchema } from "./types.js";
 import type {
   DebugLogger,
   LockFunction,
   SupportedStorage,
 } from "./types.js";
 
-/** Runtime mode used to decide whether cleartext local URLs are acceptable. */
+/**
+ * Runtime mode used to decide whether cleartext local URLs are acceptable.
+ *
+ * @compatibility Project-specific configuration extension.
+ */
 export type AuthEnvironment = "development" | "test" | "production";
 
 const nonEmptyStringSchema = z.string().trim().min(1);
-const absoluteUrlSchema = z.string().trim().url();
+
+const httpHttpsUrlSchema = z.string().trim().url().superRefine((value, context) => {
+  const protocol = new URL(value).protocol;
+  if (protocol !== "http:" && protocol !== "https:") {
+    context.addIssue({
+      code: "custom",
+      message: "URL scheme must be http or https",
+    });
+  }
+});
+
+/**
+ * Validates the client base URL in every runtime environment.
+ *
+ * @compatibility Supabase-inspired client initialization URL boundary.
+ */
+export const clientBaseUrlSchema = httpHttpsUrlSchema;
 
 const storageSchema = z.custom<SupportedStorage>(
   (value) => {
@@ -52,6 +73,15 @@ const fetchSchema = z.custom<typeof fetch>(
  *
  * Only PKCE is supported in v1. The schema contains no server credentials or
  * Node-only dependencies and can be used from a browser-reachable module.
+ *
+ * @compatibility Supabase-inspired client options with PKCE-only behavior.
+ *
+ * @example
+ * ```ts
+ * const options = clientOptionsSchema.parse({
+ *   auth: { flowType: "pkce", persistSession: true },
+ * });
+ * ```
  */
 export const clientOptionsSchema = z.object({
   auth: z
@@ -75,7 +105,12 @@ export const clientOptionsSchema = z.object({
     .optional(),
 });
 
-/** The inferred, browser-safe client options type. */
+/**
+ * The inferred, browser-safe client options type.
+ *
+ * @compatibility Supabase-inspired options; only documented v1 fields are
+ * accepted.
+ */
 export type ClientOptions = z.infer<typeof clientOptionsSchema>;
 
 const keyMaterialSchema = z.custom<KeyMaterial>(
@@ -113,9 +148,70 @@ const keyMapSchema = z
     }
   });
 
-const repositorySchema = z.custom<AuthRepository>(
-  (value) => typeof value === "object" && value !== null,
-  "database must be a project-owned auth repository",
+const requiredRepositoryMethods = {
+  root: ["transaction"],
+  users: ["findById", "findByNormalizedEmail", "create", "update", "softDelete"],
+  identities: ["findByProviderSubject", "listByUserId", "create", "deleteById"],
+  passwordCredentials: ["findByUserId", "upsert", "deleteByUserId"],
+  sessions: [
+    "create",
+    "findRefreshForUpdate",
+    "rotate",
+    "revokeSession",
+    "revokeFamily",
+    "revokeUserSessions",
+  ],
+  oneTimeTokens: ["issue", "consume"],
+  oauthStates: ["create", "consume"],
+  authorization: [
+    "effectivePermissions",
+    "assignRole",
+    "unassignRole",
+    "setRolePermissions",
+    "setRoleInheritance",
+  ],
+  roles: ["list", "findById", "create", "update", "delete"],
+  permissions: ["list", "findById", "create", "update", "delete"],
+  operations: ["appendAudit", "findApiKeyByHash"],
+} as const;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasMethods(value: unknown, methods: readonly string[]): boolean {
+  return (
+    isObjectRecord(value) &&
+    methods.every((method) => typeof value[method] === "function")
+  );
+}
+
+/**
+ * Returns whether an adapter implements every Task 2 repository boundary.
+ *
+ * @internal This is a pre-export validation boundary for later server and
+ * PostgreSQL tasks.
+ */
+export function isAuthRepository(value: unknown): value is AuthRepository {
+  if (!isObjectRecord(value) || !hasMethods(value, requiredRepositoryMethods.root)) {
+    return false;
+  }
+
+  return (Object.entries(requiredRepositoryMethods) as readonly [string, readonly string[]][])
+    .filter(([member]) => member !== "root")
+    .every(([member, methods]) => hasMethods(value[member], methods));
+}
+
+/**
+ * Runtime validation for the complete transaction-neutral repository
+ * aggregate. It rejects `{}` and malformed member methods before server start.
+ *
+ * @internal The schema is not exported from the package root until a later
+ * server/PostgreSQL export task.
+ */
+export const authRepositorySchema = z.custom<AuthRepository>(
+  isAuthRepository,
+  "database must implement every required auth repository boundary",
 );
 
 const mailerSchema = z.custom<Mailer>(
@@ -140,17 +236,17 @@ const oauthClientSchema = z.object({
 });
 
 const oidcClientSchema = oauthClientSchema.extend({
-  issuer: absoluteUrlSchema,
+  issuer: httpHttpsUrlSchema,
   scopes: z.array(nonEmptyStringSchema).min(1).optional(),
 });
 
 const authorizationSchema = z.object({
-  defaultRoleKeys: z.array(nonEmptyStringSchema).optional(),
+  defaultRoleKeys: z.array(roleKeySchema).optional(),
   allowWildcards: z.boolean().optional(),
-  protectedRoleKeys: z.array(nonEmptyStringSchema).optional(),
+  protectedRoleKeys: z.array(roleKeySchema).optional(),
 });
 
-const redirectSchema = absoluteUrlSchema.superRefine((value, context) => {
+const redirectSchema = httpHttpsUrlSchema.superRefine((value, context) => {
   if (value.includes("*")) {
     context.addIssue({ code: "custom", message: "redirects must be exact URLs" });
   }
@@ -171,13 +267,16 @@ const redirectSchema = absoluteUrlSchema.superRefine((value, context) => {
  * redirect. The schema also requires a non-empty active signing-key set,
  * token-hash key, encryption key, issuer, and audience. Parsing failures are
  * configuration failures and should be allowed to throw synchronously.
+ *
+ * @compatibility Project-owned server composition contract shaped by the
+ * Supabase-inspired client/server split.
  */
 export const authServerOptionsSchema = z
   .object({
     environment: z.enum(["development", "test", "production"]).default("production"),
-    baseUrl: absoluteUrlSchema,
-    siteUrl: absoluteUrlSchema,
-    database: repositorySchema,
+    baseUrl: httpHttpsUrlSchema,
+    siteUrl: httpHttpsUrlSchema,
+    database: authRepositorySchema,
     signingKeys: z.object({
       issuer: nonEmptyStringSchema,
       audience: nonEmptyStringSchema,
@@ -241,7 +340,12 @@ export const authServerOptionsSchema = z
     }
   });
 
-/** The inferred server configuration type consumed by later tasks. */
+/**
+ * The inferred server configuration type consumed by later tasks.
+ *
+ * @compatibility Project-specific server contract; database, mail, key,
+ * redirect, and authorization adapters remain project-owned.
+ */
 export type AuthServerOptions = z.infer<typeof authServerOptionsSchema>;
 
 /** Alias retained for callers that prefer the shorter server-config name. */
