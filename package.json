@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p packages/mrjim-auth/tsconfig.browser.json && tsc -p packages/mrjim-auth/tsconfig.node.json",
     "typecheck": "tsc -p packages/mrjim-auth/tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "pnpm build && vitest run",
     "lint": "tsc -p packages/mrjim-auth/tsconfig.json --noEmit",
     "docs:check": "node scripts/check-docs.mjs"
   },
