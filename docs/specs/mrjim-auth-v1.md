@@ -32,6 +32,7 @@ This is not a hosted identity service. Installing projects do not call a central
 5. Make roles and permissions data-driven rather than compiled enums.
 6. Use secure defaults, explicit unsafe opt-ins, and auditable security-sensitive operations.
 7. Treat documentation, examples, schema reference, migration notes, and compatibility tables as release artifacts.
+8. Require only free/open-source libraries and project-owned infrastructure; paid SaaS products may appear only as optional adapters.
 
 ## 3. Non-goals for v1
 
@@ -42,6 +43,7 @@ This is not a hosted identity service. Installing projects do not call a central
 - Acting as a general OAuth authorization server for third-party applications.
 - Automatic production schema changes during application startup.
 - Database-specific adapters other than PostgreSQL.
+- Any paid application, hosted auth service, or commercial SaaS subscription as a required runtime, build, test, documentation, or release dependency.
 
 The schema leaves room for MFA and additional OAuth/OIDC providers without promising those features in v1.
 
@@ -479,6 +481,8 @@ Every public method or option requires:
 4. request/response or behavior contract tests;
 5. an entry in the Supabase compatibility matrix;
 6. a changelog entry when behavior changes.
+
+Implementation progress is tracked in `docs/implementation-status.md`. Every completed task updates its status, verification evidence, remaining work, and blocker log before its commit is reviewed.
 
 Required documentation:
 

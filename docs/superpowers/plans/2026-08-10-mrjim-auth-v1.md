@@ -20,6 +20,8 @@
 - Refresh tokens rotate once; replay revokes the entire token family.
 - Roles, permissions, inheritance, and scoped assignments are data-driven.
 - Every public method ships with TSDoc, tested documentation examples, compatibility status, and stable error codes.
+- Required dependencies must be free/open-source and runnable on project-owned infrastructure; paid SaaS integrations are optional adapters only.
+- Every task updates `docs/implementation-status.md` with completed work, test evidence, remaining tasks, and blockers before review.
 - The authoritative product contract is `docs/specs/mrjim-auth-v1.md`.
 
 ---
@@ -94,6 +96,7 @@ examples/
 
 docs/
   specs/mrjim-auth-v1.md
+  implementation-status.md
   getting-started.md
   concepts/
   reference/
@@ -114,6 +117,7 @@ docs/
 - Create: `packages/mrjim-auth/src/index.ts`
 - Create: `packages/mrjim-auth/src/server/index.ts`
 - Create: `packages/mrjim-auth/src/postgres/index.ts`
+- Create: `docs/implementation-status.md`
 - Test: `packages/mrjim-auth/test/contract/package-exports.spec.ts`
 
 **Interfaces:**
@@ -172,7 +176,11 @@ Enable `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verb
 Run: `pnpm install && pnpm typecheck && pnpm build && pnpm vitest run packages/mrjim-auth/test/contract/package-exports.spec.ts`  
 Expected: all commands PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Update implementation status**
+
+Record Task 1's files, command results, no-paid-dependency verification, remaining Tasks 2-14, and any blocker in `docs/implementation-status.md`.
+
+- [ ] **Step 7: Commit**
 
 ~~~bash
 git add package.json pnpm-workspace.yaml tsconfig.base.json vitest.workspace.ts packages/mrjim-auth
