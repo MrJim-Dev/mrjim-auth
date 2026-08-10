@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 import { decodeJwt } from "jose";
 import { authFailure, authSuccess, type AuthResult } from "../shared/result.js";
 import { AuthApiError, AuthConfigurationError } from "../shared/errors.js";
@@ -18,7 +19,6 @@ export interface SessionContext {
   readonly user_agent?: string | null;
   /** Authentication assurance level for a newly created session. */
   readonly aal?: number;
-  readonly now?: Date;
 }
 
 /** Logout scopes supported by the server session service. */
@@ -46,13 +46,28 @@ type RefreshOutcome =
       readonly sessionId: UUID;
       readonly userId: UUID;
     }
+  | { readonly kind: "revoked" }
   | { readonly kind: "success"; readonly session: Session };
 
 const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const OPAQUE_REFRESH_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const MAX_USER_AGENT_LENGTH = 512;
+const USER_AGENT_TRUNCATION_MARKER = "…[TRUNCATED]";
+const PEM_CREDENTIAL_PATTERN = /-----BEGIN [^-]+-----.*?-----END [^-]+-----/giu;
+const JWT_CREDENTIAL_PATTERN = /\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu;
+const AUTHORIZATION_CREDENTIAL_PATTERN = /\b(Bearer|Basic)\s+[^\s,;]+/giu;
+const SENSITIVE_ASSIGNMENT_PATTERN =
+  /\b(authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|secret|password|credential|cookie|session[_-]?token|token)\s*([=:])\s*[^\s,;]+/giu;
+const OPAQUE_CREDENTIAL_PATTERN = /\b[A-Za-z0-9_-]{43}\b/gu;
 
-function nowFrom(clock: () => Date, context?: SessionContext): Date {
-  const now = context?.now ?? clock();
+type NormalizedSessionContext = {
+  readonly ip_address: string | null;
+  readonly user_agent: string | null;
+  readonly aal: number;
+};
+
+function nowFrom(clock: () => Date): Date {
+  const now = clock();
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
     throw new AuthConfigurationError("session clock must return a valid Date");
   }
@@ -65,6 +80,40 @@ function newOpaqueRefreshToken(): string {
 
 function isOpaqueRefreshToken(value: string): boolean {
   return OPAQUE_REFRESH_TOKEN_PATTERN.test(value);
+}
+
+function normalizeIpAddress(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (normalized === "" || normalized.length > 45 || isIP(normalized) === 0) return null;
+  return normalized.toLowerCase();
+}
+
+function normalizeUserAgent(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
+  if (normalized === "") return null;
+
+  const redacted = normalized
+    .replace(PEM_CREDENTIAL_PATTERN, "[REDACTED_KEY]")
+    .replace(JWT_CREDENTIAL_PATTERN, "[REDACTED_JWT]")
+    .replace(AUTHORIZATION_CREDENTIAL_PATTERN, "$1 [REDACTED]")
+    .replace(SENSITIVE_ASSIGNMENT_PATTERN, "$1$2[REDACTED]")
+    .replace(OPAQUE_CREDENTIAL_PATTERN, "[REDACTED_TOKEN]");
+  const codePoints = Array.from(redacted);
+  if (codePoints.length <= MAX_USER_AGENT_LENGTH) return redacted;
+  return `${codePoints.slice(0, MAX_USER_AGENT_LENGTH - USER_AGENT_TRUNCATION_MARKER.length).join("")}${USER_AGENT_TRUNCATION_MARKER}`;
+}
+
+function normalizeSessionContext(
+  context: SessionContext | null | undefined,
+): NormalizedSessionContext {
+  const source = (context !== null && typeof context === "object" ? context : {}) as SessionContext;
+  return {
+    ip_address: normalizeIpAddress(source.ip_address),
+    user_agent: normalizeUserAgent(source.user_agent),
+    aal: sessionAal(source),
+  };
 }
 
 function sessionAal(context: SessionContext): number {
@@ -181,8 +230,8 @@ export class SessionService {
 
   /** Creates a session and its first refresh-family member atomically. */
   async create(user: User, context: SessionContext = {}): Promise<AuthResult<Session>> {
-    const now = nowFrom(this.clock, context);
-    const aal = sessionAal(context);
+    const normalizedContext = normalizeSessionContext(context);
+    const now = nowFrom(this.clock);
     const rawRefreshToken = newOpaqueRefreshToken();
     const refreshExpiresAt = new Date(now.getTime() + this.refreshTokenTtlSeconds * 1000);
     const familyId = uuidSchema.parse(randomUUID());
@@ -192,9 +241,9 @@ export class SessionService {
         const created = await transaction.sessions.create(
           {
             user_id: user.id,
-            aal,
-            ip_address: context.ip_address ?? null,
-            user_agent: context.user_agent ?? null,
+            aal: normalizedContext.aal,
+            ip_address: normalizedContext.ip_address,
+            user_agent: normalizedContext.user_agent,
             expires_at: refreshExpiresAt,
             token_hash: this.tokens.hashOpaqueToken(rawRefreshToken),
             family_id: familyId,
@@ -210,8 +259,8 @@ export class SessionService {
             action: "session.created",
             target_type: "session",
             target_id: created.session.id,
-            ip_address: context.ip_address ?? null,
-            user_agent: context.user_agent ?? null,
+            ip_address: normalizedContext.ip_address,
+            user_agent: normalizedContext.user_agent,
             metadata: auditMetadata("session.created", { session_id: created.session.id }),
             outcome: "success",
             occurred_at: now,
@@ -233,10 +282,11 @@ export class SessionService {
     refreshToken: string,
     context: SessionContext = {},
   ): Promise<AuthResult<Session>> {
+    const normalizedContext = normalizeSessionContext(context);
     if (typeof refreshToken !== "string" || !isOpaqueRefreshToken(refreshToken)) {
       return authFailure(invalidRefreshToken());
     }
-    const now = nowFrom(this.clock, context);
+    const now = nowFrom(this.clock);
     const tokenHash = this.tokens.hashOpaqueToken(refreshToken);
     let outcome: RefreshOutcome;
 
@@ -250,8 +300,7 @@ export class SessionService {
         const current = found.refreshToken;
         if (
           current.used_at !== null ||
-          current.replacement_id !== null ||
-          current.revoked_at !== null
+          current.replacement_id !== null
         ) {
           return {
             kind: "reused",
@@ -260,6 +309,7 @@ export class SessionService {
             userId: found.session.user_id,
           };
         }
+        if (current.revoked_at !== null) return { kind: "revoked" };
         if (current.expires_at <= now || found.session.expires_at <= now) {
           return { kind: "expired" };
         }
@@ -295,8 +345,8 @@ export class SessionService {
             action: "session.refreshed",
             target_type: "session",
             target_id: found.session.id,
-            ip_address: context.ip_address ?? null,
-            user_agent: context.user_agent ?? null,
+            ip_address: normalizedContext.ip_address,
+            user_agent: normalizedContext.user_agent,
             metadata: auditMetadata("session.refreshed", { session_id: found.session.id }),
             outcome: "success",
             occurred_at: now,
@@ -306,7 +356,10 @@ export class SessionService {
         return { kind: "success", session: publicValue };
       });
     } catch (error) {
-      if (repositoryCode(error) === "refresh_token_not_rotatable") {
+      if (
+        repositoryCode(error) === "refresh_token_not_rotatable" ||
+        repositoryCode(error) === "invalid_refresh_lineage"
+      ) {
         return authFailure(invalidRefreshToken());
       }
       throw error;
@@ -319,10 +372,12 @@ export class SessionService {
         return authFailure(sessionExpired());
       case "inactive":
         return authFailure(sessionExpired());
+      case "revoked":
+        return authFailure(invalidRefreshToken());
       case "missing":
         return authFailure(invalidRefreshToken());
       case "reused":
-        await this.containReuse(outcome, context, now);
+        await this.containReuse(outcome, normalizedContext, now);
         return authFailure(refreshTokenReused());
     }
   }
@@ -373,7 +428,7 @@ export class SessionService {
 
   private async containReuse(
     outcome: Extract<RefreshOutcome, { readonly kind: "reused" }>,
-    context: SessionContext,
+    context: NormalizedSessionContext,
     now: Date,
   ): Promise<void> {
     // These are intentionally separate committed operations. Returning the
@@ -389,8 +444,8 @@ export class SessionService {
           action: "session.refresh_reused",
           target_type: "session",
           target_id: outcome.sessionId,
-          ip_address: context.ip_address ?? null,
-          user_agent: context.user_agent ?? null,
+          ip_address: context.ip_address,
+          user_agent: context.user_agent,
           metadata: auditMetadata("session.refresh_reused", {
             session_id: outcome.sessionId,
             error_code: "refresh_token_reused",

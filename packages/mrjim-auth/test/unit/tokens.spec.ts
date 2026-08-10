@@ -2,7 +2,10 @@ import { createHmac, generateKeyPairSync } from "node:crypto";
 import {
   CompactSign,
   SignJWT,
+  decodeJwt,
   decodeProtectedHeader,
+  exportJWK,
+  importPKCS8,
   importSPKI,
   jwtVerify,
 } from "jose";
@@ -12,6 +15,7 @@ import type { User, UUID } from "../../src/shared/types.js";
 import { TokenService } from "../../src/server/tokens.js";
 import { uuidSchema } from "../../src/shared/types.js";
 import type { SessionRecord } from "../../src/shared/contracts.js";
+import { AuthConfigurationError } from "../../src/shared/errors.js";
 
 const ISSUER = "https://project.example.com/auth/v1";
 const AUDIENCE = "project";
@@ -155,6 +159,67 @@ describe("TokenService", () => {
       expect(publicKey).toMatchObject({ alg: "ES256", crv: "P-256", kty: "EC", use: "sig" });
       expect(publicKey).not.toHaveProperty("d");
     }
+  });
+
+  it("derives public JWKS safely when verification material is a private JWK", async () => {
+    const key = generateEs256Key();
+    const privateJwk = await exportJWK(
+      await importPKCS8(key.privateKey, "ES256", { extractable: true }),
+    );
+    const provider: KeyProvider = {
+      getActiveKeyId: () => "active",
+      getSigningKey: () => key.privateKey,
+      getVerificationKeys: () => new Map([["active", privateJwk]]),
+    };
+
+    const jwks = await makeService(provider).jwks();
+    expect(jwks.keys).toHaveLength(1);
+    expect(jwks.keys[0]).toMatchObject({
+      kid: "active",
+      alg: "ES256",
+      crv: "P-256",
+      kty: "EC",
+      use: "sig",
+    });
+    for (const privateField of ["d", "p", "q", "dp", "dq", "qi", "key_ops"]) {
+      expect(jwks.keys[0]).not.toHaveProperty(privateField);
+    }
+  });
+
+  it("rejects mismatched, expired, revoked, and malformed session records before signing", async () => {
+    const key = generateEs256Key();
+    const service = makeService(makeProvider(new Map([["active", key]])));
+    const user = makeUser();
+    const session = makeSession();
+    const otherUserId = uuidSchema.parse("00000000-0000-4000-8000-000000000103");
+    const invalidSessions: readonly SessionRecord[] = [
+      { ...session, user_id: otherUserId },
+      { ...session, expires_at: new Date(NOW.getTime() - 1) },
+      { ...session, created_at: new Date("invalid") },
+      { ...session, refreshed_at: new Date("invalid") },
+      { ...session, expires_at: new Date("invalid") },
+      { ...session, revoked_at: NOW },
+    ];
+
+    for (const invalidSession of invalidSessions) {
+      await expect(service.issueAccessToken(user, invalidSession)).rejects.toBeInstanceOf(
+        AuthConfigurationError,
+      );
+    }
+  });
+
+  it("caps access-token expiry at the owning session expiry", async () => {
+    const key = generateEs256Key();
+    const service = makeService(makeProvider(new Map([["active", key]])));
+    const sessionExpiry = new Date(NOW.getTime() + 45_000);
+
+    const jwt = await service.issueAccessToken(makeUser(), {
+      ...makeSession(),
+      expires_at: sessionExpiry,
+    });
+    const claims = decodeJwt(jwt);
+    expect(claims.exp).toBe(Math.floor(sessionExpiry.getTime() / 1000));
+    expect(claims.exp).toBeLessThanOrEqual(Math.floor(sessionExpiry.getTime() / 1000));
   });
 
   it("hashes opaque tokens with HMAC-SHA-256 and returns exactly one digest", () => {

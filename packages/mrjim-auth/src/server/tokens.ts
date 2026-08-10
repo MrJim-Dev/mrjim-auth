@@ -14,7 +14,7 @@ import type {
   KeyProvider,
   SessionRecord,
 } from "../shared/contracts.js";
-import type { User } from "../shared/types.js";
+import { uuidSchema, type User } from "../shared/types.js";
 import {
   ES256_ALGORITHM,
   buildPublicJwks,
@@ -68,6 +68,21 @@ function validString(value: string, label: string): string {
     throw new AuthConfigurationError(`${label} must be non-empty`);
   }
   return value;
+}
+
+function validUuid(value: unknown, label: string): string {
+  const parsed = uuidSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new AuthConfigurationError(`${label} must be a valid UUID`);
+  }
+  return parsed.data;
+}
+
+function validDate(value: unknown, label: string): number {
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+    throw new AuthConfigurationError(`${label} must be a valid Date`);
+  }
+  return value.getTime();
 }
 
 function validClaims(payload: JWTPayload): payload is AccessTokenClaims {
@@ -161,20 +176,41 @@ export class TokenService {
 
   /** Issues an ES256 JWT with a protected key id and the required claims. */
   async issueAccessToken(user: User, session: SessionRecord): Promise<string> {
+    const userId = validUuid(user.id, "access-token subject");
+    const sessionId = validUuid(session.id, "access-token session id");
+    const sessionUserId = validUuid(session.user_id, "access-token session owner");
+    if (sessionUserId !== userId) {
+      throw new AuthConfigurationError("access-token session owner does not match the user");
+    }
     if (user.deleted_at !== null || session.revoked_at !== null) {
       throw new AuthConfigurationError("cannot issue an access token for an inactive subject");
     }
-    const userId = validString(user.id, "access-token subject");
-    const sessionId = validString(session.id, "access-token session id");
     if (!Number.isInteger(session.aal) || session.aal < 1 || session.aal > 3) {
       throw new AuthConfigurationError("access-token AAL must be an integer from 1 to 3");
+    }
+
+    const createdAt = validDate(session.created_at, "access-token session creation time");
+    const refreshedAt = validDate(session.refreshed_at, "access-token session refresh time");
+    const sessionExpiresAt = validDate(session.expires_at, "access-token session expiry");
+    if (createdAt > refreshedAt || refreshedAt > sessionExpiresAt) {
+      throw new AuthConfigurationError("access-token session timestamps are inconsistent");
     }
 
     const keyId = validString(await this.keyProvider.getActiveKeyId(), "active signing key id");
     const material = await this.keyProvider.getSigningKey(keyId);
     const signingKey = await importEs256Key(material, keyId, "signing");
-    const issuedAt = Math.floor(validClock(this.clock).getTime() / 1000);
-    const expiresAt = issuedAt + this.accessTokenTtlSeconds;
+    const now = validClock(this.clock).getTime();
+    if (createdAt > now || refreshedAt > now || sessionExpiresAt <= now) {
+      throw new AuthConfigurationError("cannot issue an access token outside the session lifetime");
+    }
+    const issuedAt = Math.floor(now / 1000);
+    const expiresAt = Math.min(
+      issuedAt + this.accessTokenTtlSeconds,
+      Math.floor(sessionExpiresAt / 1000),
+    );
+    if (expiresAt <= issuedAt) {
+      throw new AuthConfigurationError("session expiry is too close to issue an access token");
+    }
 
     return new SignJWT({
       sub: userId,

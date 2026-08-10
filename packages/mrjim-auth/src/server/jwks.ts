@@ -27,6 +27,13 @@ export type PublicEs256Jwk = JWK & {
   readonly y: string;
 };
 
+type ValidEs256Jwk = JWK & {
+  readonly kty: "EC";
+  readonly crv: "P-256";
+  readonly x: string;
+  readonly y: string;
+};
+
 function materialText(material: string | Uint8Array): string {
   return typeof material === "string"
     ? material
@@ -53,7 +60,7 @@ function materialJwk(material: KeyMaterial): JWK | null {
   }
 }
 
-function assertEs256Jwk(jwk: JWK, keyId: string): void {
+function assertEs256Jwk(jwk: JWK, keyId: string): asserts jwk is ValidEs256Jwk {
   if (
     jwk.kty !== "EC" ||
     jwk.crv !== "P-256" ||
@@ -65,6 +72,28 @@ function assertEs256Jwk(jwk: JWK, keyId: string): void {
     throw new AuthConfigurationError(
       `key '${keyId}' must be an EC P-256 key for ES256`,
     );
+  }
+}
+
+function publicJwkMaterial(jwk: JWK, keyId: string): ValidEs256Jwk {
+  assertEs256Jwk(jwk, keyId);
+  return {
+    kty: "EC",
+    crv: "P-256",
+    x: jwk.x,
+    y: jwk.y,
+    alg: ES256_ALGORITHM,
+    use: "sig",
+  };
+}
+
+async function exportJwk(key: Es256Key, keyId: string): Promise<JWK> {
+  try {
+    return await exportJWK(key);
+  } catch (error) {
+    throw new AuthConfigurationError(`key '${keyId}' cannot be exported as a public JWK`, {
+      cause: error,
+    });
   }
 }
 
@@ -131,11 +160,18 @@ export async function publicEs256Jwk(
   const configuredJwk = materialJwk(material);
   let jwk: JWK;
   if (configuredJwk !== null) {
-    const key = await importEs256Key(configuredJwk, keyId, "jwks");
-    jwk = await exportJWK(key);
+    // A private JWK may be supplied as the verification source. Derive a
+    // public JWK before importing/exporting so non-extractable private keys
+    // never reach the JWKS exporter.
+    const key = await importEs256Key(
+      publicJwkMaterial(configuredJwk, keyId),
+      keyId,
+      "jwks",
+    );
+    jwk = await exportJwk(key, keyId);
   } else {
     const key = await importEs256Key(material, keyId, "jwks");
-    jwk = await exportJWK(key);
+    jwk = await exportJwk(key, keyId);
   }
 
   assertEs256Jwk(jwk, keyId);

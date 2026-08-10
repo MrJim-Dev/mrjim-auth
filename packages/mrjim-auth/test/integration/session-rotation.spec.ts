@@ -3,14 +3,14 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { migrate } from "../../src/postgres/migrate.js";
 import { createPostgresAdapter, type PostgresAdapter } from "../../src/postgres/adapter.js";
 import type { KeyProvider } from "../../src/shared/contracts.js";
 import type { Session, User } from "../../src/shared/types.js";
 import { uuidSchema } from "../../src/shared/types.js";
-import { SessionService } from "../../src/server/sessions.js";
+import { SessionService, type SessionContext } from "../../src/server/sessions.js";
 import { TokenService } from "../../src/server/tokens.js";
 
 type DisposablePostgres = {
@@ -35,6 +35,7 @@ let repository: PostgresAdapter | undefined;
 let pool: Pool | undefined;
 let tokenService: TokenService | undefined;
 let sessionService: SessionService | undefined;
+let serviceNow = NOW;
 
 async function runCommandResult(command: string, args: readonly string[]): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
@@ -171,6 +172,10 @@ function requireData<T>(result: { data: T | null; error: unknown }): T {
   return result.data;
 }
 
+afterEach(() => {
+  serviceNow = NOW;
+});
+
 async function sessionRows(sessionId: string) {
   return (await requirePool().query<{
     readonly id: string;
@@ -202,13 +207,13 @@ describe("Task 5 rotating PostgreSQL sessions", () => {
       keyProvider: makeKeyProvider(),
       tokenHashKey: TOKEN_HASH_KEY,
       accessTokenTtlSeconds: 900,
-      clock: () => NOW,
+      clock: () => serviceNow,
     });
     sessionService = new SessionService({
       repository,
       tokens: tokenService,
       refreshTokenTtlSeconds: REFRESH_TTL_SECONDS,
-      clock: () => NOW,
+      clock: () => serviceNow,
     });
   }, 120_000);
 
@@ -239,6 +244,44 @@ describe("Task 5 rotating PostgreSQL sessions", () => {
       Buffer.from(requireTokenService().hashOpaqueToken(session.refresh_token)),
     );
     expect(rows[0]?.token_hash.toString("utf8")).not.toContain(session.refresh_token);
+  });
+
+  it("bounds and redacts hostile context before durable session and audit writes", async () => {
+    const user = await createUser("session-context-redaction@example.com");
+    const rawBearer = "Bearer eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature";
+    const hostileUserAgent = `Mozilla/5.0\n${rawBearer} ${"x".repeat(2_048)}\u0000`;
+    const session = requireData(await requireSessionService().create(user, {
+      ip_address: "not-an-ip-address",
+      user_agent: hostileUserAgent,
+    }));
+    const claims = requireData(await requireTokenService().verifyAccessToken(session.access_token));
+
+    const sessionRow = (await requirePool().query<{
+      readonly ip_address: string | null;
+      readonly user_agent: string | null;
+    }>(
+      "SELECT ip_address, user_agent FROM auth.sessions WHERE id = $1",
+      [claims.sid],
+    )).rows[0];
+    expect(sessionRow?.ip_address).toBeNull();
+    expect(sessionRow?.user_agent).toContain("Mozilla/5.0");
+    expect(sessionRow?.user_agent?.length).toBeLessThanOrEqual(512);
+    expect(sessionRow?.user_agent).not.toContain(rawBearer);
+    expect(sessionRow?.user_agent).not.toMatch(/[\u0000-\u001f\u007f]/);
+
+    const auditRows = (await requirePool().query<{
+      readonly ip_address: string | null;
+      readonly user_agent: string | null;
+      readonly metadata: Record<string, unknown>;
+    }>(
+      "SELECT ip_address, user_agent, metadata FROM auth.audit_log WHERE actor_session_id = $1",
+      [claims.sid],
+    )).rows;
+    expect(auditRows.length).toBeGreaterThan(0);
+    expect(auditRows.every((row) => row.ip_address === null)).toBe(true);
+    expect(auditRows.every((row) => (row.user_agent?.length ?? 0) <= 512)).toBe(true);
+    expect(JSON.stringify(auditRows)).not.toContain(rawBearer);
+    expect(JSON.stringify(auditRows)).not.toMatch(/[\u0000-\u001f\u007f]/);
   });
 
   it("rotates one refresh winner while preserving family and parent lineage", async () => {
@@ -296,6 +339,81 @@ describe("Task 5 rotating PostgreSQL sessions", () => {
     expect(JSON.stringify(auditRows)).not.toContain(initial.refresh_token);
   });
 
+  it("contains replay even when the replay context has an invalid IP address", async () => {
+    const user = await createUser("session-reuse-invalid-ip@example.com");
+    const initial = requireData(await requireSessionService().create(user, {}));
+    const winner = requireData(await requireSessionService().refresh(initial.refresh_token, {}));
+    const claims = requireData(await requireTokenService().verifyAccessToken(winner.access_token));
+
+    const replay = await requireSessionService().refresh(initial.refresh_token, {
+      ip_address: "not-an-ip-address",
+    });
+    expect(replay.data).toBeNull();
+    expect(replay.error).toMatchObject({ code: "refresh_token_reused", status: 401 });
+
+    const rows = await sessionRows(claims.sid);
+    expect(rows.every((row) => row.revoked_at !== null)).toBe(true);
+    const sessionState = (await requirePool().query<{ readonly revoked_at: Date | null }>(
+      "SELECT revoked_at FROM auth.sessions WHERE id = $1",
+      [claims.sid],
+    )).rows[0];
+    expect(sessionState?.revoked_at).not.toBeNull();
+  });
+
+  it("does not allow a caller-supplied time to revive an expired session", async () => {
+    const user = await createUser("session-expired-session-clock@example.com");
+    const initial = requireData(await requireSessionService().create(user, {}));
+    const claims = requireData(await requireTokenService().verifyAccessToken(initial.access_token));
+    const expiredAt = new Date(NOW.getTime() - 1_000);
+    await requirePool().query(
+      "UPDATE auth.sessions SET created_at = $1, refreshed_at = $1, expires_at = $2 WHERE id = $3",
+      [new Date(NOW.getTime() - 2_000), expiredAt, claims.sid],
+    );
+    serviceNow = new Date(NOW.getTime() + 1_000);
+
+    const result = await requireSessionService().refresh(initial.refresh_token, {
+      now: new Date(NOW.getTime() - 60 * 60 * 1_000),
+    } as unknown as SessionContext);
+    expect(result.data).toBeNull();
+    expect(result.error).toMatchObject({ code: "session_expired", status: 401 });
+  });
+
+  it("does not allow a caller-supplied time to revive an expired refresh token", async () => {
+    const user = await createUser("session-expired-token-clock@example.com");
+    const initial = requireData(await requireSessionService().create(user, {}));
+    const claims = requireData(await requireTokenService().verifyAccessToken(initial.access_token));
+    const expiredAt = new Date(NOW.getTime() - 1_000);
+    await requirePool().query(
+      "UPDATE auth.refresh_tokens SET issued_at = $1, expires_at = $2 WHERE session_id = $3",
+      [new Date(NOW.getTime() - 2_000), expiredAt, claims.sid],
+    );
+    serviceNow = new Date(NOW.getTime() + 1_000);
+
+    const result = await requireSessionService().refresh(initial.refresh_token, {
+      now: new Date(NOW.getTime() - 60 * 60 * 1_000),
+    } as unknown as SessionContext);
+    expect(result.data).toBeNull();
+    expect(result.error).toMatchObject({ code: "session_expired", status: 401 });
+  });
+
+  it("maps invalid refresh lineage to a stable public invalid-token result", async () => {
+    const user = await createUser("session-invalid-lineage@example.com");
+    const initial = requireData(await requireSessionService().create(user, {}));
+    const replacement = requireData(await requireSessionService().refresh(initial.refresh_token, {}));
+    const claims = requireData(await requireTokenService().verifyAccessToken(replacement.access_token));
+    const rows = await sessionRows(claims.sid);
+    const parent = rows.find((row) => row.parent_id === null);
+    if (parent === undefined) throw new Error("rotation parent missing");
+    await requirePool().query(
+      "UPDATE auth.refresh_tokens SET replacement_id = NULL WHERE id = $1",
+      [parent.id],
+    );
+
+    const result = await requireSessionService().refresh(replacement.refresh_token, {});
+    expect(result.data).toBeNull();
+    expect(result.error).toMatchObject({ code: "invalid_token", status: 401 });
+  });
+
   it("implements local, others, and global logout scopes exactly", async () => {
     const localUser = await createUser("logout-local@example.com");
     const local = requireData(await requireSessionService().create(localUser, {}));
@@ -305,6 +423,14 @@ describe("Task 5 rotating PostgreSQL sessions", () => {
       "SELECT revoked_at FROM auth.sessions WHERE id = $1",
       [localClaims.sid],
     )).rows[0]?.revoked_at).not.toBeNull();
+    const revokedRefreshAttempt = await requireSessionService().refresh(local.refresh_token, {});
+    expect(revokedRefreshAttempt.data).toBeNull();
+    expect(revokedRefreshAttempt.error).toMatchObject({ code: "invalid_token", status: 401 });
+    const localReuseAudits = (await requirePool().query<{ readonly action: string }>(
+      "SELECT action FROM auth.audit_log WHERE actor_session_id = $1 AND action = $2",
+      [localClaims.sid, "session.refresh_reused"],
+    )).rows;
+    expect(localReuseAudits).toHaveLength(0);
 
     const othersUser = await createUser("logout-others@example.com");
     const current = requireData(await requireSessionService().create(othersUser, {}));
