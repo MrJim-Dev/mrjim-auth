@@ -59,7 +59,7 @@ hosted service is required.
 | --- | --- | --- |
 | 1. Workspace and exports | Complete | Review Fix Pass 2 checks passed on 2026-08-11 |
 | 2. Shared contracts | Complete — Review Fix Pass 3 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
-| 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 2 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite, build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
+| 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Pending | Not run |
 | 5. JWT and sessions | Pending | Not run |
 | 6. Users and recovery | Pending | Not run |
@@ -108,7 +108,7 @@ Task 3 RED evidence: before the migration modules and runner existed,
 failed during collection with `Cannot find module
 ../../src/cli/commands/doctor.js`.
 
-Task 3 Review Fix Pass 1 and Pass 2 GREEN evidence and remaining commands are
+Task 3 Review Fix Pass 1, Pass 2, and Pass 3 GREEN evidence and remaining commands are
 appended to `.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-3-report.md`.
 Coverage includes
 clean naming with the canonical forbidden list, exact typed column/default
@@ -121,7 +121,8 @@ catalog tamper detection, and a real packed-consumer CLI run. Pass 2 adds the
 strict flat audit allowlist and reviewer examples, complete function contract
 hashes, all relevant auth catalog relation/type kinds with `hayahai` and
 `ayahay` coverage, and per-migration `introducedIn` provenance that remains
-valid across package upgrades.
+valid across package upgrades. Pass 3 adds real partitioned-index coverage for
+PostgreSQL `pg_class.relkind = 'I'`; the final full suite is 52/52.
 
 Remaining work is Tasks 4-14. PostgreSQL repository behavior, password hashing,
 session rotation, OAuth, authorization evaluation, HTTP/client surfaces,

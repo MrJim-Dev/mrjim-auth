@@ -922,6 +922,33 @@ describe("Task 3 PostgreSQL migrations", () => {
     }
   });
 
+  it("rejects forbidden names on PostgreSQL partitioned indexes", async () => {
+    await pool.query(
+      `CREATE TABLE auth.safe_partitioned_data (
+         id integer NOT NULL,
+         bucket integer NOT NULL
+       ) PARTITION BY RANGE (bucket)`,
+    );
+    try {
+      await pool.query(
+        `CREATE TABLE auth.safe_partitioned_data_p1
+           PARTITION OF auth.safe_partitioned_data
+           FOR VALUES FROM (0) TO (100)`,
+      );
+      await pool.query(
+        "CREATE INDEX mrjim_partitioned_idx ON auth.safe_partitioned_data (bucket)",
+      );
+
+      const verification = await verifySchema(pool);
+      expect(verification.ok).toBe(false);
+      expect(verification.errors).toContain(
+        "forbidden auth partitioned_index name exists: mrjim_partitioned_idx",
+      );
+    } finally {
+      await pool.query("DROP TABLE auth.safe_partitioned_data CASCADE");
+    }
+  });
+
   it("fails closed on checksum mismatch and releases the advisory lock", async () => {
     const version = MIGRATIONS[0]?.version;
     const expectedChecksum = MIGRATIONS[0]?.checksum;

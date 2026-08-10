@@ -261,6 +261,7 @@ export async function readSchemaCatalog(executor: QueryExecutor): Promise<{
               WHEN 'r' THEN 'table'
               WHEN 'p' THEN 'partitioned_table'
               WHEN 'i' THEN 'index'
+              WHEN 'I' THEN 'partitioned_index'
               WHEN 'S' THEN 'sequence'
               WHEN 'v' THEN 'view'
               WHEN 'm' THEN 'materialized_view'
@@ -271,7 +272,7 @@ export async function readSchemaCatalog(executor: QueryExecutor): Promise<{
             class_row.relname AS object_name
        FROM pg_class AS class_row
        JOIN pg_namespace AS namespace_row ON namespace_row.oid = class_row.relnamespace
-      WHERE namespace_row.nspname = 'auth' AND class_row.relkind IN ('r', 'p', 'i', 'S', 'v', 'm', 'c', 'f')
+      WHERE namespace_row.nspname = 'auth' AND class_row.relkind IN ('r', 'p', 'i', 'I', 'S', 'v', 'm', 'c', 'f')
      UNION ALL
      SELECT 'column' AS object_type, attribute_row.attname AS object_name
        FROM pg_attribute AS attribute_row
