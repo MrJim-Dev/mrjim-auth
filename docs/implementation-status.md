@@ -49,6 +49,16 @@ boundaries, and caller-owned versus internally owned pool lifecycle. It never
 runs migrations on construction and is exported only from the Node PostgreSQL
 subpath.
 
+Task 5 implements the Node-only ES256 token/session boundary. `TokenService`
+issues and verifies issuer/audience/session-bound access JWTs with protected
+`kid` selection, rotation-aware public JWKS, and HMAC-SHA-256 opaque-token
+digests. `SessionService` creates 256-bit opaque refresh sessions, rotates
+refresh families through real PostgreSQL transactions with one concurrent
+winner, commits replay containment independently of the discovery transaction,
+and implements exact local/global/others logout scopes with redacted audit
+events. Browser exports remain unchanged and do not import the server
+boundary. No Task 6+ behavior has been added.
+
 ## Required dependency policy
 
 - Required runtime, build, test, documentation, and release dependencies must be free/open-source.
@@ -70,6 +80,10 @@ dependency. PostgreSQL remains project-owned through the existing `pg` pool
 or a caller-selected local/project connection string; no hosted database,
 Docker service, or paid application is required.
 
+Task 5 adds the free/open-source, exact-pinned `jose@6.2.8` runtime
+dependency (MIT; project `panva/jose`). It is used only by the Node server
+token/JWKS boundary; no paid or hosted service is required.
+
 ## Task progress
 
 | Task | Status | Verification |
@@ -78,7 +92,7 @@ Docker service, or paid application is required.
 | 2. Shared contracts | Complete — Review Fix Pass 3 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
-| 5. JWT and sessions | Pending | Not run |
+| 5. JWT and sessions | Complete | RED/GREEN focused tests, frozen install, build, full suite (78 tests), typecheck, lint, docs, diff, dependency provenance, and scoped security review passed on 2026-08-11 |
 | 6. Users and recovery | Pending | Not run |
 | 7. OAuth and identities | Pending | Not run |
 | 8. Dynamic authorization | Pending | Not run |
@@ -91,14 +105,17 @@ Docker service, or paid application is required.
 
 ## Blockers
 
-There is no external blocker for Task 4. Task 4 deliberately does not start
-JWT issuance, refresh replay response policy, OAuth provider exchanges,
-authorization enforcement, HTTP routes, clients, adapters, administration, or
-the broader Task 13 documentation surface.
+There is no external blocker for Task 5. Task 5 deliberately does not start
+users/passwords/recovery, OAuth provider exchanges, authorization enforcement,
+HTTP routes, browser refresh orchestration, framework adapters,
+administration, or the broader Task 13 documentation surface. The security
+review ran parent-agent-only because delegated workers were unavailable; all
+nine scoped Task 5 files still received full-file review receipts and no
+reportable finding.
 
 ## Remaining work
 
-Execute Tasks 5-14 with independent review after each task, then complete the
+Execute Tasks 6-14 with independent review after each task, then complete the
 whole-branch review and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement
 auth/session/OAuth/RBAC behavior, HTTP and browser/SSR surfaces,
@@ -133,10 +150,57 @@ Final evidence before commit:
 - `pnpm lint` — passed; strict TypeScript check completed.
 - `git diff --check` — passed.
 
-Remaining work is Task 5 onward. Task 4 does not implement JWT issuance,
-refresh-token replay response policy, password hashing/verification, OAuth
-provider exchange, HTTP routes, authorization enforcement decisions, browser
-clients, administration APIs, or release artifacts.
+Remaining work is Tasks 6-14. Task 5 does not implement password hashing or
+verification, email/OTP/recovery, OAuth/provider exchange, authorization
+enforcement decisions, HTTP routes, browser clients, framework adapters,
+administration APIs, examples, or release artifacts.
+
+## Task 5 scope and verification
+
+Task 5 changes are:
+
+Detailed handoff evidence is recorded in
+`.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-5-report.md`.
+
+- `packages/mrjim-auth/src/server/tokens.ts` — ES256 access-token issuance and
+  fail-closed verification plus HMAC-SHA-256 opaque-token hashing;
+- `packages/mrjim-auth/src/server/jwks.ts` — strict P-256/ES256 key import and
+  public JWKS conversion;
+- `packages/mrjim-auth/src/server/sessions.ts` — session creation, rotating
+  refresh families, replay containment, exact logout scopes, and redacted
+  audit events;
+- `packages/mrjim-auth/src/postgres/repositories/sessions.ts` — preserves
+  used/revoked refresh rows for replay classification while retaining the
+  existing deterministic PostgreSQL lock order and lineage checks;
+- `packages/mrjim-auth/src/server/index.ts`, package dependency/lock metadata,
+  and export-boundary tests;
+- `packages/mrjim-auth/test/unit/tokens.spec.ts` and
+  `packages/mrjim-auth/test/integration/session-rotation.spec.ts` — focused
+  unit and disposable real-PostgreSQL concurrency coverage.
+
+No migration was necessary. Migrations `0001`-`0004`, migration provenance,
+verifier, and packing assets were not rewritten or added to. The integration
+fixture explicitly starts a disposable local PostgreSQL cluster, applies the
+existing migrations, and removes only that temporary cluster.
+
+Strict TDD evidence:
+
+- RED: `pnpm vitest run packages/mrjim-auth/test/unit/tokens.spec.ts packages/mrjim-auth/test/integration/session-rotation.spec.ts` failed during collection because the new `tokens.js` and `sessions.js` modules were missing (2 suites, 0 tests).
+- GREEN: the same exact command passed with 2 files and 8 tests.
+
+Final verification evidence:
+
+- `pnpm install --frozen-lockfile` — passed; lockfile up to date.
+- `pnpm build` — passed; browser and Node targets compiled and migration assets copied.
+- `pnpm test` — passed; 7 files and 78 tests.
+- `pnpm typecheck` — passed.
+- `pnpm lint` — passed.
+- `pnpm docs:check` — passed (2 required documents).
+- `git diff --check` — passed.
+- `pnpm view jose@6.2.8 license repository.url --json` — MIT, `panva/jose`.
+- Scoped Codex Security diff review — 9/9 Task 5 files reviewed, complete
+  coverage, 0 reportable findings; delegated-worker unavailability is the
+  only recorded scan warning.
 
 ## Task 3 scope and verification
 
@@ -177,11 +241,12 @@ hashes, all relevant auth catalog relation/type kinds with `hayahai` and
 valid across package upgrades. Pass 3 adds real partitioned-index coverage for
 PostgreSQL `pg_class.relkind = 'I'`; the final full suite is 52/52.
 
-Remaining work is Tasks 4-14. PostgreSQL repository behavior, password hashing,
-session rotation, OAuth, authorization evaluation, HTTP/client surfaces,
-administration, generated references, and release-gate coverage are not part of
-Task 3. No external blocker was encountered; local PostgreSQL 16.14 and the
-free/open-source `pg` dependency were sufficient.
+At the Task 3 handoff, remaining work was Tasks 4-14. The current worktree has
+since completed Tasks 4 and 5; password hashing, OAuth, authorization
+evaluation, HTTP/client surfaces, administration, generated references, and
+release-gate coverage remain later tasks. No external blocker was encountered;
+local PostgreSQL 16.14 and the free/open-source `pg` dependency were
+sufficient.
 
 ## Task 2 scope
 

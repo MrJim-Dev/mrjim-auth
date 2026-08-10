@@ -229,7 +229,6 @@ async function createSessionInTransaction(
 async function findRefreshForUpdateInTransaction(
   context: RepositoryContext,
   tokenHash: Uint8Array,
-  now: Date,
 ): Promise<{ session: ReturnType<typeof mapSession>; refreshToken: ReturnType<typeof mapRefreshToken> } | null> {
   const hash = assertDigest(tokenHash, "refresh token hash");
   const discovered = await authDb(context)
@@ -244,9 +243,7 @@ async function findRefreshForUpdateInTransaction(
   const session = await lockSession(context, owner.id);
   if (
     session === undefined ||
-    session.user_id !== owner.user_id ||
-    session.revoked_at !== null ||
-    session.expires_at <= now
+    session.user_id !== owner.user_id
   ) return null;
 
   const tokens = await lockRefreshRows(context, session.id);
@@ -344,9 +341,9 @@ export function createSessionRepository(context: RepositoryContext): SessionRepo
       );
     },
 
-    async findRefreshForUpdate(tokenHash, options) {
+    async findRefreshForUpdate(tokenHash) {
       requireTransaction(context.inTransaction);
-      return findRefreshForUpdateInTransaction(context, tokenHash, operationNow(options));
+      return findRefreshForUpdateInTransaction(context, tokenHash);
     },
 
     async rotate(tokenId, replacement, options) {

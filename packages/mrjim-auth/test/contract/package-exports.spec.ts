@@ -192,13 +192,24 @@ describe("package export boundaries", () => {
     }
   });
 
+  it("exposes only the Node-only Task 5 token and session services", async () => {
+    const server = await import("mrjim-auth/server");
+    expect(Object.keys(server).sort()).toEqual([
+      "ES256_ALGORITHM",
+      "SessionService",
+      "TokenService",
+    ]);
+  });
+
   it("keeps the canonical forbidden-name list in reviewable documentation", async () => {
     const guide = await readFile(resolve(packageRoot, "../../docs/guides/postgres-migrations.md"), "utf8");
     expect(guide).toContain(FORBIDDEN_AUTH_NAMES.join(", "));
   });
 
   it("does not expose unfinished behavior from later-task subpaths", async () => {
-    for (const exportKey of requiredExportKeys.slice(1).filter((key) => key !== "./postgres")) {
+    for (const exportKey of requiredExportKeys
+      .slice(1)
+      .filter((key) => key !== "./postgres" && key !== "./server")) {
       expect(Object.keys(await import(packageSpecifier(exportKey)))).toEqual([]);
     }
   });

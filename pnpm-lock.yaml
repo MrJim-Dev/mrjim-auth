@@ -23,6 +23,9 @@ importers:
 
   packages/mrjim-auth:
     dependencies:
+      jose:
+        specifier: 6.2.8
+        version: 6.2.8
       kysely:
         specifier: 0.29.5
         version: 0.29.5
@@ -384,6 +387,9 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
+
+  jose@6.2.8:
+    resolution: {integrity: sha512-Bsdjwm3Qsd/P0jR+BHDe3LytDfY7WBq2HmCCLIwuVRHMuEC9ae7/R474GIUdF1NgCyZjzVo/A9DOiOBtXq8ZoQ==}
 
   kysely@0.29.5:
     resolution: {integrity: sha512-ooa+eSbBNPTo3MycPEuW5jdrxQdQwdtB3LC3h43FiXQbIry5tR0C5lDG7eealK0E4D7XjrnOP5DIUg/LyjRMYQ==}
@@ -921,6 +927,8 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  jose@6.2.8: {}
 
   kysely@0.29.5: {}
 
