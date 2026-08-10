@@ -14,7 +14,7 @@ import {
   safeIdentityDataSchema,
 } from "../../shared/types.js";
 import { sql, type InsertObject, type Selectable, type UpdateObject } from "kysely";
-import { PostgresRepositoryError, mapDuplicateNormalizedEmail } from "./errors.js";
+import { PostgresRepositoryError, mapDuplicateNormalizedEmail, requireTransaction } from "./errors.js";
 import type { OneTimeTokenInput } from "../../shared/contracts.js";
 import {
   assertDigest,
@@ -84,6 +84,18 @@ function createUsersRepository(context: RepositoryContext): UserRepository {
         .select(USER_COLUMNS)
         .where("id", "=", id)
         .where("deleted_at", "is", null)
+        .executeTakeFirst();
+      return row === undefined ? null : mapUserRow(row);
+    },
+
+    async findByIdForUpdate(id) {
+      requireTransaction(context.inTransaction);
+      const row = await authDb(context)
+        .selectFrom("users")
+        .select(USER_COLUMNS)
+        .where("id", "=", id)
+        .where("deleted_at", "is", null)
+        .forUpdate()
         .executeTakeFirst();
       return row === undefined ? null : mapUserRow(row);
     },
@@ -340,40 +352,31 @@ function createOneTimeTokenRepository(context: RepositoryContext): OneTimeTokenR
       return consumeOneTimeToken(context, tokenHash, purpose, now, { target, redirect });
     },
 
-    async recordFailure(purpose, target, redirect, now) {
+    async recordFailure(tokenHash, purpose, target, redirect, now) {
       return withTransaction(context, async (transaction) => {
+        // Failure attribution is selected by the presented digest. The
+        // redirect remains an exact binding for successful consumption; it
+        // must never be used to select a different active token on failure.
+        void redirect;
+        const hash = assertDigest(tokenHash, "one-time token hash");
         const result = await sql<{ attempt_count: number; consumed_at: Date | null }>`
-          WITH candidate AS (
-            SELECT token.id
-              FROM auth.one_time_tokens AS token
-             WHERE token.purpose = ${purpose}
-               AND token.target = ${target}
-               AND (
-                 (CAST(${redirect} AS text) IS NULL AND token.redirect IS NULL)
-                 OR token.redirect = ${redirect}
+          UPDATE auth.one_time_tokens AS token
+             SET attempt_count = token.attempt_count + 1,
+                 consumed_at = CASE WHEN token.attempt_count + 1 >= 5 THEN CAST(${now} AS timestamptz) ELSE NULL END
+           WHERE token.token_hash = ${hash}
+             AND token.purpose = ${purpose}
+             AND token.target = ${target}
+             AND token.consumed_at IS NULL
+             AND token.expires_at > ${now}
+             AND token.attempt_count < 5
+             AND (
+               token.user_id IS NULL
+               OR EXISTS (
+                 SELECT 1 FROM auth.users AS owner
+                  WHERE owner.id = token.user_id AND owner.deleted_at IS NULL
                )
-               AND token.consumed_at IS NULL
-               AND token.expires_at > ${now}
-               AND token.attempt_count < 5
-               AND (
-                 token.user_id IS NULL
-                 OR EXISTS (
-                   SELECT 1 FROM auth.users AS owner
-                    WHERE owner.id = token.user_id AND owner.deleted_at IS NULL
-                 )
-               )
-             ORDER BY token.created_at DESC, token.id DESC
-             LIMIT 1
-             FOR UPDATE
-          ), updated AS (
-            UPDATE auth.one_time_tokens AS token
-               SET attempt_count = token.attempt_count + 1,
-                   consumed_at = CASE WHEN token.attempt_count + 1 >= 5 THEN CAST(${now} AS timestamptz) ELSE NULL END
-              FROM candidate
-             WHERE token.id = candidate.id
-             RETURNING token.attempt_count, token.consumed_at
-          )
-          SELECT attempt_count, consumed_at FROM updated
+             )
+           RETURNING token.attempt_count, token.consumed_at
         `.execute(transaction.db);
         const row = result.rows[0];
         return row === undefined ? null : { attempt_count: row.attempt_count, consumed: row.consumed_at !== null };

@@ -5,6 +5,7 @@ export {
 } from "./tokens.js";
 export {
   SessionService,
+  type AuthenticatedSession,
   type SessionContext,
   type SessionServiceOptions,
   type SignOutScope,
@@ -37,6 +38,7 @@ export {
 } from "./one-time-tokens.js";
 export {
   UserService,
+  type AuthenticatedSubject,
   type ChangePasswordOptions,
   type OtpInput,
   type PublicAuthData,

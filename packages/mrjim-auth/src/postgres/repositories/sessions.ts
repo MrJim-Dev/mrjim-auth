@@ -14,6 +14,7 @@ import {
   type RefreshTokensTable,
   type RepositoryContext,
   type SessionsTable,
+  type UsersTable,
 } from "./schema.js";
 import { mapRefreshToken, mapSession } from "./mapping.js";
 
@@ -68,13 +69,17 @@ async function lockUser(
   context: RepositoryContext,
   userId: UUID,
   activeOnly: boolean,
-): Promise<boolean> {
+): Promise<Pick<Selectable<UsersTable>, "id" | "banned_until"> | undefined> {
   let query = authDb(context)
     .selectFrom("users")
-    .select(["id"])
+    .select(["id", "banned_until"])
     .where("id", "=", userId);
   if (activeOnly) query = query.where("deleted_at", "is", null);
-  return (await query.forUpdate().executeTakeFirst()) !== undefined;
+  return query.forUpdate().executeTakeFirst();
+}
+
+function userIsBanned(row: Pick<Selectable<UsersTable>, "banned_until">, now: Date): boolean {
+  return row.banned_until !== null && row.banned_until.getTime() > now.getTime();
 }
 
 async function lockSession(
@@ -187,7 +192,8 @@ async function createSessionInTransaction(
   input: CreateSessionInput,
   now: Date,
 ): Promise<{ session: ReturnType<typeof mapSession>; refreshToken: ReturnType<typeof mapRefreshToken> }> {
-  if (!(await lockUser(context, input.user_id, true))) {
+  const owner = await lockUser(context, input.user_id, true);
+  if (owner === undefined || userIsBanned(owner, now)) {
     throw new PostgresRepositoryError("not_found", `user ${input.user_id} was not found`);
   }
 
@@ -229,6 +235,7 @@ async function createSessionInTransaction(
 async function findRefreshForUpdateInTransaction(
   context: RepositoryContext,
   tokenHash: Uint8Array,
+  now: Date,
 ): Promise<{ session: ReturnType<typeof mapSession>; refreshToken: ReturnType<typeof mapRefreshToken> } | null> {
   const hash = assertDigest(tokenHash, "refresh token hash");
   const discovered = await authDb(context)
@@ -238,7 +245,9 @@ async function findRefreshForUpdateInTransaction(
     .executeTakeFirst();
   if (discovered === undefined) return null;
   const owner = await discoverSessionOwner(context, discovered.session_id);
-  if (owner === undefined || !(await lockUser(context, owner.user_id, true))) return null;
+  if (owner === undefined) return null;
+  const lockedOwner = await lockUser(context, owner.user_id, true);
+  if (lockedOwner === undefined || userIsBanned(lockedOwner, now)) return null;
 
   const session = await lockSession(context, owner.id);
   if (
@@ -263,7 +272,9 @@ async function rotateInTransaction(
   const discovered = await discoverRefresh(context, tokenId);
   if (discovered === undefined) throw tokenNotRotatable(tokenId);
   const owner = await discoverSessionOwner(context, discovered.session_id);
-  if (owner === undefined || !(await lockUser(context, owner.user_id, true))) {
+  if (owner === undefined) throw tokenNotRotatable(tokenId);
+  const lockedOwner = await lockUser(context, owner.user_id, true);
+  if (lockedOwner === undefined || userIsBanned(lockedOwner, now)) {
     throw tokenNotRotatable(tokenId);
   }
 
@@ -341,9 +352,19 @@ export function createSessionRepository(context: RepositoryContext): SessionRepo
       );
     },
 
-    async findRefreshForUpdate(tokenHash) {
+    async findByIdForUpdate(id, options) {
       requireTransaction(context.inTransaction);
-      return findRefreshForUpdateInTransaction(context, tokenHash);
+      const discovered = await discoverSessionOwner(context, id);
+      if (discovered === undefined) return null;
+      const owner = await lockUser(context, discovered.user_id, true);
+      if (owner === undefined || userIsBanned(owner, operationNow(options))) return null;
+      const row = await lockSession(context, id);
+      return row === undefined || row.user_id !== discovered.user_id ? null : mapSession(row);
+    },
+
+    async findRefreshForUpdate(tokenHash, options) {
+      requireTransaction(context.inTransaction);
+      return findRefreshForUpdateInTransaction(context, tokenHash, operationNow(options));
     },
 
     async rotate(tokenId, replacement, options) {

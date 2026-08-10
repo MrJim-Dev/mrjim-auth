@@ -67,6 +67,7 @@ const completeRepository = {
   transaction: async (..._arguments: unknown[]): Promise<null> => null,
   users: {
     findById: asyncMethod,
+    findByIdForUpdate: asyncMethod,
     findByNormalizedEmail: asyncMethod,
     create: asyncMethod,
     update: asyncMethod,
@@ -85,6 +86,7 @@ const completeRepository = {
   },
   sessions: {
     create: asyncMethod,
+    findByIdForUpdate: asyncMethod,
     findRefreshForUpdate: asyncMethod,
     rotate: asyncMethod,
     revokeSession: asyncMethod,

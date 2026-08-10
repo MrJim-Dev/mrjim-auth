@@ -132,6 +132,8 @@ export interface UpdateUserInput {
 export interface UserRepository {
   /** Finds a non-deleted user by UUID. */
   findById(id: UUID, options?: RepositoryOperationOptions): Promise<User | null>;
+  /** Locks and re-reads a non-deleted user for security-sensitive mutations. */
+  findByIdForUpdate(id: UUID, options?: RepositoryOperationOptions): Promise<User | null>;
   /** Finds a non-deleted user by normalized email. */
   findByNormalizedEmail(
     email: string,
@@ -245,6 +247,11 @@ export interface SessionRepository {
     input: CreateSessionInput,
     options?: RepositoryOperationOptions,
   ): Promise<{ session: SessionRecord; refreshToken: RefreshTokenRecord }>;
+  /** Locks and reads one durable session for authenticated-subject checks. */
+  findByIdForUpdate(
+    id: UUID,
+    options?: RepositoryOperationOptions,
+  ): Promise<SessionRecord | null>;
   /**
    * Locks and reads a refresh-token row for rotation/replay handling. The
    * PostgreSQL adapter locks user, session, then refresh-token rows in sorted
@@ -308,11 +315,13 @@ export interface OneTimeTokenRepository {
     options?: RepositoryOperationOptions,
   ): Promise<Omit<OneTimeTokenInput, "token_hash"> | null>;
   /**
-   * Atomically increments the newest active purpose/target/redirect-bound OTP
-   * and consumes it on the fifth failure. The operation returns only
-   * non-secret token state.
+   * Atomically increments the presented digest's active OTP row and consumes
+   * it on the fifth failure. Successful consumption separately enforces the
+   * exact purpose/target/redirect binding; this operation never selects a
+   * different active token. The operation returns only non-secret token state.
    */
   recordFailure(
+    tokenHash: Uint8Array,
     purpose: OneTimeTokenInput["purpose"],
     target: string,
     redirect: string | null,

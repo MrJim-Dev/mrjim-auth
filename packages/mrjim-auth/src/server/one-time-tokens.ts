@@ -232,20 +232,21 @@ export class OneTimeTokenService {
     const purpose = validPurpose(input.purpose);
     const target = this.bindingTarget(input.target);
     const redirect = this.resolveRedirect(input.redirectTo ?? input.redirect);
+    const tokenHash = this.hash(typeof input.token === "string" ? input.token : "");
     if (typeof input.token !== "string" || input.token.length < 1 || input.token.length > 128) {
-      return this.failedVerification(purpose, target, redirect, nowFrom(this.clock));
+      return this.failedVerification(purpose, target, redirect, tokenHash, nowFrom(this.clock));
     }
     const now = validNow(this.clock);
     try {
       const consumed = await this.repository.oneTimeTokens.consumeBound(
-        this.hash(input.token),
+        tokenHash,
         purpose,
         target,
         redirect,
         now,
         { now },
       );
-      if (consumed === null) return this.failedVerification(purpose, target, redirect, now);
+      if (consumed === null) return this.failedVerification(purpose, target, redirect, tokenHash, now);
       return authSuccess({
         user_id: consumed.user_id ?? null,
         purpose,
@@ -269,7 +270,8 @@ export class OneTimeTokenService {
     return { target, redirect };
   }
 
-  private resolveRedirect(redirect: string | null | undefined): string {
+  /** Validates an exact redirect before any account lookup or token work. */
+  resolveRedirect(redirect: string | null | undefined): string {
     const candidate = redirect ?? this.defaultRedirect;
     if (!this.allowedRedirects.includes(candidate)) {
       throw new AuthApiError("redirect_not_allowed", 400, "Redirect URL is not allowed");
@@ -290,11 +292,12 @@ export class OneTimeTokenService {
     purpose: OneTimeTokenPurpose,
     target: string,
     redirect: string,
+    tokenHash: Uint8Array,
     now: Date,
   ): Promise<AuthResult<never>> {
     try {
       if (purpose === "email_otp") {
-        await this.repository.oneTimeTokens.recordFailure(purpose, target, redirect, now, { now });
+        await this.repository.oneTimeTokens.recordFailure(tokenHash, purpose, target, redirect, now, { now });
       }
     } catch (error) {
       return mapOperationalError(error);

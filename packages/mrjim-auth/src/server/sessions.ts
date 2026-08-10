@@ -41,6 +41,14 @@ export interface SessionServiceOptions {
   readonly clock?: () => Date;
 }
 
+/** A session whose bearer claims and durable user/session rows were rechecked. */
+export interface AuthenticatedSession {
+  readonly session: Session;
+  readonly session_id: UUID;
+  readonly user_id: UUID;
+  readonly user: User;
+}
+
 type RefreshOutcome =
   | { readonly kind: "missing" }
   | { readonly kind: "expired" }
@@ -80,7 +88,7 @@ function isOpaqueRefreshToken(value: string): boolean {
   return OPAQUE_REFRESH_TOKEN_PATTERN.test(value);
 }
 
-function normalizeIpAddress(value: unknown): string | null {
+export function normalizeIpAddress(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   if (normalized === "" || normalized.length > 45 || isIP(normalized) === 0) return null;
@@ -130,6 +138,14 @@ function repositoryCode(error: unknown): string | undefined {
 
 function invalidRefreshToken(): AuthApiError {
   return new AuthApiError("invalid_token", 401, "Invalid refresh token");
+}
+
+function unauthorizedSession(): AuthApiError {
+  return new AuthApiError("unauthorized", 401, "Authenticated session is required");
+}
+
+function userIsBanned(user: User, now: Date): boolean {
+  return user.banned_until !== null && new Date(user.banned_until).getTime() > now.getTime();
 }
 
 function sessionExpired(): AuthApiError {
@@ -229,7 +245,7 @@ export class SessionService {
   }
 
   /** Creates a session and its first refresh-family member atomically. */
-  async create(user: User, context: SessionContext = {}): Promise<AuthResult<Session>> {
+  async create(user: User, context: SessionContext = {}, transaction?: AuthRepository): Promise<AuthResult<Session>> {
     const normalizedContext = normalizeSessionContext(context);
     const now = nowFrom(this.clock);
     const rawRefreshToken = newOpaqueRefreshToken();
@@ -237,8 +253,8 @@ export class SessionService {
     const familyId = uuidSchema.parse(randomUUID());
 
     try {
-      const session = await this.repository.transaction(async (transaction) => {
-        const created = await transaction.sessions.create(
+      const createInTransaction = async (currentRepository: AuthRepository): Promise<Session> => {
+        const created = await currentRepository.sessions.create(
           {
             user_id: user.id,
             aal: normalizedContext.aal,
@@ -252,7 +268,7 @@ export class SessionService {
         );
         const accessToken = await this.tokens.issueAccessToken(user, created.session);
         const publicValue = publicSession(user, accessToken, rawRefreshToken);
-        await transaction.operations.appendAudit(
+        await currentRepository.operations.appendAudit(
           {
             actor_user_id: user.id,
             actor_session_id: created.session.id,
@@ -268,7 +284,10 @@ export class SessionService {
           { now },
         );
         return publicValue;
-      });
+      };
+      const session = transaction === undefined
+        ? await this.repository.transaction(createInTransaction)
+        : await createInTransaction(transaction);
       return authSuccess(session);
     } catch (error) {
       const mapped = mapCreateError(error);
@@ -316,7 +335,7 @@ export class SessionService {
         if (found.session.revoked_at !== null) return { kind: "inactive" };
 
         const user = await transaction.users.findById(found.session.user_id, { now });
-        if (user === null) return { kind: "missing" };
+        if (user === null || userIsBanned(user, now)) return { kind: "missing" };
 
         const replacementRaw = newOpaqueRefreshToken();
         const replacementExpiresAt = new Date(
@@ -383,6 +402,36 @@ export class SessionService {
           return mapUnexpectedOperationalError(error);
         }
         return authFailure(refreshTokenReused());
+    }
+  }
+
+  /** Verifies a trusted session against the current durable user/session state. */
+  async authorizeSession(session: Session): Promise<AuthResult<AuthenticatedSession>> {
+    if (session === null || typeof session !== "object") return authFailure(unauthorizedSession());
+    try {
+      const verified = await this.tokens.verifyAccessToken(session.access_token);
+      if (verified.data === null) return authFailure(unauthorizedSession());
+      const userId = uuidSchema.safeParse(verified.data.sub);
+      const sessionId = uuidSchema.safeParse(verified.data.sid);
+      if (!userId.success || !sessionId.success || session.user.id !== userId.data) {
+        return authFailure(unauthorizedSession());
+      }
+      const now = nowFrom(this.clock);
+      const current = await this.repository.transaction(async (transaction) => {
+        const durableSession = await transaction.sessions.findByIdForUpdate(sessionId.data, { now });
+        if (
+          durableSession === null ||
+          durableSession.user_id !== userId.data ||
+          durableSession.revoked_at !== null ||
+          durableSession.expires_at <= now
+        ) return null;
+        const user = await transaction.users.findByIdForUpdate(userId.data, { now });
+        if (user === null || userIsBanned(user, now)) return null;
+        return { session, session_id: sessionId.data, user_id: userId.data, user };
+      });
+      return current === null ? authFailure(unauthorizedSession()) : authSuccess(current);
+    } catch (error) {
+      return mapUnexpectedOperationalError(error);
     }
   }
 

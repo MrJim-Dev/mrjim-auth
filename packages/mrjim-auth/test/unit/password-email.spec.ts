@@ -42,6 +42,7 @@ describe("Task 6 password and email primitives", () => {
     await expect(service.verify("wrong password", encoded)).resolves.toEqual({ valid: false, needsRehash: false });
     await expect(service.verify(PASSWORD, null)).resolves.toEqual({ valid: false, needsRehash: false });
     expect(() => new PasswordService({ memoryCost: 32 * 1024 })).toThrowError(/security floor/i);
+    expect(() => new PasswordService({ parallelism: 2 })).toThrowError(/security floor/i);
   });
 
   it("requires exact configured redirects and only derives bearer links in memory", () => {

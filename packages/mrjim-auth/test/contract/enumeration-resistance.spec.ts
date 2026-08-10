@@ -8,13 +8,14 @@ import type { AuthRepository, Mailer, RateLimiter } from "../../src/shared/contr
 import { uuidSchema, roleKeySchema } from "../../src/shared/types.js";
 
 const CALLBACK = "https://project.example.com/auth/callback";
+const REJECTED_CALLBACK = "https://attacker.example.com/callback";
 const KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 11);
 
 function limiter(): RateLimiter {
   return { consume: async () => ({ allowed: true, remaining: 99 }) };
 }
 
-function service(existingEmail?: string) {
+function service(existingEmail?: string, suppliedLimiter?: RateLimiter) {
   const existingUser = {
     id: uuidSchema.parse("00000000-0000-4000-8000-000000000601"),
     email: existingEmail ?? null,
@@ -70,7 +71,7 @@ function service(existingEmail?: string) {
     email,
     mailer,
     oneTimeTokens: tokens,
-    rateLimiter: limiter(),
+    rateLimiter: suppliedLimiter ?? limiter(),
     concealUserExistence: true,
     requireEmailConfirmation: true,
   });
@@ -95,6 +96,63 @@ describe("enumeration-resistant public lifecycle results", () => {
     const otpMissing = await missingService.signInWithOtp({ email: "missing@example.com", options: { type: "email_otp", redirectTo: CALLBACK } });
     expect(resendExisting).toEqual(resendMissing);
     expect(otpExisting).toEqual(otpMissing);
+  });
+
+  it("keeps all concealed issuance results deeply equal when the redirect is rejected", async () => {
+    const existingService = service("existing@example.com");
+    const missingService = service("existing@example.com");
+    const duplicateService = service("existing@example.com");
+
+    const existingRecovery = await existingService.resetPasswordForEmail("existing@example.com", { redirectTo: REJECTED_CALLBACK });
+    const missingRecovery = await missingService.resetPasswordForEmail("missing@example.com", { redirectTo: REJECTED_CALLBACK });
+    const existingResend = await existingService.resend({ type: "signup", email: "existing@example.com", options: { redirectTo: REJECTED_CALLBACK } });
+    const missingResend = await missingService.resend({ type: "signup", email: "missing@example.com", options: { redirectTo: REJECTED_CALLBACK } });
+    const existingOtp = await existingService.signInWithOtp({ email: "existing@example.com", options: { type: "email_otp", redirectTo: REJECTED_CALLBACK } });
+    const missingOtp = await missingService.signInWithOtp({ email: "missing@example.com", options: { type: "email_otp", redirectTo: REJECTED_CALLBACK } });
+    const duplicateSignup = await duplicateService.signUp({ email: "existing@example.com", password: "correct horse battery staple", options: { redirectTo: REJECTED_CALLBACK } });
+    const firstSignup = await missingService.signUp({ email: "new@example.com", password: "correct horse battery staple", options: { redirectTo: REJECTED_CALLBACK } });
+
+    expect(existingRecovery).toEqual(missingRecovery);
+    expect(existingResend).toEqual(missingResend);
+    expect(existingOtp).toEqual(missingOtp);
+    expect(duplicateSignup).toEqual(firstSignup);
+    expect(existingRecovery.error).toMatchObject({ code: "redirect_not_allowed", status: 400, message: "Redirect URL is not allowed" });
+  });
+
+  it("keeps allowed redirect issuance results deeply equal for existing, missing, and duplicate paths", async () => {
+    const existingService = service("existing@example.com");
+    const missingService = service("existing@example.com");
+    const duplicateService = service("existing@example.com");
+
+    const existingRecovery = await existingService.resetPasswordForEmail("existing@example.com", { redirectTo: CALLBACK });
+    const missingRecovery = await missingService.resetPasswordForEmail("missing@example.com", { redirectTo: CALLBACK });
+    const existingResend = await existingService.resend({ type: "signup", email: "existing@example.com", options: { redirectTo: CALLBACK } });
+    const missingResend = await missingService.resend({ type: "signup", email: "missing@example.com", options: { redirectTo: CALLBACK } });
+    const existingOtp = await existingService.signInWithOtp({ email: "existing@example.com", options: { type: "magic_link", redirectTo: CALLBACK } });
+    const missingOtp = await missingService.signInWithOtp({ email: "missing@example.com", options: { type: "magic_link", redirectTo: CALLBACK } });
+    const duplicateSignup = await duplicateService.signUp({ email: "existing@example.com", password: "correct horse battery staple", options: { redirectTo: CALLBACK } });
+    const firstSignup = await missingService.signUp({ email: "new@example.com", password: "correct horse battery staple", options: { redirectTo: CALLBACK } });
+
+    expect(existingRecovery).toEqual(missingRecovery);
+    expect(existingResend).toEqual(missingResend);
+    expect(existingOtp).toEqual(missingOtp);
+    expect(duplicateSignup).toEqual(firstSignup);
+  });
+
+  it("uses the shared canonical IP representation for rate-limit keys", async () => {
+    const keys: string[] = [];
+    const rateLimiter: RateLimiter = {
+      consume: async (key) => {
+        keys.push(key);
+        return { allowed: true, remaining: 99 };
+      },
+    };
+    const current = service("existing@example.com", rateLimiter);
+    await current.signIn({ email: "existing@example.com", password: "correct horse battery staple" }, { ip_address: " 2001:DB8::1 " });
+    await current.signIn({ email: "existing@example.com", password: "correct horse battery staple" }, { ip_address: "not-an-ip" });
+    const ipKeys = keys.filter((key) => key.startsWith("ip:"));
+    expect(ipKeys[0]).toBe("ip:2001:db8::1");
+    expect(ipKeys[1]).toBe("ip:unknown");
   });
 
   it("keeps duplicate and first-time signup result shape, public code, message, and timing work equivalent", async () => {

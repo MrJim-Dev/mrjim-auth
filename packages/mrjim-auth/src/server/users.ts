@@ -12,7 +12,7 @@ import { sanitizeRedactedMetadata, uuidSchema } from "../shared/types.js";
 import { EmailService, normalizeAndValidateEmail } from "./email.js";
 import { OneTimeTokenService, type OneTimeTokenPurpose } from "./one-time-tokens.js";
 import { PasswordService } from "./passwords.js";
-import { SessionService, type SessionContext } from "./sessions.js";
+import { normalizeIpAddress, SessionService, type AuthenticatedSession, type SessionContext } from "./sessions.js";
 
 export interface UserRequestContext extends SessionContext {
   readonly request_id?: string;
@@ -51,15 +51,19 @@ export interface ResendInput {
 }
 
 export interface UpdateUserInput {
-  readonly email?: string | null;
-  readonly password?: string;
-  readonly user_metadata?: Record<string, unknown>;
-  readonly app_metadata?: Record<string, unknown>;
+  readonly email?: string;
+  readonly user_metadata?: JsonObject;
   readonly redirectTo?: string;
+}
+
+/** A self-service subject supplied by a trusted server-side auth boundary. */
+export interface AuthenticatedSubject {
+  readonly session: Session;
 }
 
 export interface ChangePasswordOptions {
   readonly currentPassword?: string;
+  /** Optional explicit preservation of the calling session only. */
   readonly preserveSessionId?: UUID;
   readonly context?: UserRequestContext | undefined;
 }
@@ -97,6 +101,14 @@ function internalError(): AuthApiError {
 
 function invalidCredentials(): AuthApiError {
   return new AuthApiError("invalid_credentials", 401, "Invalid login credentials");
+}
+
+function unauthorizedSubject(): AuthApiError {
+  return new AuthApiError("unauthorized", 401, "Authenticated session is required");
+}
+
+function invalidApplicationMetadata(): AuthApiError {
+  return new AuthApiError("invalid_request", 400, "Application metadata is managed by the server");
 }
 
 function repositoryCode(error: unknown): string | undefined {
@@ -176,6 +188,7 @@ export class UserService {
     let parsed: ReturnType<typeof normalizeAndValidateEmail>;
     try {
       parsed = normalizeAndValidateEmail(input.email);
+      const redirectTo = this.oneTimeTokens.resolveRedirect(this.email.resolveRedirect(input.options?.redirectTo));
       const limited = await this.checkRateLimits("signup", parsed.normalized, contextOptions(context));
       if (limited !== null) return limited;
       const existing = await this.repository.users.findByNormalizedEmail(parsed.normalized);
@@ -210,7 +223,7 @@ export class UserService {
           userId: user.id,
           target: parsed.normalized,
           to: parsed.display,
-          redirectTo: input.options?.redirectTo,
+          redirectTo,
           context,
         });
         if (delivery.error !== null) return authFailure(delivery.error);
@@ -241,24 +254,38 @@ export class UserService {
       const credential = user === null ? null : await this.repository.passwordCredentials.findByUserId(user.id);
       const verification = await this.passwords.verify(input.password, credential?.password_hash ?? null);
       if (user === null || credential === null || !verification.valid) return authFailure(invalidCredentials());
+      const sessions = this.sessions;
+      if (sessions === undefined) throw new AuthConfigurationError("session service is required for password sign-in");
       const now = validNow(this.clock);
-      if (
-        user.deleted_at !== null ||
-        (user.banned_until !== null && new Date(user.banned_until).getTime() > now.getTime()) ||
-        (this.requireEmailConfirmation && user.email_confirmed_at === null)
-      ) {
-        return authFailure(invalidCredentials());
-      }
-
-      const updated = await this.repository.transaction(async (transaction) => {
-        if (verification.needsRehash) await transaction.passwordCredentials.upsert(user.id, await this.passwords.hash(input.password), now, { now });
-        return transaction.users.update(user.id, { last_sign_in_at: now }, { now });
+      const result = await this.repository.transaction(async (transaction) => {
+        const lockedUser = await transaction.users.findByIdForUpdate(user.id, { now });
+        const lockedCredential = lockedUser === null
+          ? null
+          : await transaction.passwordCredentials.findByUserId(user.id, { now });
+        const lockedVerification = await this.passwords.verify(input.password, lockedCredential?.password_hash ?? null);
+        if (
+          lockedUser === null ||
+          lockedCredential === null ||
+          !lockedVerification.valid ||
+          isBanned(lockedUser, now) ||
+          (this.requireEmailConfirmation && lockedUser.email_confirmed_at === null)
+        ) {
+          throw invalidCredentials();
+        }
+        if (lockedVerification.needsRehash) {
+          await transaction.passwordCredentials.upsert(user.id, await this.passwords.hash(input.password), now, { now });
+        }
+        const updated = await transaction.users.update(user.id, { last_sign_in_at: now }, { now });
+        const createdSession = await sessions.create(updated, contextOptions(context), transaction);
+        if (createdSession.error !== null) {
+          if (createdSession.error.code === "invalid_request") throw invalidCredentials();
+          throw createdSession.error;
+        }
+        return { user: updated, session: createdSession.data };
       });
-      if (this.sessions === undefined) throw new AuthConfigurationError("session service is required for password sign-in");
-      const createdSession = await this.sessions.create(updated, contextOptions(context));
-      if (createdSession.error !== null) return authFailure(createdSession.error);
+      const updated = result.user;
       await this.audit(updated.id, "user.sign_in", "success", context, now);
-      return authSuccess(publicData(updated, createdSession.data, false));
+      return authSuccess(publicData(updated, result.session, false));
     } catch (error) {
       return mapUnexpected(error);
     }
@@ -268,6 +295,7 @@ export class UserService {
   async signInWithOtp(input: OtpInput, context?: UserRequestContext): Promise<AuthResult<PublicAuthData>> {
     try {
       const parsed = normalizeAndValidateEmail(input.email);
+      const redirectTo = this.oneTimeTokens.resolveRedirect(this.email.resolveRedirect(input.options?.redirectTo));
       const limited = await this.checkRateLimits("otp", parsed.normalized, contextOptions(context));
       if (limited !== null) return limited;
       const user = await this.repository.users.findByNormalizedEmail(parsed.normalized);
@@ -282,7 +310,7 @@ export class UserService {
           userId: user.id,
           target: parsed.normalized,
           to: parsed.display,
-          redirectTo: input.options?.redirectTo,
+          redirectTo,
           context,
         });
         if (issued.error !== null) return authFailure(issued.error);
@@ -364,13 +392,14 @@ export class UserService {
   async resetPasswordForEmail(email: string, options: { readonly redirectTo?: string } = {}, context?: UserRequestContext): Promise<AuthResult<{ readonly sent: true }>> {
     try {
       const parsed = normalizeAndValidateEmail(email);
+      const redirectTo = this.oneTimeTokens.resolveRedirect(this.email.resolveRedirect(options.redirectTo));
       const limited = await this.checkRateLimits("recovery", parsed.normalized, contextOptions(context));
       if (limited !== null) return limited as AuthResult<{ readonly sent: true }>;
       const user = await this.repository.users.findByNormalizedEmail(parsed.normalized);
       const now = validNow(this.clock);
       if (user !== null && user.deleted_at === null && !isBanned(user, now)) {
         await this.passwords.verify("enumeration-resistant dummy password", null);
-        const issued = await this.oneTimeTokens.issue({ purpose: "recovery", userId: user.id, target: parsed.normalized, to: parsed.display, redirectTo: options.redirectTo, context });
+        const issued = await this.oneTimeTokens.issue({ purpose: "recovery", userId: user.id, target: parsed.normalized, to: parsed.display, redirectTo, context });
         if (issued.error !== null) return authFailure(issued.error);
       } else {
         await this.passwords.verify("enumeration-resistant dummy password", null);
@@ -385,13 +414,14 @@ export class UserService {
   async resend(input: ResendInput, context?: UserRequestContext): Promise<AuthResult<{ readonly sent: true }>> {
     try {
       const parsed = normalizeAndValidateEmail(input.email);
+      const redirectTo = this.oneTimeTokens.resolveRedirect(this.email.resolveRedirect(input.options?.redirectTo));
       const limited = await this.checkRateLimits("resend", parsed.normalized, contextOptions(context));
       if (limited !== null) return limited as AuthResult<{ readonly sent: true }>;
       const user = await this.repository.users.findByNormalizedEmail(parsed.normalized);
       const now = validNow(this.clock);
       if (user !== null && user.deleted_at === null && !isBanned(user, now)) {
         await this.passwords.verify("enumeration-resistant dummy password", null);
-        const issued = await this.oneTimeTokens.resend({ purpose: purposeForResend(input.type), userId: user.id, target: parsed.normalized, to: parsed.display, redirectTo: input.options?.redirectTo, context });
+        const issued = await this.oneTimeTokens.resend({ purpose: purposeForResend(input.type), userId: user.id, target: parsed.normalized, to: parsed.display, redirectTo, context });
         if (issued.error !== null) return authFailure(issued.error);
       } else {
         await this.passwords.verify("enumeration-resistant dummy password", null);
@@ -402,29 +432,39 @@ export class UserService {
     }
   }
 
-  /** Updates profile/email fields; password changes use the dedicated revocation path. */
-  async updateUser(userId: UUID, patch: UpdateUserInput, context?: UserRequestContext): Promise<AuthResult<{ readonly user: User }>> {
+  /** Updates only self-service metadata or starts a proof-gated email change. */
+  async updateUser(subject: AuthenticatedSubject, patch: UpdateUserInput, context?: UserRequestContext): Promise<AuthResult<{ readonly user: User }>> {
     try {
-      const parsedId = uuidSchema.parse(userId);
-      if (patch.password !== undefined) {
-        const changed = await this.changePassword(parsedId, patch.password, { context });
-        if (changed.error !== null || changed.data === null) return authFailure(changed.error ?? internalError());
-        return authSuccess({ user: changed.data.user });
-      }
+      if (patch === null || typeof patch !== "object") return authFailure(new AuthApiError("invalid_request", 400, "Invalid user update"));
+      if (Object.prototype.hasOwnProperty.call(patch, "app_metadata")) return authFailure(invalidApplicationMetadata());
+      const allowedKeys = new Set(["email", "user_metadata", "redirectTo"]);
+      if (Object.keys(patch).some((key) => !allowedKeys.has(key))) return authFailure(new AuthApiError("invalid_request", 400, "Invalid user update"));
+      if (patch.email !== undefined && typeof patch.email !== "string") return authFailure(new AuthApiError("invalid_request", 400, "Invalid email address"));
+      if (patch.email === undefined && patch.redirectTo !== undefined) return authFailure(new AuthApiError("invalid_request", 400, "Invalid user update"));
+      const pendingEmail = patch.email === undefined ? undefined : normalizeAndValidateEmail(patch.email);
+      const redirectTo = pendingEmail === undefined
+        ? undefined
+        : this.oneTimeTokens.resolveRedirect(this.email.resolveRedirect(patch.redirectTo));
+      const authenticated = await this.authorizeSubject(subject);
+      if (authenticated.error !== null || authenticated.data === null) return authFailure(authenticated.error ?? unauthorizedSubject());
       const now = validNow(this.clock);
-      const input: Parameters<AuthRepository["users"]["update"]>[1] = {};
-      if (patch.email !== undefined) {
-        const email = patch.email === null ? null : normalizeAndValidateEmail(patch.email);
-        input.email = email === null ? null : email.display;
-        input.email_confirmed_at = null;
-        input.confirmed_at = null;
-      }
-      if (patch.user_metadata !== undefined) input.user_metadata = patch.user_metadata as never;
-      if (patch.app_metadata !== undefined) input.app_metadata = patch.app_metadata as never;
-      const user = await this.repository.users.update(parsedId, input, { now });
-      if (patch.email !== undefined && patch.email !== null) {
-        const email = normalizeAndValidateEmail(patch.email);
-        const issued = await this.oneTimeTokens.issue({ purpose: "email_change", userId: user.id, target: email.normalized, to: email.display, redirectTo: patch.redirectTo, context });
+      const user = await this.repository.transaction(async (transaction) => {
+        const current = await this.lockAuthorizedUser(transaction, authenticated.data, now);
+        const input: Parameters<AuthRepository["users"]["update"]>[1] = {};
+        if (patch.user_metadata !== undefined) input.user_metadata = patch.user_metadata;
+        return Object.keys(input).length === 0
+          ? current
+          : transaction.users.update(current.id, input, { now });
+      });
+      if (pendingEmail !== undefined) {
+        const issued = await this.oneTimeTokens.issue({
+          purpose: "email_change",
+          userId: user.id,
+          target: pendingEmail.normalized,
+          to: pendingEmail.display,
+          redirectTo,
+          context,
+        });
         if (issued.error !== null) return authFailure(issued.error);
       }
       await this.audit(user.id, "user.updated", "success", context, now);
@@ -434,42 +474,77 @@ export class UserService {
     }
   }
 
-  /** Changes a password and revokes every session unless preservation is explicit. */
+  /** Changes the authenticated subject's password after current-password proof. */
   async changePassword(
-    userId: UUID,
+    subject: AuthenticatedSubject,
     password: string,
     options: ChangePasswordOptions = {},
   ): Promise<AuthResult<{ readonly user: User }>> {
     try {
-      const id = uuidSchema.parse(userId);
-      const user = await this.repository.users.findById(id);
-      if (user === null) return authFailure(invalidCredentials());
-      const now = validNow(this.clock);
-      if (isBanned(user, now)) return authFailure(invalidCredentials());
-      if (options.currentPassword !== undefined) {
-        const current = await this.repository.passwordCredentials.findByUserId(id);
-        const verified = await this.passwords.verify(options.currentPassword, current?.password_hash ?? null);
-        if (!verified.valid) return authFailure(invalidCredentials());
+      const authenticated = await this.authorizeSubject(subject);
+      if (authenticated.error !== null || authenticated.data === null) return authFailure(authenticated.error ?? unauthorizedSubject());
+      if (options.currentPassword === undefined) return authFailure(invalidCredentials());
+      if (options.preserveSessionId !== undefined && options.preserveSessionId !== authenticated.data.session_id) {
+        return authFailure(new AuthApiError("invalid_request", 400, "Invalid session preservation request"));
       }
-      const passwordHash = await this.passwords.hash(password);
-      const updated = await this.repository.transaction(async (transaction) => {
-        await transaction.passwordCredentials.upsert(id, passwordHash, now, { now });
-        await transaction.sessions.revokeUserSessions(id, options.preserveSessionId, { now });
-        const changed = await transaction.users.findById(id, { now });
-        if (changed === null) throw new AuthApiError("invalid_credentials", 401, "Invalid login credentials");
+      const updated = await this.changePasswordForUser(
+        authenticated.data,
+        password,
+        options.currentPassword,
+        options.preserveSessionId,
+        options.context,
+      );
+      return authSuccess({ user: updated });
+    } catch (error) {
+      return mapUnexpected(error);
+    }
+  }
+
+  /** Consumes a proof-bound email-change token and only then replaces email. */
+  async confirmEmailChange(
+    input: { readonly email: string; readonly token: string; readonly redirectTo?: string },
+    context?: UserRequestContext,
+  ): Promise<AuthResult<{ readonly user: User }>> {
+    try {
+      const parsed = normalizeAndValidateEmail(input.email);
+      const limited = await this.checkRateLimits("email_change_verify", parsed.normalized, contextOptions(context));
+      if (limited !== null) return authFailure(limited.error ?? unauthorizedSubject());
+      const verified = await this.oneTimeTokens.verify({
+        purpose: "email_change",
+        target: parsed.normalized,
+        token: input.token,
+        redirectTo: input.redirectTo,
+      });
+      if (verified.error !== null) return authFailure(verified.error);
+      if (verified.data.user_id === null || verified.data.target !== parsed.normalized) return authFailure(invalidCredentials());
+      const now = validNow(this.clock);
+      const changed = await this.repository.transaction(async (transaction) => {
+        const current = await transaction.users.findByIdForUpdate(verified.data.user_id as UUID, { now });
+        if (current === null || isBanned(current, now)) throw invalidCredentials();
+        const duplicate = await transaction.users.findByNormalizedEmail(parsed.normalized, { now });
+        if (duplicate !== null && duplicate.id !== current.id) {
+          throw new AuthApiError("conflict", 409, "Email address is already registered");
+        }
+        const updated = await transaction.users.update(current.id, {
+          email: parsed.display,
+          email_confirmed_at: now,
+          confirmed_at: now,
+        }, { now });
+        await transaction.sessions.revokeUserSessions(current.id, undefined, { now });
         await transaction.operations.appendAudit({
-          actor_user_id: id,
+          actor_user_id: current.id,
           target_type: "user",
-          target_id: id,
-          action: "user.password_changed",
-          metadata: sanitizeRedactedMetadata({ event: "user.password_changed" }),
+          target_id: current.id,
+          action: "user.email_change_confirmed",
+          metadata: sanitizeRedactedMetadata({ event: "user.email_change_confirmed" }),
           outcome: "success",
           occurred_at: now,
         }, { now } satisfies RepositoryOperationOptions);
-        return changed;
+        return updated;
       });
-      return authSuccess({ user: updated });
+      return authSuccess({ user: changed });
     } catch (error) {
+      if (repositoryCode(error) === "email_exists") return authFailure(new AuthApiError("conflict", 409, "Email address is already registered"));
       return mapUnexpected(error);
     }
   }
@@ -478,20 +553,110 @@ export class UserService {
   async resetPassword(input: { readonly email: string; readonly token: string; readonly password: string; readonly redirectTo?: string }, context?: UserRequestContext): Promise<AuthResult<{ readonly user: User }>> {
     try {
       const parsed = normalizeAndValidateEmail(input.email);
+      const redirectTo = this.email.resolveRedirect(input.redirectTo);
       const limited = await this.checkRateLimits("recovery_verify", parsed.normalized, contextOptions(context));
       if (limited !== null) return limited as AuthResult<{ readonly user: User }>;
-      const verified = await this.oneTimeTokens.verify({ purpose: "recovery", target: parsed.normalized, token: input.token, redirectTo: input.redirectTo });
+      const verified = await this.oneTimeTokens.verify({ purpose: "recovery", target: parsed.normalized, token: input.token, redirectTo });
       if (verified.error !== null) return authFailure(verified.error);
       if (verified.data.user_id === null) return authFailure(invalidCredentials());
-      return this.changePassword(verified.data.user_id, input.password, { context });
+      const user = await this.changePasswordForRecovery(verified.data.user_id, input.password, context);
+      return authSuccess({ user });
     } catch (error) {
       return mapUnexpected(error);
     }
   }
 
+  private async authorizeSubject(subject: AuthenticatedSubject): Promise<AuthResult<AuthenticatedSession>> {
+    if (
+      subject === null ||
+      typeof subject !== "object" ||
+      subject.session === null ||
+      typeof subject.session !== "object"
+    ) return authFailure(unauthorizedSubject());
+    if (this.sessions === undefined) throw new AuthConfigurationError("session service is required for self-service mutations");
+    return this.sessions.authorizeSession(subject.session);
+  }
+
+  private async lockAuthorizedUser(
+    transaction: AuthRepository,
+    authenticated: AuthenticatedSession,
+    now: Date,
+  ): Promise<User> {
+    const durableSession = await transaction.sessions.findByIdForUpdate(authenticated.session_id, { now });
+    if (
+      durableSession === null ||
+      durableSession.user_id !== authenticated.user_id ||
+      durableSession.revoked_at !== null ||
+      durableSession.expires_at <= now
+    ) throw unauthorizedSubject();
+    const user = await transaction.users.findByIdForUpdate(authenticated.user_id, { now });
+    if (user === null || isBanned(user, now)) throw unauthorizedSubject();
+    return user;
+  }
+
+  private async changePasswordForUser(
+    authenticated: AuthenticatedSession,
+    password: string,
+    currentPassword: string,
+    preserveSessionId: UUID | undefined,
+    context: UserRequestContext | undefined,
+  ): Promise<User> {
+    void context;
+    const passwordHash = await this.passwords.hash(password);
+    const now = validNow(this.clock);
+    return this.repository.transaction(async (transaction) => {
+      const currentUser = await this.lockAuthorizedUser(transaction, authenticated, now);
+      const current = await transaction.passwordCredentials.findByUserId(currentUser.id, { now });
+      const verified = await this.passwords.verify(currentPassword, current?.password_hash ?? null);
+      if (!verified.valid) throw invalidCredentials();
+      await transaction.passwordCredentials.upsert(currentUser.id, passwordHash, now, { now });
+      await transaction.sessions.revokeUserSessions(currentUser.id, preserveSessionId, { now });
+      const changed = await transaction.users.findByIdForUpdate(currentUser.id, { now });
+      if (changed === null) throw invalidCredentials();
+      await transaction.operations.appendAudit({
+        actor_user_id: currentUser.id,
+        target_type: "user",
+        target_id: currentUser.id,
+        action: "user.password_changed",
+        metadata: sanitizeRedactedMetadata({ event: "user.password_changed" }),
+        outcome: "success",
+        occurred_at: now,
+      }, { now } satisfies RepositoryOperationOptions);
+      return changed;
+    });
+  }
+
+  private async changePasswordForRecovery(
+    userId: UUID,
+    password: string,
+    context: UserRequestContext | undefined,
+  ): Promise<User> {
+    void context;
+    const passwordHash = await this.passwords.hash(password);
+    const now = validNow(this.clock);
+    return this.repository.transaction(async (transaction) => {
+      const current = await transaction.users.findByIdForUpdate(userId, { now });
+      if (current === null || isBanned(current, now)) throw invalidCredentials();
+      await transaction.passwordCredentials.upsert(userId, passwordHash, now, { now });
+      await transaction.sessions.revokeUserSessions(userId, undefined, { now });
+      const changed = await transaction.users.findByIdForUpdate(userId, { now });
+      if (changed === null) throw invalidCredentials();
+      await transaction.operations.appendAudit({
+        actor_user_id: userId,
+        target_type: "user",
+        target_id: userId,
+        action: "user.password_reset",
+        metadata: sanitizeRedactedMetadata({ event: "user.password_reset" }),
+        outcome: "success",
+        occurred_at: now,
+      }, { now } satisfies RepositoryOperationOptions);
+      return changed;
+    });
+  }
+
   private async checkRateLimits(operation: string, identifier: string, context: UserRequestContext): Promise<AuthResult<never> | null> {
     if (this.rateLimiter === undefined) return null;
-    const ip = typeof context.ip_address === "string" && context.ip_address.trim() !== "" ? context.ip_address.trim() : "unknown";
+    const ip = normalizeIpAddress(context.ip_address) ?? "unknown";
     const policy = { limit: operation === "sign_in" ? 10 : 5, windowSeconds: operation === "sign_in" ? 900 : 3600, bucket: operation } as const;
     const decisions = await Promise.all([
       this.rateLimiter.consume(`ip:${ip}`, policy),
@@ -508,7 +673,7 @@ export class UserService {
     const userAgent = typeof context?.user_agent === "string" && context.user_agent.length > 0
       ? `ua-sha256:${createHash("sha256").update(context.user_agent, "utf8").digest("hex")}`
       : null;
-    const ip = typeof context?.ip_address === "string" && context.ip_address.trim() !== "" ? context.ip_address.trim() : null;
+    const ip = normalizeIpAddress(context?.ip_address);
     await this.repository.operations.appendAudit({
       actor_user_id: userId,
       target_type: "user",

@@ -19,6 +19,7 @@ import { TokenService } from "../../src/server/tokens.js";
 
 const NOW = new Date("2026-08-11T06:00:00.000Z");
 const CALLBACK = "https://project.example.com/auth/callback";
+const ALT_CALLBACK = "https://project.example.com/auth/alternate";
 const TOKEN_HASH_KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const PASSWORD = "correct horse battery staple";
 
@@ -92,7 +93,7 @@ function services(options: { readonly concealUserExistence?: boolean; readonly r
   const currentRepository = repository;
   if (currentRepository === undefined) throw new Error("repository is not initialized");
   const mailer = new FakeMailer();
-  const email = new EmailService({ allowedRedirects: [CALLBACK], defaultRedirect: CALLBACK });
+  const email = new EmailService({ allowedRedirects: [CALLBACK, ALT_CALLBACK], defaultRedirect: CALLBACK });
   const tokens = new TokenService({
     issuer: "https://project.example.com/auth/v1",
     audience: "project",
@@ -106,7 +107,7 @@ function services(options: { readonly concealUserExistence?: boolean; readonly r
     mailer,
     email,
     tokenHashKey: TOKEN_HASH_KEY,
-    allowedRedirects: [CALLBACK],
+    allowedRedirects: [CALLBACK, ALT_CALLBACK],
     defaultRedirect: CALLBACK,
     clock: () => serviceNow,
   });
@@ -213,8 +214,10 @@ describe("Task 6 user lifecycle", () => {
 
     await service.users.signInWithOtp({ email: created.user.email ?? "", options: { type: "email_otp", redirectTo: CALLBACK } });
     const otpMessage = service.mailer.latest("email_otp");
+    const createdUser = created.user;
+    if (createdUser === null) throw new Error("expected OTP user");
     const wrongAttempts = await Promise.all(Array.from({ length: 10 }, (_, index) =>
-      service.users.verifyOtp({ email: created.user?.email ?? "", token: `wrong-${index}`, type: "email_otp", redirectTo: CALLBACK }),
+      service.users.verifyOtp({ email: createdUser.email ?? "", token: otpMessage?.variables.token ?? "", type: "email_otp", redirectTo: ALT_CALLBACK }),
     ));
     expect(wrongAttempts.map((result) => result.error?.code)).toEqual(Array.from({ length: 10 }, () => "otp_invalid"));
     expect(wrongAttempts.filter((result) => result.data !== null)).toHaveLength(0);
@@ -224,6 +227,49 @@ describe("Task 6 user lifecycle", () => {
     expect(JSON.stringify(row?.rows[0])).not.toContain(otpMessage?.variables.token ?? "never");
     const correctAfterRace = await service.users.verifyOtp({ email: created.user.email ?? "", token: otpMessage?.variables.token ?? "", type: "email_otp", redirectTo: CALLBACK });
     expect(correctAfterRace.data).toBeNull();
+
+    const firstOtp = await service.users.signInWithOtp({ email: created.user.email ?? "", options: { type: "email_otp", redirectTo: CALLBACK } });
+    expect(firstOtp.error).toBeNull();
+    const firstMessage = service.mailer.latest("email_otp");
+    const secondOtp = await service.users.signInWithOtp({ email: created.user.email ?? "", options: { type: "email_otp", redirectTo: CALLBACK } });
+    expect(secondOtp.error).toBeNull();
+    const secondMessage = service.mailer.latest("email_otp");
+    expect(firstMessage?.variables.token).not.toBe(secondMessage?.variables.token);
+    const firstTokenWrong = await Promise.all(Array.from({ length: 5 }, () =>
+      service.users.verifyOtp({ email: created.user?.email ?? "", token: firstMessage?.variables.token ?? "", type: "email_otp", redirectTo: ALT_CALLBACK }),
+    ));
+    expect(firstTokenWrong.every((result) => result.error?.code === "otp_invalid")).toBe(true);
+    const firstTokenAfterFailures = await service.users.verifyOtp({ email: created.user.email ?? "", token: firstMessage?.variables.token ?? "", type: "email_otp", redirectTo: CALLBACK });
+    expect(firstTokenAfterFailures.data).toBeNull();
+    const secondTokenStillWorks = await service.users.verifyOtp({ email: created.user.email ?? "", token: secondMessage?.variables.token ?? "", type: "email_otp", redirectTo: CALLBACK });
+    expect(secondTokenStillWorks.error).toBeNull();
+
+    await service.users.signInWithOtp({ email: created.user.email ?? "", options: { type: "email_otp", redirectTo: CALLBACK } });
+    const thirdMessage = service.mailer.latest("email_otp");
+    await service.users.signInWithOtp({ email: created.user.email ?? "", options: { type: "email_otp", redirectTo: CALLBACK } });
+    const fourthMessage = service.mailer.latest("email_otp");
+    const fourthTokenWrong = await Promise.all(Array.from({ length: 5 }, () =>
+      service.users.verifyOtp({ email: createdUser.email ?? "", token: fourthMessage?.variables.token ?? "", type: "email_otp", redirectTo: ALT_CALLBACK }),
+    ));
+    expect(fourthTokenWrong.every((result) => result.error?.code === "otp_invalid")).toBe(true);
+    const thirdTokenStillWorks = await service.users.verifyOtp({ email: createdUser.email ?? "", token: thirdMessage?.variables.token ?? "", type: "email_otp", redirectTo: CALLBACK });
+    expect(thirdTokenStillWorks.error).toBeNull();
+    const fourthTokenAfterFailures = await service.users.verifyOtp({ email: createdUser.email ?? "", token: fourthMessage?.variables.token ?? "", type: "email_otp", redirectTo: CALLBACK });
+    expect(fourthTokenAfterFailures.data).toBeNull();
+
+    const raceOtp = await service.users.signInWithOtp({ email: created.user.email ?? "", options: { type: "email_otp", redirectTo: CALLBACK } });
+    expect(raceOtp.error).toBeNull();
+    const raceMessage = service.mailer.latest("email_otp");
+    const raceResults = await Promise.all([
+      ...Array.from({ length: 5 }, () => service.users.verifyOtp({ email: createdUser.email ?? "", token: raceMessage?.variables.token ?? "", type: "email_otp", redirectTo: ALT_CALLBACK })),
+      service.users.verifyOtp({ email: created.user.email ?? "", token: raceMessage?.variables.token ?? "", type: "email_otp", redirectTo: CALLBACK }),
+    ]);
+    expect(raceResults.filter((result) => result.data !== null).length).toBeLessThanOrEqual(1);
+    const raceRow = await disposable?.pool.query("SELECT attempt_count, consumed_at FROM auth.one_time_tokens WHERE target = $1 AND purpose = 'email_otp' ORDER BY created_at DESC LIMIT 1", [createdUser.email?.toLowerCase()]);
+    expect(raceRow?.rows[0]?.attempt_count).toBeLessThanOrEqual(5);
+    expect(raceRow?.rows[0]?.consumed_at).not.toBeNull();
+    const raceAfterConsume = await service.users.verifyOtp({ email: created.user.email ?? "", token: raceMessage?.variables.token ?? "", type: "email_otp", redirectTo: CALLBACK });
+    expect(raceAfterConsume.data).toBeNull();
 
     const auditRows = await disposable?.pool.query("SELECT action, metadata, user_agent, ip_address FROM auth.audit_log");
     const auditText = JSON.stringify(auditRows?.rows ?? []);
@@ -256,6 +302,32 @@ describe("Task 6 user lifecycle", () => {
     expect(signedIn.error).toBeNull();
   });
 
+  it("binds direct OTP resend failures to the presented digest", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const created = data(await service.users.signUp({ email: "otp-resend-binding@example.com", password: PASSWORD }));
+    if (created.user === null) throw new Error("expected OTP resend user");
+    const target = created.user.email ?? "";
+    await service.oneTimeTokens.resend({ purpose: "email_otp", userId: created.user.id, target, to: target, redirectTo: CALLBACK });
+    const first = service.mailer.latest("email_otp");
+    await service.oneTimeTokens.resend({ purpose: "email_otp", userId: created.user.id, target, to: target, redirectTo: CALLBACK });
+    const second = service.mailer.latest("email_otp");
+    expect(first?.variables.token).not.toBe(second?.variables.token);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const failed = await service.oneTimeTokens.verify({
+        purpose: "email_otp",
+        target,
+        token: first?.variables.token ?? "",
+        redirectTo: ALT_CALLBACK,
+      });
+      expect(failed.error?.code).toBe("otp_invalid");
+    }
+    const oldToken = await service.oneTimeTokens.verify({ purpose: "email_otp", target, token: first?.variables.token ?? "", redirectTo: CALLBACK });
+    const newToken = await service.oneTimeTokens.verify({ purpose: "email_otp", target, token: second?.variables.token ?? "", redirectTo: CALLBACK });
+    expect(oldToken.data).toBeNull();
+    expect(newToken.error).toBeNull();
+  });
+
   it("rejects banned and soft-deleted users without returning credentials or sessions", async () => {
     const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
     const created = data(await service.users.signUp({ email: "blocked@example.com", password: PASSWORD }));
@@ -268,5 +340,180 @@ describe("Task 6 user lifecycle", () => {
     const deleted = await service.users.signIn({ email: "blocked@example.com", password: PASSWORD });
     expect(deleted.data).toBeNull();
     expect(deleted.error).toBeTruthy();
+  });
+
+  it("rejects sessionless, cross-user, revoked, banned, and app_metadata self-service mutations", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const first = data(await service.users.signUp({ email: "self-service-a@example.com", password: PASSWORD }));
+    const second = data(await service.users.signUp({ email: "self-service-b@example.com", password: PASSWORD }));
+    if (first.user === null || first.session === null || second.user === null) throw new Error("expected self-service users");
+
+    const legacyUpdate = service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<{ data: unknown; error: unknown }> };
+    const crossUser = await legacyUpdate.updateUser(second.user.id, { user_metadata: { crossed: true } });
+    expect(crossUser.data).toBeNull();
+    expect((await service.repository.users.findById(second.user.id))?.user_metadata).not.toHaveProperty("crossed");
+
+    const missingProof = await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser({}, { user_metadata: { changed: true } });
+    expect(missingProof).toMatchObject({ data: null });
+    const forgedTarget = await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
+      { session: first.session, userId: second.user.id },
+      { user_metadata: { forged: true } },
+    );
+    expect(forgedTarget).toMatchObject({ error: null });
+    expect((await service.repository.users.findById(first.user.id))?.user_metadata).toHaveProperty("forged", true);
+    expect((await service.repository.users.findById(second.user.id))?.user_metadata).not.toHaveProperty("forged");
+
+    const appMetadata = await legacyUpdate.updateUser(first.user.id, { app_metadata: { admin: true } });
+    expect(appMetadata.data).toBeNull();
+    expect((await service.repository.users.findById(first.user.id))?.app_metadata).toEqual({});
+
+    await service.sessions.signOut(first.session, "local");
+    const revoked = await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser({ session: first.session }, { user_metadata: { revoked: true } });
+    expect(revoked).toMatchObject({ data: null });
+
+    await service.repository.users.update(second.user.id, { banned_until: new Date(serviceNow.getTime() + 60 * 60 * 1000) });
+    const banned = await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser({ session: second.session }, { user_metadata: { banned: true } });
+    expect(banned).toMatchObject({ data: null });
+    const bannedTarget = await legacyUpdate.updateUser(second.user.id, { user_metadata: { legacy_bypass: true } });
+    expect(bannedTarget.data).toBeNull();
+
+    await service.repository.users.softDelete(first.user.id, serviceNow);
+    const deletedTarget = await legacyUpdate.updateUser(first.user.id, { user_metadata: { deleted: true } });
+    expect(deletedTarget.data).toBeNull();
+  });
+
+  it("requires current-password proof for password changes and keeps recovery reset separate", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const created = data(await service.users.signUp({ email: "password-bound@example.com", password: PASSWORD }));
+    if (created.user === null || created.session === null) throw new Error("expected password-bound user");
+
+    const legacyChangePassword = service.users as unknown as { changePassword: (subject: unknown, password: string) => Promise<{ data: unknown; error: unknown }> };
+    const arbitrary = await legacyChangePassword.changePassword(created.user.id, "new password for self service");
+    expect(arbitrary.data).toBeNull();
+    expect((await service.users.signIn({ email: created.user.email ?? "", password: PASSWORD })).error).toBeNull();
+
+    const missingCurrent = await (service.users as unknown as { changePassword: (subject: unknown, password: string) => Promise<unknown> }).changePassword({ session: created.session }, "new password for self service");
+    expect(missingCurrent).toMatchObject({ data: null });
+    const wrongCurrent = await (service.users as unknown as { changePassword: (subject: unknown, password: string, options: unknown) => Promise<unknown> }).changePassword(
+      { session: created.session },
+      "new password for self service",
+      { currentPassword: "not the current password" },
+    );
+    expect(wrongCurrent).toMatchObject({ data: null });
+
+    const changed = await (service.users as unknown as { changePassword: (subject: unknown, password: string, options: unknown) => Promise<unknown> }).changePassword(
+      { session: created.session },
+      "new password for self service",
+      { currentPassword: PASSWORD },
+    );
+    expect(changed).toMatchObject({ error: null });
+    expect((await service.users.signIn({ email: created.user.email ?? "", password: PASSWORD })).data).toBeNull();
+    expect((await service.users.signIn({ email: created.user.email ?? "", password: "new password for self service" })).error).toBeNull();
+  });
+
+  it("does not activate an email change until its exact proof is consumed", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const created = data(await service.users.signUp({ email: "email-change-old@example.com", password: PASSWORD }));
+    if (created.user === null || created.session === null) throw new Error("expected email-change user");
+    const target = "email-change-new@example.com";
+
+    const requested = await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
+      { session: created.session },
+      { email: target, redirectTo: CALLBACK },
+    );
+    expect(requested).toMatchObject({ error: null });
+    expect((await service.repository.users.findById(created.user.id))?.email).toBe("email-change-old@example.com");
+    expect((await service.users.signIn({ email: target, password: PASSWORD })).data).toBeNull();
+    expect((await service.users.signIn({ email: "email-change-old@example.com", password: PASSWORD })).error).toBeNull();
+
+    const message = service.mailer.latest("confirmation");
+    const wrongConsumer = await service.users.confirmEmail({ email: target, token: message?.variables.token ?? "", redirectTo: CALLBACK });
+    expect(wrongConsumer.data).toBeNull();
+    const confirmed = await (service.users as unknown as { confirmEmailChange: (input: unknown) => Promise<unknown> }).confirmEmailChange({
+      email: target,
+      token: message?.variables.token ?? "",
+      redirectTo: CALLBACK,
+    });
+    expect(confirmed).toMatchObject({ error: null });
+    expect((await service.repository.users.findById(created.user.id))?.email).toBe(target);
+    const replay = await (service.users as unknown as { confirmEmailChange: (input: unknown) => Promise<unknown> }).confirmEmailChange({
+      email: target,
+      token: message?.variables.token ?? "",
+      redirectTo: CALLBACK,
+    });
+    expect(replay).toMatchObject({ data: null });
+    expect((await service.users.signIn({ email: target, password: PASSWORD })).error).toBeNull();
+    expect((await service.sessions.refresh(created.session.refresh_token)).data).toBeNull();
+  });
+
+  it("does not partially apply a duplicate email change", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const first = data(await service.users.signUp({ email: "email-change-duplicate-a@example.com", password: PASSWORD }));
+    const second = data(await service.users.signUp({ email: "email-change-duplicate-b@example.com", password: PASSWORD }));
+    if (first.user === null || first.session === null || second.user === null) throw new Error("expected duplicate email-change users");
+    const requested = await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
+      { session: first.session },
+      { email: second.user.email, redirectTo: CALLBACK },
+    );
+    expect(requested).toMatchObject({ error: null });
+    const message = service.mailer.latest("confirmation");
+    const consumed = await (service.users as unknown as { confirmEmailChange: (input: unknown) => Promise<unknown> }).confirmEmailChange({
+      email: second.user.email,
+      token: message?.variables.token ?? "",
+      redirectTo: CALLBACK,
+    });
+    expect(consumed).toMatchObject({ data: null });
+    expect((await service.repository.users.findById(first.user.id))?.email).toBe("email-change-duplicate-a@example.com");
+  });
+
+  it("fails closed for banned session creation and refresh", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const created = data(await service.users.signUp({ email: "session-ban@example.com", password: PASSWORD }));
+    if (created.user === null || created.session === null) throw new Error("expected session-ban user");
+    await service.repository.users.update(created.user.id, { banned_until: new Date(serviceNow.getTime() + 60 * 60 * 1000) });
+
+    const createAfterBan = await service.sessions.create(created.user);
+    expect(createAfterBan.data).toBeNull();
+    const refreshAfterBan = await service.sessions.refresh(created.session.refresh_token);
+    expect(refreshAfterBan.data).toBeNull();
+  });
+
+  it("cannot issue an old-password session after a committed reset wins the authorization ordering", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const created = data(await service.users.signUp({ email: "reset-race@example.com", password: PASSWORD }));
+    if (created.user === null) throw new Error("expected reset-race user");
+
+    const originalTransaction = service.repository.transaction.bind(service.repository);
+    let enteredResolve: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => { enteredResolve = resolve; });
+    let releaseResolve: (() => void) | undefined;
+    const release = new Promise<void>((resolve) => { releaseResolve = resolve; });
+    (service.repository as unknown as { transaction: typeof service.repository.transaction }).transaction = async (callback) =>
+      originalTransaction(async (transaction) => {
+        enteredResolve?.();
+        await release;
+        return callback(transaction);
+      });
+
+    try {
+      const oldPasswordSignIn = service.users.signIn({ email: created.user.email ?? "", password: PASSWORD });
+      await entered;
+      const replacementHash = await service.passwords.hash("reset-race-new-password");
+      await disposable?.pool.query(
+        "UPDATE auth.password_credentials SET password_hash = $1, password_updated_at = $2 WHERE user_id = $3",
+        [replacementHash, serviceNow, created.user.id],
+      );
+      await disposable?.pool.query(
+        "UPDATE auth.sessions SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL",
+        [serviceNow, created.user.id],
+      );
+      releaseResolve?.();
+      const stale = await oldPasswordSignIn;
+      expect(stale.data).toBeNull();
+      expect(stale.error?.code).toBe("invalid_credentials");
+    } finally {
+      releaseResolve?.();
+      (service.repository as unknown as { transaction: typeof service.repository.transaction }).transaction = originalTransaction;
+    }
   });
 });
