@@ -1,6 +1,7 @@
 import { access, readFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { build, type BuildResult, type Plugin } from "esbuild";
 import { describe, expect, it } from "vitest";
 
 interface ExportTarget {
@@ -29,37 +30,20 @@ const requiredExportKeys = [
 ] as const;
 
 const browserEntryFiles = ["dist/index.js", "dist/adapters/nextjs-browser.js"] as const;
-const nodeOnlySpecifiers = new Set([
-  "assert",
-  "buffer",
-  "child_process",
-  "cluster",
-  "crypto",
-  "dgram",
-  "dns",
-  "events",
-  "fs",
-  "http",
-  "https",
-  "module",
-  "net",
-  "os",
-  "path",
-  "perf_hooks",
-  "process",
-  "readline",
-  "stream",
-  "string_decoder",
-  "timers",
-  "tls",
-  "tty",
-  "url",
-  "util",
-  "v8",
-  "vm",
-  "worker_threads",
-  "zlib",
-]);
+const nodeOnlyImportPattern = /^(?:node:)?(?:assert|buffer|child_process|cluster|crypto|dgram|dns|events|fs|http|https|module|net|os|path|perf_hooks|process|readline|stream|string_decoder|timers|tls|tty|url|util|v8|vm|worker_threads|zlib)(?:\/.*)?$/;
+const serverOnlyDependencyPattern = /^(?:@node-rs\/argon2|argon2|pg|pg-native|postgres|postgresjs)(?:\/.*)?$/;
+
+const browserBoundaryPlugin: Plugin = {
+  name: "mrjim-auth-browser-boundary",
+  setup(buildContext) {
+    buildContext.onResolve({ filter: nodeOnlyImportPattern }, (args) => ({
+      errors: [{ text: `browser boundary rejected Node-only import: ${args.path}` }],
+    }));
+    buildContext.onResolve({ filter: serverOnlyDependencyPattern }, (args) => ({
+      errors: [{ text: `browser boundary rejected server-only dependency: ${args.path}` }],
+    }));
+  },
+};
 
 function packageSpecifier(exportKey: string): string {
   return exportKey === "." ? manifest.name : `${manifest.name}${exportKey.slice(1)}`;
@@ -73,47 +57,53 @@ function packageTarget(exportKey: string): ExportTarget {
   return target;
 }
 
-function importSpecifiers(source: string): string[] {
-  const matches = source.matchAll(
-    /(?:\bimport\s+(?:(?:[^"']*?)\s+from\s+)?|\bexport\s+(?:[^"']*?)\s+from\s+)["']([^"']+)["']/g,
-  );
-  return [...matches].map((match) => match[1]).filter((specifier): specifier is string => Boolean(specifier));
+function bundleBrowserEntry(entryFile: string): Promise<BuildResult> {
+  return build({
+    absWorkingDir: packageRoot,
+    bundle: true,
+    entryPoints: [resolve(packageRoot, entryFile)],
+    format: "esm",
+    logLevel: "silent",
+    platform: "browser",
+    plugins: [browserBoundaryPlugin],
+    write: false,
+  });
 }
 
-async function browserGraphViolations(entryFile: string): Promise<string[]> {
-  const violations: string[] = [];
-  const pending = [resolve(packageRoot, entryFile)];
-  const visited = new Set<string>();
+function bundleBrowserSource(source: string): Promise<BuildResult> {
+  return build({
+    absWorkingDir: packageRoot,
+    bundle: true,
+    format: "esm",
+    logLevel: "silent",
+    platform: "browser",
+    plugins: [browserBoundaryPlugin],
+    stdin: {
+      contents: source,
+      resolveDir: packageRoot,
+      sourcefile: "browser-boundary-fixture.ts",
+    },
+    write: false,
+  });
+}
 
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current || visited.has(current)) {
-      continue;
-    }
-    visited.add(current);
+async function captureBrowserBuildError(source: string): Promise<unknown> {
+  try {
+    await bundleBrowserSource(source);
+    return null;
+  } catch (error) {
+    return error;
+  }
+}
 
-    const source = await readFile(current, "utf8");
-    for (const specifier of importSpecifiers(source)) {
-      const bareSpecifier = specifier.startsWith("node:") ? specifier.slice(5) : specifier;
-      if (specifier.startsWith("node:") || nodeOnlySpecifiers.has(bareSpecifier)) {
-        violations.push(`${relative(packageRoot, current)} imports ${specifier}`);
-        continue;
-      }
-
-      if (!specifier.startsWith(".")) {
-        continue;
-      }
-
-      const resolved = resolve(dirname(current), specifier);
-      if (!resolved.startsWith(`${packageRoot}/`)) {
-        violations.push(`${relative(packageRoot, current)} escapes the package graph via ${specifier}`);
-        continue;
-      }
-      pending.push(resolved);
+function errorMessages(error: unknown): string {
+  if (typeof error === "object" && error !== null && "errors" in error) {
+    const errors = (error as { readonly errors?: readonly { readonly text?: string }[] }).errors;
+    if (errors) {
+      return errors.map(({ text }) => text ?? "").join("\n");
     }
   }
-
-  return violations;
+  return String(error);
 }
 
 describe("package export boundaries", () => {
@@ -152,9 +142,25 @@ describe("package export boundaries", () => {
     }
   });
 
-  it("keeps browser entry graphs free of Node-only imports", async () => {
+  it("bundles browser entries through browser-platform resolution", async () => {
     for (const entryFile of browserEntryFiles) {
-      expect(await browserGraphViolations(entryFile)).toEqual([]);
+      await bundleBrowserEntry(entryFile);
+    }
+  });
+
+  it("rejects static and dynamic Node built-in imports in browser code", async () => {
+    for (const source of ['import "node:fs";', 'await import("node:fs");']) {
+      const error = await captureBrowserBuildError(source);
+      expect(error).not.toBeNull();
+      expect(errorMessages(error)).toContain("browser boundary rejected Node-only import");
+    }
+  });
+
+  it("rejects bare server-only dependencies in browser code", async () => {
+    for (const source of ['import "pg";', 'await import("pg");']) {
+      const error = await captureBrowserBuildError(source);
+      expect(error).not.toBeNull();
+      expect(errorMessages(error)).toContain("browser boundary rejected server-only dependency");
     }
   });
 });

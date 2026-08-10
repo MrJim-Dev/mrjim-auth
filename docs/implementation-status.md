@@ -30,7 +30,9 @@ functions until their later tasks implement them.
 - A paid SaaS product must never be required to build, test, document, deploy, or operate the core package.
 
 Task 1 has no runtime dependencies. Its local development dependencies are
-`@types/node`, TypeScript, and Vitest.
+`@types/node`, TypeScript, Vitest, and the free/open-source `esbuild` package,
+which is used only to prove browser-platform bundle resolution in the contract
+test.
 
 ## Task progress
 
@@ -85,17 +87,18 @@ the Node build compiles only the server-side targets.
 
 The contract test imports the built package through its self-reference, checks
 every declared export and target, verifies the temporary root example, confirms
-later-task subpaths are empty, and walks browser entry graphs for Node-only
-imports.
+later-task subpaths are empty, and bundles the browser entries with esbuild's
+browser platform. The bundle test rejects static and literal dynamic imports of
+Node built-ins and bare server-only dependencies such as `pg`.
 
 ## Final verification evidence
 
 - `pnpm install --frozen-lockfile` — passed; lockfile was up to date.
 - `pnpm typecheck` — passed.
 - `pnpm build` — passed; browser and Node TypeScript builds completed.
-- `pnpm test` — passed; Task 1 contract test passed (1 file, 4 tests), with a
+- `pnpm test` — passed; Task 1 contract test passed (1 file, 6 tests), with a
   fresh package build executed by the test script.
-- `pnpm vitest run packages/mrjim-auth/test/contract/package-exports.spec.ts` — passed (1 file, 4 tests) after `pnpm build`.
+- `pnpm vitest run packages/mrjim-auth/test/contract/package-exports.spec.ts` — passed (1 file, 6 tests) after `pnpm build`.
 - `pnpm lint` — passed.
 - `pnpm docs:check` — passed; 2 required documents found.
 
