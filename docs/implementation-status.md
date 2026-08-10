@@ -66,29 +66,36 @@ repository, audit, transaction, and replay-containment failures to a fixed
 public `internal_error` result while preserving classified configuration and
 programming throws. Browser exports remain unchanged and do not import the
 server boundary.
-No Task 6+ behavior has been added.
+This Task 5 subsection is historical. Task 6 behavior and its review-fix
+evidence are recorded in the Task 6 subsection below.
 
 Task 6 implements the Node-only user/password and email lifecycle boundary.
-`UserService` now orchestrates signup with configured default roles, optional
-email confirmation, password sign-in with opportunistic Argon2id rehash,
-generic duplicate-signup concealment, OTP/magic-link verification, resend and
-recovery, profile/password updates, banned/soft-deleted rejection, and
-default all-session revocation after password changes. `PasswordService` uses
-the exact-pinned free/open-source `argon2@0.44.0` package with an Argon2id
-floor of 64 MiB, three iterations, and one lane. `EmailService` applies only
-Unicode normalization, trim, and lowercase and enforces exact configured
-redirects.
+Review Fix Pass 1 additionally closes the redirect/account oracle, binds OTP
+failure accounting to the presented digest, adds session-subject authorization
+for self-service mutations, rechecks user credentials under lock before
+session issuance, rejects banned users during session create/refresh, and
+keeps email changes pending until exact proof is consumed. `UserService`
+orchestrates signup with configured default roles, optional email confirmation,
+password sign-in with opportunistic Argon2id rehash, generic duplicate-signup
+concealment, OTP/magic-link verification, resend and recovery,
+proof-gated profile/password/email updates, banned/soft-deleted rejection,
+and default all-session revocation after password reset/change/email-change
+confirmation. `PasswordService` uses the exact-pinned free/open-source
+`argon2@0.44.0` package with an Argon2id floor of 64 MiB, three iterations,
+and exactly one lane; malformed, unsupported, and over-cap PHC inputs take
+the fixed dummy verification path. `EmailService` applies only Unicode
+normalization, trim, and lowercase and enforces exact configured redirects.
 
 `OneTimeTokenService` generates 32-byte random bearer values, persists only
 HMAC-SHA-256 digests, binds purpose/target/redirect, enforces the 15-minute
 recovery and 24-hour signup limits, and delivers the five project-owned mail
 templates through the injected `Mailer` boundary. The PostgreSQL repository
-uses the existing `attempt_count`/maximum-five schema contract with an atomic
-row-locking CTE for redirect-bound OTP failure increments; no schema migration
-was necessary. `FakeMailer` is bundled only for tests/examples. Raw tokens,
-passwords, hashes, recipient emails, and bearer links do not enter public
-results or audit metadata, and the browser root/export remains free of the
-Node-only lifecycle boundary.
+uses the existing unique `token_hash` index and `attempt_count`/maximum-five
+schema contract for an atomic digest-bound OTP failure update; no schema
+migration was necessary. `FakeMailer` is bundled only for tests/examples.
+Raw tokens, passwords, hashes, recipient emails, and bearer links do not enter
+public results or audit metadata, and the browser root/export remains free of
+the Node-only lifecycle boundary.
 
 ## Required dependency policy
 
@@ -132,7 +139,7 @@ local PostgreSQL 16 clusters.
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
-| 6. Users and recovery | Complete | Task 6 RED/GREEN and full verification recorded below |
+| 6. Users and recovery | Complete — Review Fix Pass 1 | Review-fix RED/GREEN and full verification recorded below |
 | 7. OAuth and identities | Pending | Not run |
 | 8. Dynamic authorization | Pending | Not run |
 | 9. HTTP and OpenAPI | Pending | Not run |
@@ -159,8 +166,9 @@ that review path.
 
 ## Remaining work
 
-Execute Tasks 6-14 with independent review after each task, then complete the
-whole-branch review and release handoff. In particular, later work must use
+Return this pass to the same independent reviewer, then implement Tasks 7-14
+with independent review after each task and complete the whole-branch review
+and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement
 auth/session/OAuth/RBAC behavior, HTTP and browser/SSR surfaces,
 administration, examples, and release verification.
@@ -194,7 +202,8 @@ Final evidence before commit:
 - `pnpm lint` — passed; strict TypeScript check completed.
 - `git diff --check` — passed.
 
-Remaining work is Tasks 6-14. Task 5 does not implement password hashing or
+Remaining work is Tasks 7-14. This historical Task 5 section does not
+implement password hashing or
 verification, email/OTP/recovery, OAuth/provider exchange, authorization
 enforcement decisions, HTTP routes, browser clients, framework adapters,
 administration APIs, examples, or release artifacts.
@@ -334,61 +343,77 @@ Strict TDD evidence for Review Fix Pass 2:
   remains `scan.target.snapshotDigest: expected a non-empty string`; no
   finalized no-findings result is claimed for either fix pass.
 
-## Task 6 scope and verification
+## Task 6 scope and verification — Review Fix Pass 1
 
-Task 6 changes are:
+Task 6 is complete in this worktree. The implementation remains limited to
+users, passwords, email verification, OTP, recovery, injected mail/rate-limit
+boundaries, and the narrow repository/session contracts needed by those flows.
+It does not add OAuth/provider adapters, RBAC APIs, HTTP routes, clients,
+framework adapters, administration APIs, or Task 7+ behavior.
 
-- `packages/mrjim-auth/src/server/users.ts` — user signup/sign-in/update,
-  confirmation, OTP/magic-link, resend, recovery, password reset/change,
-  default-role assignment, rate-limit hooks, enumeration concealment, and
-  session revocation orchestration;
-- `packages/mrjim-auth/src/server/passwords.ts` — Argon2id hashing,
-  equivalent dummy verification for unknown credentials, policy checks, and
-  opportunistic rehash support;
-- `packages/mrjim-auth/src/server/email.ts` — Unicode-only email normalization,
-  shape validation, and exact redirect allowlist/link derivation;
-- `packages/mrjim-auth/src/server/one-time-tokens.ts` — HMAC-digested
-  purpose/target/redirect-bound tokens, TTLs, mail template dispatch, and OTP
-  failure handling;
-- `packages/mrjim-auth/src/testing/fake-mailer.ts` — disposable in-memory
-  mailer inbox for test/example delivery variables;
-- shared/repository contracts, the PostgreSQL one-time-token repository,
-  server/testing exports, package dependency/lock metadata, and focused
-  lifecycle, enumeration, primitive, contract, and export tests.
+Pass 1 fixes the independent review findings:
 
-The implementation does not add OAuth/provider adapters, RBAC APIs, HTTP
-routes, clients, framework adapters, administration APIs, or later-task
-behavior. Existing migrations `0001`-`0004`, their manifest checksums, schema
-contract, verifier, packing/copy checks, and incremental migration tests remain
-unchanged. The existing `attempt_count` check (`0..5`) plus the repository's
-transactional `SELECT ... FOR UPDATE`/update CTE is sufficient to enforce the
-OTP concurrency invariant, so no `0005` migration was introduced.
+- validates and canonicalizes both configured redirect boundaries before any
+  account lookup, preserving deep public-result equality for existing,
+  nonexistent, and duplicate concealed issuance paths;
+- attributes OTP failures to the presented HMAC digest through the existing
+  unique `one_time_tokens.token_hash` index, preserving purpose/target binding,
+  exact redirect binding for success, first-success/fifth-failure consumption,
+  and concurrent row-atomic updates;
+- replaces arbitrary user-ID mutations with verified access-token subject plus
+  active durable-session/user locks, requires current-password proof for
+  ordinary password changes, rejects `app_metadata`, and keeps recovery reset
+  as a separate capability path;
+- re-reads the user and credential under lock before password sign-in session
+  creation, and rejects banned/deleted users during session create/refresh;
+- leaves the current email active while issuing a purpose-bound pending
+  `email_change` token, then atomically applies the target only after exact
+  proof, with uniqueness-race handling and all-session revocation;
+- strictly parses/caps Argon2id PHC values before native verification and routes
+  malformed, unsupported, oversized, or non-lane-1 hashes through fixed dummy
+  work while still verifying valid weaker hashes for rehash;
+- reuses the Task 5 canonical IP normalization for limiter keys and audit
+  context.
 
-Strict TDD evidence:
+Changed production files include `server/users.ts`, `passwords.ts`,
+`one-time-tokens.ts`, `sessions.ts`, `server/index.ts`, PostgreSQL users/session
+repositories, shared contracts/config, and the existing Task 6 test/export
+surfaces. `FakeMailer` remains the bundled in-memory test/example adapter.
 
-- RED at the clean Task 6 baseline: the required lifecycle/enumeration command
-  failed during collection because `../../src/server/email.js` and
-  `../../src/testing/fake-mailer.js` did not exist; both requested suites had
-  zero collected tests.
-- GREEN: the same required command passed with both files and 8/8 tests,
-  including real disposable PostgreSQL lifecycle coverage and the 10-way OTP
-  failure race. The race leaves exactly five attempts, consumes the token, and
-  produces no successful verification.
-- Primitive coverage verifies Unicode normalization without Gmail/provider
-  rewriting, malformed-email redaction, exact Argon2id parameters, unknown
-  credential verification, and redirect allowlist behavior.
+Strict regression TDD evidence:
 
-Security and operational checks cover generic public results for recovery,
-resend, OTP issue, and signup concealment; banned/deleted fail-closed paths;
-exact token binding and single-use replay; raw-token/hash/password/email/link
-redaction from results, token persistence, and audit rows; bounded hashed
-user-agent context; per-IP/per-identifier project rate-limit hooks; browser
-export boundaries; and stable `internal_error` mapping. The injected Mailer and
-RateLimiter are project-owned interfaces; `FakeMailer` is the only bundled
-transport and no paid or hosted service is required.
+- The Pass 1 regression suites were written before these production fixes.
+- RED command:
+  `pnpm vitest run packages/mrjim-auth/test/integration/user-lifecycle.spec.ts packages/mrjim-auth/test/contract/enumeration-resistance.spec.ts packages/mrjim-auth/test/unit/password-work-path.spec.ts`
+  produced 3 files, 13 failed and 10 passed. Failures reproduced the redirect
+  oracle, non-canonical IP keys, digest-unbound OTP counting, arbitrary
+  self-service writes, proofless password/email changes, banned session
+  issuance, stale-password session issuance after reset commit, and unsafe
+  Argon2 native work paths.
+- Focused GREEN after the fixes: 4 files, 27/27 tests passed, including the
+  real PostgreSQL mixed-resend/correct-vs-wrong races, authorization cases,
+  email-change proof/replay/duplicate behavior, and mocked Argon2 work-path
+  assertions. The mandated two-file Task 6 command also passes.
 
-Final Task 6 verification and dependency/license evidence are recorded in
+No schema change was required. Migrations `0001`-`0004`, their manifest
+checksums, schema contract, verifier, packing/copy checks, and incremental
+migration tests remain byte-identical/unchanged. The existing unique
+`one_time_tokens_token_hash_key` supports the digest-bound update, while the
+existing `attempt_count` constraint and transaction enforce the maximum of
+five. No `0005` migration was introduced.
+
+The exact-pinned free/open-source `argon2@0.44.0` dependency is MIT and
+self-hostable. Mail delivery and rate limiting are injected project-owned
+interfaces; tests use `FakeMailer` and disposable local PostgreSQL 16 only.
+No paid application, hosted identity vendor, hosted mail provider, hosted
+limiter, Redis service, or remote database is required. The optional security
+scanner was not invoked, as required; this pass makes no scanner or reviewer
+approval claim and returns to the same independent reviewer.
+
+Final command evidence and the remaining Tasks 7-14 are recorded in
 `.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-6-report.md`.
+
+Task 6 implementation/tests commit: `f674967` (`fix: harden task 6 auth lifecycle`).
 
 ## Task 3 scope and verification
 
