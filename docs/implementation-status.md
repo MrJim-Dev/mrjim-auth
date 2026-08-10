@@ -6,7 +6,7 @@
 
 ## Current state
 
-Task 1, its review fixes, Task 2, and Task 2 Review Fix Passes 1 and 2 are
+Task 1, its review fixes, Task 2, and Task 2 Review Fix Passes 1, 2, and 3 are
 complete in this worktree. The
 package workspace, strict ESM TypeScript configuration, browser-safe public
 entrypoint, Node-only build targets, export map, shared auth contracts,
@@ -58,7 +58,7 @@ hosted service is required.
 | Task | Status | Verification |
 | --- | --- | --- |
 | 1. Workspace and exports | Complete | Review Fix Pass 2 checks passed on 2026-08-11 |
-| 2. Shared contracts | Complete — Review Fix Pass 2 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
+| 2. Shared contracts | Complete — Review Fix Pass 3 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
 | 3. PostgreSQL schema and CLI | Pending | Not run |
 | 4. PostgreSQL repositories | Pending | Not run |
 | 5. JWT and sessions | Pending | Not run |
@@ -185,6 +185,28 @@ Pass 2 RED evidence: the focused run reported 5 failing tests out of 18, and
 expectations. Pass 2 GREEN evidence: the focused run passed with 1 file and 18
 tests, and `pnpm typecheck` passed.
 
+## Task 2 Review Fix Pass 3
+
+Review Fix Pass 3 is complete and limited to two technical hardenings:
+
+- The exported `safeIdentityDataSchema` and its
+  `publicIdentityDataSchema` alias now apply the same detectable-credential
+  refinement as `sanitizeIdentityData` before producing the private brand.
+  Direct brand-producing calls reject Bearer, JWT, PEM/private-key,
+  provider-token, and credential-bearing avatar URL values while strict keys
+  and compile-time branding remain enforced.
+- Redacted metadata now denies bare normalized `session` keys in nested and
+  case/style variants. Explicit `session_id` and `sessionId` keys remain safe
+  identifier exceptions under the documented policy; opaque raw session values
+  do not survive.
+
+No other approved Task 2 area changed, and no Task 3 work or dependency was
+added.
+
+Pass 3 RED evidence: the focused run reported 2 failing tests out of 20
+before the two production changes. Pass 3 GREEN evidence: the focused run
+passed with 1 file and 20 tests, and `pnpm typecheck` passed.
+
 ## Task 1 scope
 
 The Task 1 changes are:
@@ -255,6 +277,21 @@ Task 2 Review Fix Pass 2 final verification:
 - `pnpm lint` — passed.
 - `pnpm docs:check` — passed; 2 required documents found.
 - `git diff --check` — passed with no whitespace errors.
+
+Task 2 Review Fix Pass 3 final verification:
+
+- `pnpm vitest run packages/mrjim-auth/test/unit/shared-contracts.spec.ts` —
+  passed; 1 file and 20 tests.
+- `pnpm build` — passed; browser and Node TypeScript builds completed.
+- `pnpm test` — passed; fresh build completed, 2 files and 26 tests passed.
+- `pnpm install --frozen-lockfile` — passed; lockfile was up to date and
+  resolution was skipped.
+- `pnpm typecheck` — passed.
+- `pnpm lint` — passed.
+- `pnpm docs:check` — passed; 2 required documents found after the final
+  Pass 3 status/report edits.
+- `git diff --check` — passed with no whitespace errors after the final Pass 3
+  status/report edits.
 
 Task 2 self-review found no PostgreSQL, password-hasher, private-key loader,
 migration, admin-secret, provider-credential, or Node-only imports in the

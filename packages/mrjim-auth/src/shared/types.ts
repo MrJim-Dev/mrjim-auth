@@ -107,6 +107,7 @@ const sensitiveKeySegments = new Set([
   "private",
   "refresh",
   "secret",
+  "session",
   "sig",
   "signature",
   "state",
@@ -139,12 +140,17 @@ function keySegments(key: string): readonly string[] {
 /** Returns true for credential-bearing key names, including style variants. */
 export function isSensitiveKeyName(key: string): boolean {
   const segments = keySegments(key);
+  const normalizedKey = key.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  const isExplicitSessionIdentifier =
+    normalizedKey === "sessionid";
   return (
-    segments.some((segment) => sensitiveKeySegments.has(segment)) ||
-    (segments.includes("one") && segments.includes("time")) ||
-    (segments.includes("raw") && segments.includes("link")) ||
-    (segments.includes("link") &&
-      segments.some((segment) => credentialBearingLinkPrefixes.has(segment)))
+    !isExplicitSessionIdentifier &&
+    (normalizedKey === "session" ||
+      segments.some((segment) => sensitiveKeySegments.has(segment)) ||
+      (segments.includes("one") && segments.includes("time")) ||
+      (segments.includes("raw") && segments.includes("link")) ||
+      (segments.includes("link") &&
+        segments.some((segment) => credentialBearingLinkPrefixes.has(segment))))
   );
 }
 
@@ -224,7 +230,17 @@ const publicIdentityDataShape = {
   preferred_username: nonEmptyIdentityStringSchema.optional(),
 } as const;
 
-const publicIdentityDataObjectSchema = z.object(publicIdentityDataShape).strict();
+const publicIdentityDataObjectSchema = z
+  .object(publicIdentityDataShape)
+  .strict()
+  .superRefine((value, context) => {
+    if (containsForbiddenValue(value)) {
+      context.addIssue({
+        code: "custom",
+        message: "identity data must not contain detectable credential material",
+      });
+    }
+  });
 
 declare const safeIdentityDataBrand: unique symbol;
 

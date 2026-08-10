@@ -18,6 +18,7 @@ import {
 } from "../../src/shared/config.js";
 import {
   permissionSchema,
+  publicIdentityDataSchema,
   redactedMetadataSchema,
   roleKeySchema,
   roleSchema,
@@ -352,6 +353,22 @@ describe("shared identity and authorization types", () => {
     ).toEqual({ name: "User" });
   });
 
+  it("applies credential checks to every exported identity brand-producing path", () => {
+    const credentialClaims = [
+      { sub: "Bearer provider-access-token" },
+      { name: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature" },
+      { locale: "-----BEGIN PRIVATE KEY-----\\nprivate-material\\n-----END PRIVATE KEY-----" },
+      { provider_token: "provider-access-token" },
+      { avatar_url: "https://cdn.example.com/avatar.png?access_token=raw-token" },
+    ];
+
+    for (const claims of credentialClaims) {
+      expect(safeIdentityDataSchema.safeParse(claims).success).toBe(false);
+      expect(publicIdentityDataSchema.safeParse(claims).success).toBe(false);
+      expect(sanitizeIdentityData(claims)).toEqual({});
+    }
+  });
+
   it("uses branded UUID and lowercase/RBAC schemas", () => {
     expect(uuidSchema.safeParse("00000000-0000-4000-8000-000000000001").success).toBe(true);
     expect(uuidSchema.safeParse("not-a-uuid").success).toBe(false);
@@ -517,6 +534,33 @@ describe("redacted metadata", () => {
     };
     expect(oneTimeToken.metadata).toBe(sanitized);
     expect(auditEvent.metadata).toBe(sanitized);
+  });
+
+  it("denies bare normalized session keys while preserving explicit session IDs", () => {
+    for (const key of ["session", "Session", "SESSION", "sEsSiOn"]) {
+      expect(sanitizeRedactedMetadata({ [key]: "opaque-raw-session" }), key).toEqual({});
+    }
+
+    const sanitized = sanitizeRedactedMetadata({
+      session: "opaque-raw-session",
+      SESSION: "nested-raw-session",
+      session_id: "session_123",
+      sessionId: "session_456",
+      nested: {
+        Session: "deep-raw-session",
+        session_id: "nested_session_123",
+        sessionId: "nested_session_456",
+      },
+    });
+
+    expect(sanitized).toEqual({
+      session_id: "session_123",
+      sessionId: "session_456",
+      nested: {
+        session_id: "nested_session_123",
+        sessionId: "nested_session_456",
+      },
+    });
   });
 });
 
