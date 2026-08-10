@@ -30,6 +30,11 @@ const requiredExportKeys = [
 ] as const;
 
 const browserEntryFiles = ["dist/index.js", "dist/adapters/nextjs-browser.js"] as const;
+const migrationAssetFiles = [
+  "dist/postgres/migrations/0001_core.sql",
+  "dist/postgres/migrations/0002_authorization.sql",
+  "dist/postgres/migrations/0003_oauth_operations.sql",
+] as const;
 const nodeOnlyImportPattern = /^(?:node:)?(?:assert|buffer|child_process|cluster|crypto|dgram|dns|events|fs|http|https|module|net|os|path|perf_hooks|process|readline|stream|string_decoder|timers|tls|tty|url|util|v8|vm|worker_threads|zlib)(?:\/.*)?$/;
 const serverOnlyDependencyPattern = /^(?:@node-rs\/argon2|argon2|pg|pg-native|postgres|postgresjs)(?:\/.*)?$/;
 
@@ -136,10 +141,50 @@ describe("package export boundaries", () => {
     expect(Object.keys(client)).toEqual([]);
   });
 
+  it("exposes the Task 3 PostgreSQL migration API and keeps SQL in built output", async () => {
+    const postgres = await import("mrjim-auth/postgres");
+    expect(Object.keys(postgres).sort()).toEqual([
+      "MIGRATIONS",
+      "MigrationError",
+      "PACKAGE_VERSION",
+      "REQUIRED_TABLES",
+      "migrate",
+      "migrationStatus",
+      "verifySchema",
+    ]);
+    expect(postgres.MIGRATIONS.map(({ version, fileName, checksum }) => ({ version, fileName, checksum }))).toEqual([
+      {
+        version: "0001_core",
+        fileName: "0001_core.sql",
+        checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+      {
+        version: "0002_authorization",
+        fileName: "0002_authorization.sql",
+        checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+      {
+        version: "0003_oauth_operations",
+        fileName: "0003_oauth_operations.sql",
+        checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    ]);
+    for (const assetFile of migrationAssetFiles) {
+      await access(resolve(packageRoot, assetFile));
+    }
+  });
+
   it("does not expose unfinished behavior from later-task subpaths", async () => {
-    for (const exportKey of requiredExportKeys.slice(1)) {
+    for (const exportKey of requiredExportKeys.slice(1).filter((key) => key !== "./postgres")) {
       expect(Object.keys(await import(packageSpecifier(exportKey)))).toEqual([]);
     }
+  });
+
+  it("builds a functional ESM CLI with a shebang", async () => {
+    const cli = await readFile(resolve(packageRoot, "dist/cli/index.js"), "utf8");
+    expect(cli.startsWith("#!/usr/bin/env node")).toBe(true);
+    expect(cli).toContain("migrate");
+    expect(cli).toContain("doctor");
   });
 
   it("bundles browser entries through browser-platform resolution", async () => {
