@@ -24,14 +24,17 @@ import {
   safeIdentityDataSchema,
   sanitizeIdentityData,
   sanitizeRedactedMetadata,
+  scopeIdentifierSchema,
   uuidSchema,
 } from "../../src/shared/types.js";
 import type { AuditEventInput, OneTimeTokenInput } from "../../src/shared/contracts.js";
 import type {
   AuthChangeEvent,
+  AuthorizationScope,
   Identity,
   Permission,
   Role,
+  SafeIdentityData,
   Session,
   User,
 } from "../../src/shared/types.js";
@@ -259,7 +262,7 @@ describe("shared identity and authorization types", () => {
       provider: "google",
       provider_subject: "google-subject",
       email: user.email,
-      identity_data: { name: "User", email_verified: true },
+      identity_data: sanitizeIdentityData({ name: "User", email_verified: true }),
       created_at: "2026-08-11T00:00:00.000Z",
       updated_at: "2026-08-11T00:00:00.000Z",
     };
@@ -322,12 +325,41 @@ describe("shared identity and authorization types", () => {
     expect(sanitized).not.toHaveProperty("privateKey");
   });
 
+  it("requires branded sanitized identity data and rejects credential-bearing avatar URLs", () => {
+    const trustedClaims = sanitizeIdentityData({
+      name: "User",
+      avatar_url: "https://cdn.example.com/avatar.png",
+    });
+    const trustedIdentityData: SafeIdentityData = trustedClaims;
+    expect(trustedIdentityData.avatar_url).toBe("https://cdn.example.com/avatar.png");
+
+    const untrustedClaims = { name: "User", accessToken: "provider-token" };
+    // @ts-expect-error SafeIdentityData is only obtainable from the runtime allowlist.
+    const unsafeClaims: SafeIdentityData = untrustedClaims;
+    // @ts-expect-error Identity.identity_data requires the branded sanitizer output.
+    const unsafeIdentityData: Identity["identity_data"] = untrustedClaims;
+    void unsafeClaims;
+    void unsafeIdentityData;
+
+    for (const avatarUrl of [
+      "https://cdn.example.com/avatar.png?access_token=provider-token",
+      "https://cdn.example.com/avatar.png#refresh_token=provider-token",
+    ]) {
+      expect(safeIdentityDataSchema.safeParse({ avatar_url: avatarUrl }).success).toBe(false);
+    }
+    expect(
+      sanitizeIdentityData({ name: "User", avatar_url: "https://cdn.example.com/avatar.png?token=raw" }),
+    ).toEqual({ name: "User" });
+  });
+
   it("uses branded UUID and lowercase/RBAC schemas", () => {
     expect(uuidSchema.safeParse("00000000-0000-4000-8000-000000000001").success).toBe(true);
     expect(uuidSchema.safeParse("not-a-uuid").success).toBe(false);
     expect(roleKeySchema.safeParse("member").success).toBe(true);
     expect(roleKeySchema.safeParse("Member").success).toBe(false);
     expect(roleKeySchema.safeParse("member.role").success).toBe(false);
+    expect(scopeIdentifierSchema.safeParse("org_123").success).toBe(true);
+    expect(scopeIdentifierSchema.safeParse(" ").success).toBe(false);
 
     const role = {
       id: "00000000-0000-4000-8000-000000000003",
@@ -397,13 +429,49 @@ describe("shared identity and authorization types", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("uses a branded non-UUID authorization scope identifier", () => {
+    const scope: AuthorizationScope = {
+      type: "organization",
+      id: scopeIdentifierSchema.parse("org_123"),
+    };
+    expect(scope.id).toBe("org_123");
+
+    // @ts-expect-error Scope IDs must be parsed/branded before entering authorization contracts.
+    const unsafeScope: AuthorizationScope = { type: "organization", id: "org_123" };
+    void unsafeScope;
+  });
 });
 
 describe("redacted metadata", () => {
   it("redacts credential-bearing keys recursively for token and audit metadata", () => {
+    const credentialVariants = {
+      OTP: "123456",
+      oneTime: "123456",
+      oneTimeCode: "123456",
+      verifier: "pkce-verifier",
+      code_verifier: "pkce-verifier",
+      PKCEVerifier: "pkce-verifier",
+      cookie: "session=raw",
+      "Set-Cookie": "session=raw",
+      sessionToken: "session-bearer",
+      sessionBearer: "Bearer session-bearer",
+      session: "Bearer session-bearer",
+      authorizationCode: "oauth-code",
+      rawLink: "https://project.example.com/auth/callback?token=raw-token",
+      bearer: "Bearer raw-token",
+    };
+
+    for (const [key, value] of Object.entries(credentialVariants)) {
+      expect(sanitizeRedactedMetadata({ [key]: value }), key).toEqual({});
+    }
+
     const sanitized = sanitizeRedactedMetadata({
       safe: "keep",
       provider: "google",
+      provider_id: "google-123",
+      session_id: "session_123",
+      organization_id: "org_123",
       access_token: "raw-token",
       tokenHash: "raw-hash",
       password: "raw-password",
@@ -416,12 +484,16 @@ describe("redacted metadata", () => {
         authorizationCode: "nested-code",
         deeper: { passwordHash: "nested-hash", keep: 1 },
       },
+      variants: credentialVariants,
       list: [{ clientSecret: "nested-secret" }, "safe"],
     });
 
     expect(sanitized).toEqual({
       safe: "keep",
       provider: "google",
+      provider_id: "google-123",
+      session_id: "session_123",
+      organization_id: "org_123",
       nested: { safe: true, deeper: { keep: 1 } },
       list: ["safe"],
     });
@@ -494,15 +566,44 @@ describe("repository and URL boundaries", () => {
     expect(clientBaseUrlSchema.safeParse("https://project.example.com/auth/v1").success).toBe(
       true,
     );
+    expect(() => clientBaseUrlSchema.safeParse("not a url")).not.toThrow();
+    expect(clientBaseUrlSchema.safeParse("not a url").success).toBe(false);
 
     for (const field of ["baseUrl", "siteUrl"] as const) {
       const invalid = validServerOptions();
       invalid[field] = "file:///tmp/auth";
       expect(authServerOptionsSchema.safeParse(invalid).success).toBe(false);
+
+      const malformed = validServerOptions();
+      malformed[field] = "not a url";
+      expect(() => authServerOptionsSchema.safeParse(malformed)).not.toThrow();
+      expect(authServerOptionsSchema.safeParse(malformed).success).toBe(false);
     }
     const invalidRedirect = validServerOptions();
     invalidRedirect.redirects.allowed = ["javascript:alert(1)"];
     expect(authServerOptionsSchema.safeParse(invalidRedirect).success).toBe(false);
+
+    const malformedRedirect = validServerOptions();
+    malformedRedirect.redirects.allowed = ["not a url"];
+    expect(() => authServerOptionsSchema.safeParse(malformedRedirect)).not.toThrow();
+    expect(authServerOptionsSchema.safeParse(malformedRedirect).success).toBe(false);
+
+    const malformedOidc = {
+      ...validServerOptions(),
+      oauth: {
+        oidc: {
+          clientId: "oidc-client",
+          clientSecret: "oidc-secret",
+          issuer: "not a url",
+        },
+      },
+    };
+    expect(() => authServerOptionsSchema.safeParse(malformedOidc)).not.toThrow();
+    expect(authServerOptionsSchema.safeParse(malformedOidc).success).toBe(false);
+
+    const identifierIssuer = validServerOptions();
+    identifierIssuer.signingKeys.issuer = "auth-prod-issuer";
+    expect(authServerOptionsSchema.safeParse(identifierIssuer).success).toBe(true);
 
     const development = validServerOptions();
     development.environment = "development";

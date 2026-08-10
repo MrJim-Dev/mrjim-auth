@@ -6,8 +6,8 @@
 
 ## Current state
 
-Task 1, its review fixes, Task 2, and Task 2 Review Fix Pass 1 are complete in
-this worktree. The
+Task 1, its review fixes, Task 2, and Task 2 Review Fix Passes 1 and 2 are
+complete in this worktree. The
 package workspace, strict ESM TypeScript configuration, browser-safe public
 entrypoint, Node-only build targets, export map, shared auth contracts,
 validated Zod configuration, recursive redaction boundaries, local verification
@@ -18,12 +18,14 @@ Task 2 defines the browser-safe result, error, identity, session, role,
 permission, client-option, server-option, adapter, mailer, limiter, and key
 provider contracts. Expected API failures use mutually exclusive `{ data,
 error }` values; configuration and programming failures remain throw-based.
-Production URL, PKCE, TTL, redirect, issuer/audience, and key-material rules
-are validated by Zod 4.4.3. Public identity claims and one-time-token/audit
-metadata are runtime-sanitized and fail closed. Public error codes are
-constrained and enumeration-sensitive internal codes are mapped to generic
-public codes. No database, password hashing, migration, OAuth provider
-credential, or Node-only implementation was added.
+Production base/site/redirect URL, PKCE, TTL, and key-material rules are
+validated by Zod 4.4.3. Signing-key `issuer` and `audience` are required
+non-empty identifiers; only configured OIDC provider `issuer` values use the
+HTTP(S) URL schema. Public identity claims and one-time-token/audit metadata
+are runtime-sanitized and fail closed. Public error codes are constrained and
+enumeration-sensitive internal codes are mapped to generic public codes. No
+database, password hashing, migration, OAuth provider credential, or Node-only
+implementation was added.
 
 Task 1 does not implement authentication behavior or create database objects.
 The future PostgreSQL work must create only the clean `auth` schema; no `mrjim`
@@ -56,7 +58,7 @@ hosted service is required.
 | Task | Status | Verification |
 | --- | --- | --- |
 | 1. Workspace and exports | Complete | Review Fix Pass 2 checks passed on 2026-08-11 |
-| 2. Shared contracts | Complete — Review Fix Pass 1 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
+| 2. Shared contracts | Complete — Review Fix Pass 2 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
 | 3. PostgreSQL schema and CLI | Pending | Not run |
 | 4. PostgreSQL repositories | Pending | Not run |
 | 5. JWT and sessions | Pending | Not run |
@@ -137,8 +139,10 @@ findings:
 - UUIDs and lowercase keys are branded/validated at runtime; role keys are
   lowercase and permission keys must match `resource.action`, `resource.*`, or
   `*.*`.
-- Client, server base/site, issuer, OAuth issuer, and redirect URLs accept only
-  `http:`/`https:`; production requires HTTPS and redirects remain exact.
+- Client base, server base/site, OIDC issuer, and redirect URLs accept only
+  `http:`/`https:`; production requires HTTPS for base/site/redirect values and
+  redirects remain exact. Signing-key `issuer` and `audience` are required
+  non-empty identifiers, not URL-validated fields.
 
 Password credentials, OAuth state, role/permission CRUD, assignment, and audit
 repository boundaries are present but explicitly `@internal` and transaction
@@ -149,6 +153,37 @@ those remain Task 13 work.
 Review RED evidence: the new focused test run failed with exit code 1 and 7
 contract failures before the review implementation. Review GREEN evidence:
 the focused run passed with 1 file and 16 tests, and `pnpm typecheck` passed.
+
+## Task 2 Review Fix Pass 2
+
+Review Fix Pass 2 is complete and remains limited to the five reported Task 2
+contract regressions:
+
+- `SafeIdentityData` is now a unique-branded output of the strict runtime
+  allowlist/sanitizer. `Identity.identity_data` requires that brand, while
+  compile-time tests reject structurally untrusted objects without deliberate
+  unsafe casts. Identity URL fields are non-empty HTTP(S) URLs and reject
+  objectively credential-bearing query/fragment values.
+- Redacted metadata now covers case/style variants of OTP and one-time codes,
+  verifier/code-verifier/PKCE verifier, cookie/set-cookie, session bearer
+  material, authorization codes, and raw bearer links. Safe provider labels and
+  justified provider/session/organization IDs remain available.
+- All HTTP(S) schemas guard `new URL` after syntactic validation. Malformed
+  client, server base/site, redirect, and OIDC values return `success: false`
+  without throwing.
+- `AuthorizationScope.id` is a branded non-empty `ScopeIdentifier` supporting
+  project IDs such as `org_123`; UUID branding remains required for database
+  entity IDs.
+- Status/report wording distinguishes non-empty signing-key `issuer` and
+  `audience` identifiers from HTTP(S)-validated OIDC provider issuer URLs.
+
+No Task 3 work, database object, paid dependency, or generated artifact was
+added.
+
+Pass 2 RED evidence: the focused run reported 5 failing tests out of 18, and
+`pnpm typecheck` reported the missing scope schema plus two unused compile-time
+expectations. Pass 2 GREEN evidence: the focused run passed with 1 file and 18
+tests, and `pnpm typecheck` passed.
 
 ## Task 1 scope
 
@@ -201,6 +236,19 @@ Task 2 Review Fix Pass 1 final verification:
   passed; 1 file and 16 tests.
 - `pnpm build` — passed; browser and Node TypeScript builds completed.
 - `pnpm test` — passed; fresh build completed, 2 files and 22 tests passed.
+- `pnpm install --frozen-lockfile` — passed; lockfile was up to date and
+  resolution was skipped.
+- `pnpm typecheck` — passed.
+- `pnpm lint` — passed.
+- `pnpm docs:check` — passed; 2 required documents found.
+- `git diff --check` — passed with no whitespace errors.
+
+Task 2 Review Fix Pass 2 final verification:
+
+- `pnpm vitest run packages/mrjim-auth/test/unit/shared-contracts.spec.ts` —
+  passed; 1 file and 18 tests.
+- `pnpm build` — passed; browser and Node TypeScript builds completed.
+- `pnpm test` — passed; fresh build completed, 2 files and 24 tests passed.
 - `pnpm install --frozen-lockfile` — passed; lockfile was up to date and
   resolution was skipped.
 - `pnpm typecheck` — passed.

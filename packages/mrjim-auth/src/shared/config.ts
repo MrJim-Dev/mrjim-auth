@@ -21,9 +21,20 @@ export type AuthEnvironment = "development" | "test" | "production";
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 
+function parseUrlSafely(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
 const httpHttpsUrlSchema = z.string().trim().url().superRefine((value, context) => {
-  const protocol = new URL(value).protocol;
-  if (protocol !== "http:" && protocol !== "https:") {
+  const parsed = parseUrlSafely(value);
+  if (parsed === null) {
+    return;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     context.addIssue({
       code: "custom",
       message: "URL scheme must be http or https",
@@ -251,12 +262,9 @@ const redirectSchema = httpHttpsUrlSchema.superRefine((value, context) => {
     context.addIssue({ code: "custom", message: "redirects must be exact URLs" });
   }
 
-  try {
-    if (new URL(value).hash !== "") {
-      context.addIssue({ code: "custom", message: "redirects may not include fragments" });
-    }
-  } catch {
-    // The URL validator above reports malformed URLs.
+  const parsed = parseUrlSafely(value);
+  if (parsed?.hash !== undefined && parsed.hash !== "") {
+    context.addIssue({ code: "custom", message: "redirects may not include fragments" });
   }
 });
 
@@ -330,7 +338,8 @@ export const authServerOptionsSchema = z
     ];
 
     for (const { path, value } of productionUrls) {
-      if (new URL(value).protocol !== "https:") {
+      const parsed = parseUrlSafely(value);
+      if (parsed !== null && parsed.protocol !== "https:") {
         context.addIssue({
           code: "custom",
           path,

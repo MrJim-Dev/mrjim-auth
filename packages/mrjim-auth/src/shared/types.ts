@@ -40,6 +40,20 @@ export const lowercaseKeySchema = z
   .refine((value) => value === value.toLowerCase(), "authorization keys must be lowercase")
   .transform((value) => value as LowercaseKey);
 
+declare const scopeIdentifierBrand: unique symbol;
+
+/** A parsed, project-defined authorization scope identifier. */
+export type ScopeIdentifier = string & {
+  readonly [scopeIdentifierBrand]: "ScopeIdentifier";
+};
+
+/** Validates and brands a non-empty project-defined scope identifier. */
+export const scopeIdentifierSchema = z
+  .string()
+  .trim()
+  .min(1, "scope identifiers must not be empty")
+  .transform((value) => value as ScopeIdentifier);
+
 /** Validates a simple lowercase role key. */
 export const roleKeySchema = z
   .string()
@@ -73,19 +87,151 @@ export const permissionKeySchema = z
   .regex(/^[a-z][a-z0-9_-]*\.(?:[a-z][a-z0-9_-]*|\*)$|^\*\.\*$/, "invalid permission key")
   .transform((value) => value as LowercaseKey);
 
+const sensitiveKeySegments = new Set([
+  "access",
+  "authorization",
+  "bearer",
+  "client",
+  "code",
+  "cookie",
+  "credential",
+  "hash",
+  "jwt",
+  "key",
+  "oauth",
+  "otp",
+  "passcode",
+  "password",
+  "pem",
+  "pkce",
+  "private",
+  "refresh",
+  "secret",
+  "sig",
+  "signature",
+  "state",
+  "token",
+  "verifier",
+]);
+
+const credentialBearingLinkPrefixes = new Set([
+  "auth",
+  "confirmation",
+  "invite",
+  "magic",
+  "raw",
+  "recovery",
+  "reset",
+  "verification",
+  "verify",
+]);
+
+function keySegments(key: string): readonly string[] {
+  return key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .toLowerCase()
+    .split("_")
+    .filter(Boolean);
+}
+
+/** Returns true for credential-bearing key names, including style variants. */
+export function isSensitiveKeyName(key: string): boolean {
+  const segments = keySegments(key);
+  return (
+    segments.some((segment) => sensitiveKeySegments.has(segment)) ||
+    (segments.includes("one") && segments.includes("time")) ||
+    (segments.includes("raw") && segments.includes("link")) ||
+    (segments.includes("link") &&
+      segments.some((segment) => credentialBearingLinkPrefixes.has(segment)))
+  );
+}
+
+function parseUrlSafely(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function isRawCredentialString(value: string): boolean {
+  return (
+    value.includes("-----BEGIN ") ||
+    /^Bearer\s+\S+/i.test(value) ||
+    /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)
+  );
+}
+
+function hasCredentialBearingUrl(value: string): boolean {
+  const parsed = parseUrlSafely(value);
+  if (parsed === null) {
+    return false;
+  }
+
+  const entries = [...parsed.searchParams.entries()];
+  const hash = parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash;
+  if (hash !== "") {
+    const hashParams = new URLSearchParams(hash);
+    if (hash.includes("=") || hash.includes("&")) {
+      entries.push(...hashParams.entries());
+    } else {
+      entries.push([hash, ""]);
+    }
+  }
+
+  return entries.some(
+    ([key, nestedValue]) => isSensitiveKeyName(key) || isRawCredentialString(nestedValue),
+  );
+}
+
+function isSensitiveString(value: string): boolean {
+  return isRawCredentialString(value) || hasCredentialBearingUrl(value);
+}
+
+const nonEmptyIdentityStringSchema = z.string().trim().min(1);
+const safeIdentityUrlSchema = z.string().trim().url().superRefine((value, context) => {
+  const parsed = parseUrlSafely(value);
+  if (parsed === null) {
+    return;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    context.addIssue({
+      code: "custom",
+      message: "identity URLs must use http or https",
+    });
+  }
+  if (hasCredentialBearingUrl(value)) {
+    context.addIssue({
+      code: "custom",
+      message: "identity URLs must not contain credential-bearing query or fragment data",
+    });
+  }
+});
+
 const publicIdentityDataShape = {
-  sub: z.string().optional(),
-  email: z.string().optional(),
+  sub: nonEmptyIdentityStringSchema.optional(),
+  email: nonEmptyIdentityStringSchema.optional(),
   email_verified: z.boolean().optional(),
-  name: z.string().optional(),
-  given_name: z.string().optional(),
-  family_name: z.string().optional(),
-  picture: z.string().optional(),
-  avatar_url: z.string().optional(),
-  locale: z.string().optional(),
-  hd: z.string().optional(),
-  preferred_username: z.string().optional(),
+  name: nonEmptyIdentityStringSchema.optional(),
+  given_name: nonEmptyIdentityStringSchema.optional(),
+  family_name: nonEmptyIdentityStringSchema.optional(),
+  picture: safeIdentityUrlSchema.optional(),
+  avatar_url: safeIdentityUrlSchema.optional(),
+  locale: nonEmptyIdentityStringSchema.optional(),
+  hd: nonEmptyIdentityStringSchema.optional(),
+  preferred_username: nonEmptyIdentityStringSchema.optional(),
 } as const;
+
+const publicIdentityDataObjectSchema = z.object(publicIdentityDataShape).strict();
+
+declare const safeIdentityDataBrand: unique symbol;
+
+/** A runtime-validated, branded set of public identity claims. */
+export type SafeIdentityData = z.infer<typeof publicIdentityDataObjectSchema> & {
+  readonly [safeIdentityDataBrand]: "SafeIdentityData";
+};
 
 /**
  * Runtime allowlist for public provider identity claims.
@@ -94,33 +240,12 @@ const publicIdentityDataShape = {
  * public identity data. Raw provider claims must be sanitized before creating
  * an `Identity` value.
  */
-export const safeIdentityDataSchema = z.object(publicIdentityDataShape).strict();
+export const safeIdentityDataSchema = publicIdentityDataObjectSchema.transform(
+  (value) => value as SafeIdentityData,
+);
 
 /** Compatibility alias for the public identity-data schema. */
 export const publicIdentityDataSchema = safeIdentityDataSchema;
-
-/** The scalar, allowlisted claims that may be returned in `Identity`. */
-export type SafeIdentityData = z.infer<typeof safeIdentityDataSchema>;
-
-const sensitiveKeySegments = new Set([
-  "access",
-  "authorization",
-  "bearer",
-  "client",
-  "code",
-  "credential",
-  "hash",
-  "jwt",
-  "key",
-  "oauth",
-  "passcode",
-  "password",
-  "pem",
-  "private",
-  "refresh",
-  "secret",
-  "token",
-]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -128,27 +253,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   }
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
-}
-
-function keySegments(key: string): readonly string[] {
-  return key
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/[^a-zA-Z0-9]+/g, "_")
-    .toLowerCase()
-    .split("_")
-    .filter(Boolean);
-}
-
-/** Returns true for token, secret, hash, password, code, or private-key keys. */
-export function isSensitiveKeyName(key: string): boolean {
-  return keySegments(key).some((segment) => sensitiveKeySegments.has(segment));
-}
-
-function isSensitiveString(value: string): boolean {
-  return (
-    value.includes("-----BEGIN ") ||
-    /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)
-  );
 }
 
 function containsForbiddenValue(value: unknown, seen = new Set<object>()): boolean {
@@ -196,7 +300,7 @@ function containsForbiddenValue(value: unknown, seen = new Set<object>()): boole
  */
 export function sanitizeIdentityData(input: unknown): SafeIdentityData {
   if (!isPlainRecord(input)) {
-    return {};
+    return safeIdentityDataSchema.parse({});
   }
 
   const output: Record<string, unknown> = {};
@@ -209,7 +313,10 @@ export function sanitizeIdentityData(input: unknown): SafeIdentityData {
         typeof value === "boolean" ||
         value === undefined
       ) ||
-      containsForbiddenValue(value)
+      containsForbiddenValue(value) ||
+      ((key === "picture" || key === "avatar_url") &&
+        !safeIdentityUrlSchema.safeParse(value).success) ||
+      (typeof value === "string" && value.trim() === "")
     ) {
       continue;
     }
@@ -537,8 +644,8 @@ export interface SupportedStorage {
 export interface AuthorizationScope {
   /** The project-defined scope kind. */
   type: string;
-  /** The project-defined scope identifier. */
-  id: UUID;
+  /** The parsed project-defined scope identifier, for example `org_123`. */
+  id: ScopeIdentifier;
 }
 
 /** The browser/SSR options accepted by the shared client contract. */
