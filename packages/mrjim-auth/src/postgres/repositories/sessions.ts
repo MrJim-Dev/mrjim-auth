@@ -246,8 +246,12 @@ async function findRefreshForUpdateInTransaction(
   if (discovered === undefined) return null;
   const owner = await discoverSessionOwner(context, discovered.session_id);
   if (owner === undefined) return null;
-  const lockedOwner = await lockUser(context, owner.user_id, true);
-  if (lockedOwner === undefined || userIsBanned(lockedOwner, now)) return null;
+  // Keep the owner row visible after a ban or soft delete. SessionService must
+  // classify used/replaced lineage first so replay containment can revoke the
+  // live replacement/family before the current owner state fails closed.
+  // Unused rows are rejected by the service after this lock-scoped discovery.
+  const lockedOwner = await lockUser(context, owner.user_id, false);
+  if (lockedOwner === undefined) return null;
 
   const session = await lockSession(context, owner.id);
   if (

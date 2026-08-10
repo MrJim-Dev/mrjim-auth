@@ -45,6 +45,7 @@ export {
   type ResendInput,
   type SignInInput,
   type SignUpInput,
+  type SafeOperationalFailure,
   type UpdateUserInput,
   type UserRequestContext,
   type UserServiceOptions,

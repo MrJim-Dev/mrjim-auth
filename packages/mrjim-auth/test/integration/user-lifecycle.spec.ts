@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import type { KeyProvider } from "../../src/shared/contracts.js";
+import type { AuthRepository, KeyProvider } from "../../src/shared/contracts.js";
 import { migrate } from "../../src/postgres/migrate.js";
 import { createPostgresAdapter, type PostgresAdapter } from "../../src/postgres/adapter.js";
 import { roleKeySchema, uuidSchema, type User } from "../../src/shared/types.js";
@@ -89,8 +89,13 @@ async function stopPostgres(value: DisposablePostgres): Promise<void> {
   }
 }
 
-function services(options: { readonly concealUserExistence?: boolean; readonly requireEmailConfirmation?: boolean; readonly passwordPolicy?: { readonly memoryCost?: number } } = {}) {
-  const currentRepository = repository;
+function services(options: {
+  readonly concealUserExistence?: boolean;
+  readonly requireEmailConfirmation?: boolean;
+  readonly passwordPolicy?: { readonly memoryCost?: number };
+  readonly repository?: PostgresAdapter;
+} = {}) {
+  const currentRepository = options.repository ?? repository;
   if (currentRepository === undefined) throw new Error("repository is not initialized");
   const mailer = new FakeMailer();
   const email = new EmailService({ allowedRedirects: [CALLBACK, ALT_CALLBACK], defaultRedirect: CALLBACK });
@@ -125,6 +130,23 @@ function services(options: { readonly concealUserExistence?: boolean; readonly r
     clock: () => serviceNow,
   });
   return { users, passwords, oneTimeTokens, sessions, mailer, email, repository: currentRepository };
+}
+
+function transactionFailureRepository(base: PostgresAdapter, failure: "repository" | "audit"): PostgresAdapter {
+  return {
+    ...base,
+    async transaction<T>(callback: (transaction: AuthRepository) => Promise<T>): Promise<T> {
+      return base.transaction((transaction) => callback({
+        ...transaction,
+        users: failure === "repository"
+          ? { ...transaction.users, update: async () => { throw new Error("injected repository failure"); } }
+          : transaction.users,
+        operations: failure === "audit"
+          ? { ...transaction.operations, appendAudit: async () => { throw new Error("injected audit failure"); } }
+          : transaction.operations,
+      } as AuthRepository));
+    },
+  };
 }
 
 function data<T>(result: { readonly data: T | null; readonly error: unknown }): T {
@@ -464,6 +486,148 @@ describe("Task 6 user lifecycle", () => {
     });
     expect(consumed).toMatchObject({ data: null });
     expect((await service.repository.users.findById(first.user.id))?.email).toBe("email-change-duplicate-a@example.com");
+    const retry = await (service.users as unknown as { confirmEmailChange: (input: unknown) => Promise<unknown> }).confirmEmailChange({
+      email: second.user.email,
+      token: message?.variables.token ?? "",
+      redirectTo: CALLBACK,
+    });
+    expect(retry).toMatchObject({ error: { code: "conflict" } });
+  });
+
+  it("rolls back email-change proof, email, and sessions when the atomic consumer fails", async () => {
+    for (const failure of ["repository", "audit"] as const) {
+      const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+      const created = data(await service.users.signUp({ email: `email-change-failure-${failure}@example.com`, password: PASSWORD }));
+      if (created.user === null || created.session === null) throw new Error("expected email-change failure user");
+      const target = `email-change-failure-target-${failure}@example.com`;
+      const requested = await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
+        { session: created.session },
+        { email: target, redirectTo: CALLBACK },
+      );
+      expect(requested).toMatchObject({ error: null });
+      const message = service.mailer.latest("confirmation");
+      const failing = services({
+        requireEmailConfirmation: false,
+        concealUserExistence: false,
+        repository: transactionFailureRepository(service.repository, failure),
+      });
+      const failed = await (failing.users as unknown as { confirmEmailChange: (input: unknown) => Promise<unknown> }).confirmEmailChange({
+        email: target,
+        token: message?.variables.token ?? "",
+        redirectTo: CALLBACK,
+      });
+      expect(failed).toMatchObject({ data: null, error: { code: "internal_error" } });
+      expect((await service.repository.users.findById(created.user.id))?.email).toBe(`email-change-failure-${failure}@example.com`);
+      const tokenRow = await disposable?.pool.query(
+        "SELECT consumed_at FROM auth.one_time_tokens WHERE target = $1 AND purpose = 'email_change' ORDER BY created_at DESC LIMIT 1",
+        [target],
+      );
+      expect(tokenRow?.rows[0]?.consumed_at).toBeNull();
+      const sessionRows = await disposable?.pool.query(
+        "SELECT revoked_at FROM auth.sessions WHERE user_id = $1",
+        [created.user.id],
+      );
+      expect(sessionRows?.rows.every((row) => row.revoked_at === null)).toBe(true);
+    }
+  });
+
+  it("does not consume an email-change proof for a banned or deleted owner", async () => {
+    for (const state of ["banned", "deleted"] as const) {
+      const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+      const oldEmail = `email-change-blocked-${state}@example.com`;
+      const target = `email-change-blocked-target-${state}@example.com`;
+      const created = data(await service.users.signUp({ email: oldEmail, password: PASSWORD }));
+      if (created.user === null || created.session === null) throw new Error("expected blocked email-change user");
+      await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
+        { session: created.session },
+        { email: target, redirectTo: CALLBACK },
+      );
+      const message = service.mailer.latest("confirmation");
+      if (state === "banned") {
+        await service.repository.users.update(created.user.id, { banned_until: new Date(serviceNow.getTime() + 60 * 60 * 1000) });
+      } else {
+        await service.repository.users.softDelete(created.user.id, serviceNow);
+      }
+      const blocked = await (service.users as unknown as { confirmEmailChange: (input: unknown) => Promise<unknown> }).confirmEmailChange({
+        email: target,
+        token: message?.variables.token ?? "",
+        redirectTo: CALLBACK,
+      });
+      expect(blocked).toMatchObject({ data: null, error: { code: state === "banned" ? "invalid_credentials" : "invalid_token" } });
+      const ownerRow = await disposable?.pool.query("SELECT email FROM auth.users WHERE id = $1", [created.user.id]);
+      expect(ownerRow?.rows[0]?.email).toBe(state === "deleted" ? oldEmail : oldEmail);
+      const tokenRow = await disposable?.pool.query(
+        "SELECT consumed_at FROM auth.one_time_tokens WHERE target = $1 AND purpose = 'email_change' ORDER BY created_at DESC LIMIT 1",
+        [target],
+      );
+      expect(tokenRow?.rows[0]?.consumed_at).toBeNull();
+      const sessionRows = await disposable?.pool.query("SELECT revoked_at FROM auth.sessions WHERE user_id = $1", [created.user.id]);
+      expect(sessionRows?.rows.every((row) => row.revoked_at === null)).toBe(true);
+    }
+  });
+
+  it("allows only one concurrent proof to commit an email change and revoke sessions", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const created = data(await service.users.signUp({ email: "email-change-concurrent@example.com", password: PASSWORD }));
+    if (created.user === null || created.session === null) throw new Error("expected concurrent email-change user");
+    const target = "email-change-concurrent-target@example.com";
+    await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
+      { session: created.session },
+      { email: target, redirectTo: CALLBACK },
+    );
+    const message = service.mailer.latest("confirmation");
+    const input = { email: target, token: message?.variables.token ?? "", redirectTo: CALLBACK };
+    const results = await Promise.all([
+      (service.users as unknown as { confirmEmailChange: (value: unknown) => Promise<unknown> }).confirmEmailChange(input),
+      (service.users as unknown as { confirmEmailChange: (value: unknown) => Promise<unknown> }).confirmEmailChange(input),
+    ]);
+    expect(results.filter((result) => (result as { readonly error: unknown }).error === null)).toHaveLength(1);
+    expect(results.filter((result) => (result as { readonly data: unknown }).data === null)).toHaveLength(1);
+    expect((await service.repository.users.findById(created.user.id))?.email).toBe(target);
+    const sessionRows = await disposable?.pool.query("SELECT revoked_at FROM auth.sessions WHERE user_id = $1", [created.user.id]);
+    expect(sessionRows?.rows.every((row) => row.revoked_at !== null)).toBe(true);
+  });
+
+  it("resolves concurrent normalized-email target races with one committed proof", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const first = data(await service.users.signUp({ email: "email-change-race-a@example.com", password: PASSWORD }));
+    const second = data(await service.users.signUp({ email: "email-change-race-b@example.com", password: PASSWORD }));
+    if (first.user === null || first.session === null || second.user === null || second.session === null) {
+      throw new Error("expected target-race users");
+    }
+    const target = "email-change-race-target@example.com";
+    await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
+      { session: first.session },
+      { email: target, redirectTo: CALLBACK },
+    );
+    const firstMessage = service.mailer.latest("confirmation");
+    await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
+      { session: second.session },
+      { email: target, redirectTo: CALLBACK },
+    );
+    const secondMessage = service.mailer.latest("confirmation");
+    const results = await Promise.all([
+      (service.users as unknown as { confirmEmailChange: (input: unknown) => Promise<unknown> }).confirmEmailChange({
+        email: target,
+        token: firstMessage?.variables.token ?? "",
+        redirectTo: CALLBACK,
+      }),
+      (service.users as unknown as { confirmEmailChange: (input: unknown) => Promise<unknown> }).confirmEmailChange({
+        email: target,
+        token: secondMessage?.variables.token ?? "",
+        redirectTo: CALLBACK,
+      }),
+    ]);
+    expect(results.filter((result) => (result as { readonly error: unknown }).error === null)).toHaveLength(1);
+    expect(results.filter((result) => (result as { readonly error: { readonly code?: string } | null }).error?.code === "conflict")).toHaveLength(1);
+    const owners = await disposable?.pool.query("SELECT email FROM auth.users WHERE id IN ($1, $2) ORDER BY email", [first.user.id, second.user.id]);
+    expect(owners?.rows.filter((row) => row.email === target)).toHaveLength(1);
+    const tokenRows = await disposable?.pool.query(
+      "SELECT consumed_at FROM auth.one_time_tokens WHERE target = $1 AND purpose = 'email_change' ORDER BY created_at",
+      [target],
+    );
+    expect(tokenRows?.rows.filter((row) => row.consumed_at !== null)).toHaveLength(1);
+    expect(tokenRows?.rows.filter((row) => row.consumed_at === null)).toHaveLength(1);
   });
 
   it("fails closed for banned session creation and refresh", async () => {
@@ -476,12 +640,119 @@ describe("Task 6 user lifecycle", () => {
     expect(createAfterBan.data).toBeNull();
     const refreshAfterBan = await service.sessions.refresh(created.session.refresh_token);
     expect(refreshAfterBan.data).toBeNull();
+    expect(refreshAfterBan.error?.code).not.toBe("refresh_token_reused");
+    const refreshRows = await disposable?.pool.query(
+      "SELECT rt.used_at, rt.revoked_at FROM auth.refresh_tokens rt JOIN auth.sessions s ON s.id = rt.session_id WHERE s.user_id = $1",
+      [created.user.id],
+    );
+    expect(refreshRows?.rows.every((row) => row.used_at === null && row.revoked_at === null)).toBe(true);
   });
 
-  it("cannot issue an old-password session after a committed reset wins the authorization ordering", async () => {
+  it("fails closed when a committed ban wins races with session creation and refresh", async () => {
+    if (disposable === undefined) throw new Error("expected disposable PostgreSQL");
+    const banRepository = createPostgresAdapter({ pool: disposable.pool });
+
+    const createService = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const createFixture = data(await createService.users.signUp({ email: "session-create-ban-race@example.com", password: PASSWORD }));
+    if (createFixture.user === null) throw new Error("expected session-create race user");
+    const createOriginalTransaction = createService.repository.transaction.bind(createService.repository);
+    let createEnteredResolve: (() => void) | undefined;
+    const createEntered = new Promise<void>((resolve) => { createEnteredResolve = resolve; });
+    let createReleaseResolve: (() => void) | undefined;
+    const createRelease = new Promise<void>((resolve) => { createReleaseResolve = resolve; });
+    (createService.repository as unknown as { transaction: typeof createService.repository.transaction }).transaction = async (callback) =>
+      createOriginalTransaction(async (transaction) => {
+        createEnteredResolve?.();
+        await createRelease;
+        return callback(transaction);
+      });
+    try {
+      const createAttempt = createService.sessions.create(createFixture.user);
+      await createEntered;
+      await banRepository.users.update(createFixture.user.id, { banned_until: new Date(serviceNow.getTime() + 60 * 60 * 1000) });
+      createReleaseResolve?.();
+      expect((await createAttempt).data).toBeNull();
+      const createdSessionRows = await disposable.pool.query("SELECT id FROM auth.sessions WHERE user_id = $1", [createFixture.user.id]);
+      expect(createdSessionRows.rows).toHaveLength(1);
+    } finally {
+      createReleaseResolve?.();
+      (createService.repository as unknown as { transaction: typeof createService.repository.transaction }).transaction = createOriginalTransaction;
+    }
+
+    const refreshService = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const refreshFixture = data(await refreshService.users.signUp({ email: "session-refresh-ban-race@example.com", password: PASSWORD }));
+    if (refreshFixture.user === null || refreshFixture.session === null) throw new Error("expected session-refresh race user");
+    const refreshOriginalTransaction = refreshService.repository.transaction.bind(refreshService.repository);
+    let refreshEnteredResolve: (() => void) | undefined;
+    const refreshEntered = new Promise<void>((resolve) => { refreshEnteredResolve = resolve; });
+    let refreshReleaseResolve: (() => void) | undefined;
+    const refreshRelease = new Promise<void>((resolve) => { refreshReleaseResolve = resolve; });
+    (refreshService.repository as unknown as { transaction: typeof refreshService.repository.transaction }).transaction = async (callback) =>
+      refreshOriginalTransaction(async (transaction) => {
+        refreshEnteredResolve?.();
+        await refreshRelease;
+        return callback(transaction);
+      });
+    try {
+      const refreshAttempt = refreshService.sessions.refresh(refreshFixture.session.refresh_token);
+      await refreshEntered;
+      await banRepository.users.update(refreshFixture.user.id, { banned_until: new Date(serviceNow.getTime() + 60 * 60 * 1000) });
+      refreshReleaseResolve?.();
+      expect((await refreshAttempt).data).toBeNull();
+      const refreshRows = await disposable.pool.query(
+        "SELECT rt.used_at, rt.revoked_at FROM auth.refresh_tokens rt JOIN auth.sessions s ON s.id = rt.session_id WHERE s.user_id = $1",
+        [refreshFixture.user.id],
+      );
+      expect(refreshRows.rows).toHaveLength(1);
+      expect(refreshRows.rows[0]?.used_at).toBeNull();
+      expect(refreshRows.rows[0]?.revoked_at).toBeNull();
+    } finally {
+      refreshReleaseResolve?.();
+      (refreshService.repository as unknown as { transaction: typeof refreshService.repository.transaction }).transaction = refreshOriginalTransaction;
+      await banRepository.close();
+    }
+  });
+
+  it("contains refresh replay durably when the owner is banned or soft-deleted", async () => {
+    for (const state of ["banned", "deleted"] as const) {
+      const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+      const created = data(await service.users.signUp({ email: `refresh-replay-${state}@example.com`, password: PASSWORD }));
+      if (created.user === null || created.session === null) throw new Error("expected refresh replay user");
+      const rotated = data(await service.sessions.refresh(created.session.refresh_token));
+      if (state === "banned") {
+        await service.repository.users.update(created.user.id, { banned_until: new Date(serviceNow.getTime() + 60 * 60 * 1000) });
+      } else {
+        await service.repository.users.softDelete(created.user.id, serviceNow);
+      }
+
+      const replay = await service.sessions.refresh(created.session.refresh_token);
+      expect(replay.data).toBeNull();
+      expect(replay.error?.code).toBe("refresh_token_reused");
+      const rows = await disposable?.pool.query(
+        "SELECT s.revoked_at AS session_revoked_at, rt.revoked_at, rt.used_at FROM auth.sessions s JOIN auth.refresh_tokens rt ON rt.session_id = s.id WHERE s.user_id = $1",
+        [created.user.id],
+      );
+      expect(rows?.rows.length).toBeGreaterThan(1);
+      expect(rows?.rows.every((row) => row.session_revoked_at !== null && row.revoked_at !== null)).toBe(true);
+      const replacementReplay = await service.sessions.refresh(rotated.refresh_token);
+      expect(replacementReplay.data).toBeNull();
+    }
+  });
+
+  it("cannot issue an old-password session after a real recovery reset commits first", async () => {
     const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
     const created = data(await service.users.signUp({ email: "reset-race@example.com", password: PASSWORD }));
     if (created.user === null) throw new Error("expected reset-race user");
+    const recoveryRequest = await service.users.resetPasswordForEmail(created.user.email ?? "", { redirectTo: CALLBACK });
+    expect(recoveryRequest.error).toBeNull();
+    const recoveryMessage = service.mailer.latest("recovery");
+    if (disposable === undefined) throw new Error("expected disposable PostgreSQL");
+    const alternateRepository = createPostgresAdapter({ pool: disposable.pool });
+    const resetService = services({
+      requireEmailConfirmation: false,
+      concealUserExistence: false,
+      repository: alternateRepository,
+    });
 
     const originalTransaction = service.repository.transaction.bind(service.repository);
     let enteredResolve: (() => void) | undefined;
@@ -498,15 +769,13 @@ describe("Task 6 user lifecycle", () => {
     try {
       const oldPasswordSignIn = service.users.signIn({ email: created.user.email ?? "", password: PASSWORD });
       await entered;
-      const replacementHash = await service.passwords.hash("reset-race-new-password");
-      await disposable?.pool.query(
-        "UPDATE auth.password_credentials SET password_hash = $1, password_updated_at = $2 WHERE user_id = $3",
-        [replacementHash, serviceNow, created.user.id],
-      );
-      await disposable?.pool.query(
-        "UPDATE auth.sessions SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL",
-        [serviceNow, created.user.id],
-      );
+      const reset = await resetService.users.resetPassword({
+        email: created.user.email ?? "",
+        token: recoveryMessage?.variables.token ?? "",
+        password: "reset-race-new-password",
+        redirectTo: CALLBACK,
+      });
+      expect(reset.error).toBeNull();
       releaseResolve?.();
       const stale = await oldPasswordSignIn;
       expect(stale.data).toBeNull();
@@ -514,6 +783,7 @@ describe("Task 6 user lifecycle", () => {
     } finally {
       releaseResolve?.();
       (service.repository as unknown as { transaction: typeof service.repository.transaction }).transaction = originalTransaction;
+      await alternateRepository.close();
     }
   });
 });

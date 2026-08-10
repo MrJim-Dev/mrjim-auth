@@ -11,11 +11,18 @@ const CALLBACK = "https://project.example.com/auth/callback";
 const REJECTED_CALLBACK = "https://attacker.example.com/callback";
 const KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 11);
 
+interface ServiceOptions {
+  readonly mailer?: Mailer;
+  readonly issueError?: Error;
+  readonly auditError?: Error;
+  readonly onOperationalFailure?: (event: unknown) => void | Promise<void>;
+}
+
 function limiter(): RateLimiter {
   return { consume: async () => ({ allowed: true, remaining: 99 }) };
 }
 
-function service(existingEmail?: string, suppliedLimiter?: RateLimiter) {
+function service(existingEmail?: string, suppliedLimiter?: RateLimiter, options: ServiceOptions = {}) {
   const existingUser = {
     id: uuidSchema.parse("00000000-0000-4000-8000-000000000601"),
     email: existingEmail ?? null,
@@ -32,7 +39,10 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter) {
     deleted_at: null,
   };
   const tokenRepository = {
-    issue: async () => undefined,
+    issue: async () => {
+      if (options.issueError !== undefined) throw options.issueError;
+      return undefined;
+    },
     consume: async () => null,
     consumeBound: async () => null,
     recordFailure: async () => null,
@@ -53,9 +63,14 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter) {
     roles: { list: async () => [{ id: uuidSchema.parse("00000000-0000-4000-8000-000000000602"), key: roleKeySchema.parse("member"), name: "Member", description: null, rank: 1, is_system: false, created_at: "2026-08-11T00:00:00.000Z", updated_at: "2026-08-11T00:00:00.000Z" }], findById: async () => null, create: async () => ({}), update: async () => ({}), delete: async () => undefined },
     permissions: { list: async () => [], findById: async () => null, create: async () => ({}), update: async () => ({}), delete: async () => undefined },
     authorization: { effectivePermissions: async () => [], assignRole: async () => undefined, unassignRole: async () => undefined, setRolePermissions: async () => undefined, setRoleInheritance: async () => undefined },
-    operations: { appendAudit: async () => undefined, findApiKeyByHash: async () => null },
+    operations: {
+      appendAudit: async () => {
+        if (options.auditError !== undefined) throw options.auditError;
+      },
+      findApiKeyByHash: async () => null,
+    },
   } as unknown as AuthRepository;
-  const mailer: Mailer = new FakeMailer();
+  const mailer: Mailer = options.mailer ?? new FakeMailer();
   const email = new EmailService({ allowedRedirects: [CALLBACK], defaultRedirect: CALLBACK });
   const tokens = new OneTimeTokenService({
     repository,
@@ -74,6 +89,7 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter) {
     rateLimiter: suppliedLimiter ?? limiter(),
     concealUserExistence: true,
     requireEmailConfirmation: true,
+    ...(options.onOperationalFailure === undefined ? {} : { onOperationalFailure: options.onOperationalFailure }),
   });
 }
 
@@ -166,5 +182,89 @@ describe("enumeration-resistant public lifecycle results", () => {
       hasData: firstTime.data !== null,
       error: firstTime.error,
     });
+  });
+
+  it("conceals mailer, audit, and repository issuance failures for recovery", async () => {
+    const failures: Array<{ readonly label: string; readonly options: ServiceOptions }> = [
+      { label: "mailer", options: { mailer: { send: async () => { throw new Error("delivery secret existing@example.com"); } } } },
+      { label: "audit", options: { auditError: new Error("audit secret existing@example.com") } },
+      { label: "repository", options: { issueError: new Error("repository secret existing@example.com") } },
+    ];
+
+    for (const failure of failures) {
+      const existing = await service("existing@example.com", undefined, failure.options)
+        .resetPasswordForEmail("existing@example.com", { redirectTo: CALLBACK });
+      const missing = await service("existing@example.com")
+        .resetPasswordForEmail("missing@example.com", { redirectTo: CALLBACK });
+      expect(existing, failure.label).toEqual(missing);
+    }
+  });
+
+  it("conceals OTP, resend, and duplicate-signup mailer failures", async () => {
+    const failingMailer: Mailer = {
+      send: async () => { throw new Error("delivery secret existing@example.com"); },
+    };
+    const otpExisting = await service("existing@example.com", undefined, { mailer: failingMailer })
+      .signInWithOtp({ email: "existing@example.com", options: { type: "email_otp", redirectTo: CALLBACK } });
+    const otpMissing = await service("existing@example.com")
+      .signInWithOtp({ email: "missing@example.com", options: { type: "email_otp", redirectTo: CALLBACK } });
+    expect(otpExisting).toEqual(otpMissing);
+
+    const resendExisting = await service("existing@example.com", undefined, { mailer: failingMailer })
+      .resend({ type: "recovery", email: "existing@example.com", options: { redirectTo: CALLBACK } });
+    const resendMissing = await service("existing@example.com")
+      .resend({ type: "recovery", email: "missing@example.com", options: { redirectTo: CALLBACK } });
+    expect(resendExisting).toEqual(resendMissing);
+
+    const duplicate = await service("existing@example.com", undefined, { mailer: failingMailer })
+      .signUp({ email: "existing@example.com", password: "correct horse battery staple", options: { redirectTo: CALLBACK } });
+    const firstTime = await service("existing@example.com", undefined, { mailer: failingMailer })
+      .signUp({ email: "new@example.com", password: "correct horse battery staple", options: { redirectTo: CALLBACK } });
+    expect(duplicate).toEqual(firstTime);
+  });
+
+  it("reports only redacted operational failure metadata while concealing the public result", async () => {
+    const events: unknown[] = [];
+    const result = await service("existing@example.com", undefined, {
+      mailer: { send: async () => { throw new Error("raw existing@example.com token=secret-code"); } },
+      onOperationalFailure: (event) => { events.push(event); },
+    }).resetPasswordForEmail("existing@example.com", { redirectTo: CALLBACK }, {
+      ip_address: " 2001:DB8::1 ",
+      user_agent: "browser secret existing@example.com",
+    });
+    expect(result).toEqual({ data: { sent: true }, error: null });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      action: "recovery",
+      template: "recovery",
+      outcome: "failure",
+      error_class: expect.any(String),
+      request: { ip_address: "2001:db8::1", user_agent: expect.stringMatching(/^ua-sha256:/u) },
+    });
+    expect(JSON.stringify(events)).not.toContain("existing@example.com");
+    expect(JSON.stringify(events)).not.toContain("secret-code");
+    expect(JSON.stringify(events)).not.toContain("browser secret");
+  });
+
+  it("consumes rate-limit slots before validating redirects for every concealed issuance path", async () => {
+    const operations: Array<(current: ReturnType<typeof service>) => Promise<unknown>> = [
+      (current) => current.signUp({ email: "existing@example.com", password: "correct horse battery staple", options: { redirectTo: REJECTED_CALLBACK } }),
+      (current) => current.signInWithOtp({ email: "existing@example.com", options: { type: "email_otp", redirectTo: REJECTED_CALLBACK } }),
+      (current) => current.resetPasswordForEmail("existing@example.com", { redirectTo: REJECTED_CALLBACK }),
+      (current) => current.resend({ type: "recovery", email: "existing@example.com", options: { redirectTo: REJECTED_CALLBACK } }),
+    ];
+
+    for (const operation of operations) {
+      const keys: string[] = [];
+      const current = service("existing@example.com", {
+        consume: async (key) => {
+          keys.push(key);
+          return { allowed: true, remaining: 99 };
+        },
+      });
+      const result = await operation(current);
+      expect(result).toMatchObject({ error: { code: "redirect_not_allowed" } });
+      expect(keys).toEqual(["ip:unknown", "identifier:existing@example.com"]);
+    }
   });
 });

@@ -391,7 +391,13 @@ describe("Task 4 PostgreSQL adapter", () => {
     expect(await repository.passwordCredentials.findByUserId(user.id)).toBeNull();
     expect(await repository.oneTimeTokens.consume(tokenHash, "recovery", new Date())).toBeNull();
     await repository.transaction(async (transaction) => {
-      expect(await transaction.sessions.findRefreshForUpdate(session.refreshToken.token_hash)).toBeNull();
+      // Replay classification must still see the locked lineage after a soft
+      // delete; SessionService fails closed for the unused token before any
+      // rotation and uses the same state for durable replay containment.
+      expect(await transaction.sessions.findRefreshForUpdate(session.refreshToken.token_hash)).toMatchObject({
+        session: { user_id: user.id },
+        refreshToken: { session_id: session.session.id },
+      });
     });
   });
 

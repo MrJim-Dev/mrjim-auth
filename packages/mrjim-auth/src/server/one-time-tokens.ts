@@ -140,6 +140,15 @@ function mapOperationalError(error: unknown): AuthResult<never> {
   return authFailure(internalError());
 }
 
+function mapMutationError(error: unknown): AuthResult<never> {
+  if (error instanceof AuthApiError) return authFailure(error);
+  if (error instanceof AuthConfigurationError || error instanceof AuthProgrammingError) throw error;
+  if (typeof error === "object" && error !== null && (error as { readonly code?: unknown }).code === "email_exists") {
+    return authFailure(new AuthApiError("conflict", 409, "Email address is already registered"));
+  }
+  return authFailure(internalError());
+}
+
 /** Server-only purpose-bound token issuer/verifier with project-owned mail. */
 export class OneTimeTokenService {
   private readonly repository: AuthRepository;
@@ -247,15 +256,53 @@ export class OneTimeTokenService {
         { now },
       );
       if (consumed === null) return this.failedVerification(purpose, target, redirect, tokenHash, now);
-      return authSuccess({
-        user_id: consumed.user_id ?? null,
-        purpose,
-        target: consumed.target,
-        redirect: consumed.redirect ?? null,
-        expires_at: consumed.expires_at,
-      });
+      return authSuccess(this.verificationFromConsumed(purpose, consumed));
     } catch (error) {
       return mapOperationalError(error);
+    }
+  }
+
+  /**
+   * Consumes a proof and runs its state mutation in the same adapter-owned
+   * transaction. The callback receives a transaction-scoped repository, but
+   * callers cannot supply or control the transaction boundary.
+   *
+   * Lock order for email changes is token row, owning user, then sessions;
+   * signup confirmation and session creation retain their existing user-first
+   * order and do not hold a session lock while waiting for a token row.
+   *
+   * @internal Server orchestration only; this is intentionally not exported
+   * as a package-root transaction escape.
+   */
+  async consumeForMutation<T>(
+    input: OneTimeTokenVerifyInput,
+    mutation: (transaction: AuthRepository, verification: OneTimeTokenVerification) => Promise<T>,
+  ): Promise<AuthResult<T>> {
+    const purpose = validPurpose(input.purpose);
+    const target = this.bindingTarget(input.target);
+    const redirect = this.resolveRedirect(input.redirectTo ?? input.redirect);
+    const tokenHash = this.hash(typeof input.token === "string" ? input.token : "");
+    if (typeof input.token !== "string" || input.token.length < 1 || input.token.length > 128) {
+      return authFailure(new AuthApiError("invalid_token", 401, "Invalid or expired link"));
+    }
+    const now = validNow(this.clock);
+    try {
+      const result = await this.repository.transaction(async (transaction) => {
+        const consumed = await transaction.oneTimeTokens.consumeBound(
+          tokenHash,
+          purpose,
+          target,
+          redirect,
+          now,
+          { now },
+        );
+        if (consumed === null) throw new AuthApiError("invalid_token", 401, "Invalid or expired link");
+        const verification = this.verificationFromConsumed(purpose, consumed);
+        return mutation(transaction, verification);
+      });
+      return authSuccess(result);
+    } catch (error) {
+      return mapMutationError(error);
     }
   }
 
@@ -286,6 +333,19 @@ export class OneTimeTokenService {
 
   private hash(rawToken: string): Uint8Array {
     return Uint8Array.from(createHmac("sha256", this.tokenHashKey).update(rawToken, "utf8").digest());
+  }
+
+  private verificationFromConsumed(
+    purpose: OneTimeTokenPurpose,
+    consumed: Omit<OneTimeTokenInput, "token_hash">,
+  ): OneTimeTokenVerification {
+    return {
+      user_id: consumed.user_id ?? null,
+      purpose,
+      target: consumed.target,
+      redirect: consumed.redirect ?? null,
+      expires_at: consumed.expires_at,
+    };
   }
 
   private async failedVerification(
