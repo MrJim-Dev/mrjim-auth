@@ -6,11 +6,19 @@
 
 ## Current state
 
-Task 1 and Review Fix Pass 1 are complete in this worktree. The package
-workspace, strict ESM TypeScript configuration, browser-safe public entrypoint,
-Node-only build targets, export map, local verification commands, and handoff
-report are present. The published package manifest is named exactly
-`mrjim-auth`.
+Task 1, Review Fix Pass 1, and Task 2 are complete in this worktree. The
+package workspace, strict ESM TypeScript configuration, browser-safe public
+entrypoint, Node-only build targets, export map, shared auth contracts,
+validated Zod configuration, local verification commands, and handoff reports
+are present. The published package manifest is named exactly `mrjim-auth`.
+
+Task 2 defines the browser-safe result, error, identity, session, role,
+permission, client-option, server-option, adapter, mailer, limiter, and key
+provider contracts. Expected API failures use mutually exclusive `{ data,
+error }` values; configuration and programming failures remain throw-based.
+Production URL, PKCE, TTL, redirect, issuer/audience, and key-material rules
+are validated by Zod 4.4.3. No database, password hashing, migration, OAuth
+provider credential, or Node-only implementation was added.
 
 Task 1 does not implement authentication behavior or create database objects.
 The future PostgreSQL work must create only the clean `auth` schema; no `mrjim`
@@ -34,12 +42,16 @@ Task 1 has no runtime dependencies. Its local development dependencies are
 which is used only to prove browser-platform bundle resolution in the contract
 test.
 
+Task 2 adds the free/open-source, exact-pinned `zod@4.4.3` runtime dependency
+to the `mrjim-auth` package and records it in `pnpm-lock.yaml`. No paid SaaS or
+hosted service is required.
+
 ## Task progress
 
 | Task | Status | Verification |
 | --- | --- | --- |
 | 1. Workspace and exports | Complete | Review Fix Pass 2 checks passed on 2026-08-11 |
-| 2. Shared contracts | Pending | Not run |
+| 2. Shared contracts | Complete | RED/GREEN unit tests, build, typecheck, lint, docs, and frozen-lockfile checks passed on 2026-08-11 |
 | 3. PostgreSQL schema and CLI | Pending | Not run |
 | 4. PostgreSQL repositories | Pending | Not run |
 | 5. JWT and sessions | Pending | Not run |
@@ -55,17 +67,48 @@ test.
 
 ## Blockers
 
-There is no external blocker for Task 1. Release and later feature work remain
-blocked by the intentionally pending Tasks 2-14; this handoff does not start
-those tasks.
+There is no external blocker for Task 2. Tasks 3-14 remain intentionally
+pending; this handoff does not start database migrations, repositories, auth
+flows, OAuth, authorization enforcement, HTTP routes, clients, adapters,
+administration, or release documentation.
 
 ## Remaining work
 
-Execute Tasks 2-14 with independent review after each task, then complete the
-whole-branch review and release handoff. In particular, later work must define
-the `{ data, error }` result contract, implement the clean `auth` PostgreSQL
-schema and explicit migration CLI, and prove that browser bundles cannot reach
-Node/server modules.
+Execute Tasks 3-14 with independent review after each task, then complete the
+whole-branch review and release handoff. In particular, later work must use
+these shared contracts to implement the clean `auth` PostgreSQL schema and
+explicit migration CLI, auth/session/OAuth/RBAC behavior, HTTP and browser/SSR
+surfaces, administration, examples, and release verification.
+
+## Task 2 scope
+
+The Task 2 changes are:
+
+- `packages/mrjim-auth/src/shared/types.ts` — identity-safe `User`,
+  `Identity`, `Session`, `Role`, `Permission`, event, metadata, storage, and
+  option type foundations;
+- `packages/mrjim-auth/src/shared/result.ts` — `AuthResult<T>` and result
+  helpers;
+- `packages/mrjim-auth/src/shared/errors.ts` — stable error codes, API error
+  serialization, and throw-only configuration/programming error classes;
+- `packages/mrjim-auth/src/shared/config.ts` — Zod client/server schemas and
+  inferred option types;
+- `packages/mrjim-auth/src/shared/contracts.ts` — mailer, limiter, key,
+  transaction-neutral repository, session, token, authorization, and audit
+  boundaries;
+- `packages/mrjim-auth/test/unit/shared-contracts.spec.ts` — 9 focused
+  contract tests;
+- `packages/mrjim-auth/package.json` and `pnpm-lock.yaml` — exact-pinned
+  `zod@4.4.3` dependency;
+- `.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-2-report.md` — full handoff
+  report.
+
+RED evidence: `pnpm vitest run
+packages/mrjim-auth/test/unit/shared-contracts.spec.ts` failed before test
+collection because `../../src/shared/result.js` did not exist.
+
+GREEN evidence: the same focused command passed with 1 file and 9 tests;
+`pnpm typecheck` passed after implementation.
 
 ## Task 1 scope
 
@@ -101,5 +144,21 @@ Node built-ins and bare server-only dependencies such as `pg`.
 - `pnpm vitest run packages/mrjim-auth/test/contract/package-exports.spec.ts` — passed (1 file, 6 tests) after `pnpm build`.
 - `pnpm lint` — passed.
 - `pnpm docs:check` — passed; 2 required documents found.
+
+Task 2 final verification:
+
+- `pnpm install --frozen-lockfile` — passed; lockfile was up to date.
+- `pnpm test` — passed; browser and Node builds completed, 2 files and 15
+  tests passed.
+- `pnpm typecheck` — passed.
+- `pnpm lint` — passed.
+- `pnpm docs:check` — passed; 2 required documents found.
+- `git diff --check` — passed with no whitespace errors.
+
+Task 2 self-review found no PostgreSQL, password-hasher, private-key loader,
+migration, admin-secret, provider-credential, or Node-only imports in the
+shared source. Repository contracts are adapter-neutral and define no database
+objects or Hayahai/shipping fields. Full auth behavior remains intentionally
+unimplemented for later tasks.
 
 No paid SaaS or hosted service was used or required for these checks.

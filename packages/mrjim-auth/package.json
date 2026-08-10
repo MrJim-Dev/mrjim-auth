@@ -41,5 +41,8 @@
   "sideEffects": false,
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "zod": "4.4.3"
+  }
 }
