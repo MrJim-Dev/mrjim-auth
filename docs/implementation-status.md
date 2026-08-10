@@ -60,8 +60,13 @@ events. Review Fix Pass 1 adds a bounded/redacted server-context boundary,
 pre-transaction PostgreSQL IP validation, a service-owned clock, strict
 session/user/state/timestamp checks for access-token issuance, public-only
 private-JWK handling, and distinct revoked-versus-reused refresh outcomes.
-Browser exports remain unchanged and do not import the server boundary. No
-Task 6+ behavior has been added.
+Review Fix Pass 2 replaces heuristic user-agent redaction with a deterministic
+`ua-sha256:` fingerprint-only durable representation and maps unexpected
+repository, audit, transaction, and replay-containment failures to a fixed
+public `internal_error` result while preserving classified configuration and
+programming throws. Browser exports remain unchanged and do not import the
+server boundary.
+No Task 6+ behavior has been added.
 
 ## Required dependency policy
 
@@ -96,7 +101,7 @@ token/JWKS boundary; no paid or hosted service is required.
 | 2. Shared contracts | Complete — Review Fix Pass 3 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
-| 5. JWT and sessions | Complete — Review Fix Pass 1 | Review RED/GREEN evidence, frozen install, build, full suite (86 tests), typecheck, lint, docs, and diff checks recorded below; post-fix security scan finalization was blocked by missing `snapshotDigest` metadata and was not retried |
+| 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Pending | Not run |
 | 7. OAuth and identities | Pending | Not run |
 | 8. Dynamic authorization | Pending | Not run |
@@ -246,6 +251,56 @@ Final verification evidence:
   `scan.target.snapshotDigest: expected a non-empty string`. It was not
   retried. No finalized result, including no no-findings result, is claimed
   for this fix range.
+
+## Task 5 scope and verification — Review Fix Pass 2
+
+Review Fix Pass 2 began from clean HEAD
+`a7a1f1d354e21e3464d82331cfc3e08e9a3eae3` and changed only the session
+service, shared durable-field comments, and focused tests. The implementation
+commit is `b63a98639118086d94a542b21413e81ae321c4d9`.
+
+The two unresolved findings are resolved as follows:
+
+1. User-agent context is now fail-closed at the durable boundary. Every
+   non-empty caller value is replaced before persistence with a deterministic
+   `ua-sha256:` plus 64 lowercase hexadecimal SHA-256 digest (74 characters
+   total); empty or non-string values become `null`. The raw value is never
+   written to either `auth.sessions.user_agent` or audit rows. Real PostgreSQL
+   coverage exercises embedded 43-character base64url/opaque tokens, quoted
+   multi-word passwords, CR/LF, C0/C1 controls including U+0085, NUL, bidi and
+   format controls, very long input, and ordinary user-agents. It verifies
+   bounded format, no source substring, session/audit consistency, and
+   deterministic correlation for repeated ordinary values. Public and internal
+   comments now document the fingerprint-only representation.
+2. Unexpected repository, database, audit, and transaction failures in
+   `create`, `refresh`, and `signOut` now return `{ data: null, error }` with
+   stable `internal_error`, HTTP 500, and fixed `Internal authentication error`
+   text; operational details are not copied into the result. A replay whose
+   containment transaction fails also returns `internal_error` rather than
+   claiming `refresh_token_reused`. `AuthConfigurationError` and
+   `AuthProgrammingError` remain throws. The deliberate
+   `invalid_refresh_lineage` and `refresh_token_not_rotatable` mappings still
+   return ordinary `invalid_token`.
+
+Strict TDD evidence for Review Fix Pass 2:
+
+- RED against `a7a1f1d354e21e3464d82331cfc3e08e9a3eae3`:
+  `pnpm vitest run packages/mrjim-auth/test/unit/tokens.spec.ts packages/mrjim-auth/test/unit/session-service.spec.ts packages/mrjim-auth/test/integration/session-rotation.spec.ts`
+  ran 3 files and 23 tests with 7 failed and 16 passed. The failures were the
+  fingerprint-only durable assertions and six operational-error boundary
+  assertions.
+- GREEN: the same focused command passed with 3 files and 23/23 tests.
+- Full frozen verification passed: `pnpm install --frozen-lockfile`,
+  `pnpm build`, `pnpm test` (8 files, 93 tests), `pnpm typecheck`, `pnpm lint`,
+  `pnpm docs:check`, the package export contract (1 file, 10 tests), and
+  `git diff --check`.
+- Review Fix Pass 2 changed no migration, package manifest, or lockfile files;
+  migrations `0001`-`0004` remain byte-identical. The only runtime dependency
+  remains exact-pinned free/open-source MIT `jose@6.2.8`; no paid or hosted
+  service is required.
+- The failed post-fix security scanner was not retried. Its documented error
+  remains `scan.target.snapshotDigest: expected a non-empty string`; no
+  finalized no-findings result is claimed for either fix pass.
 
 ## Task 3 scope and verification
 
