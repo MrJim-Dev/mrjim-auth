@@ -5,17 +5,22 @@ import type {
   RoleAssignmentInput,
 } from "../../shared/contracts.js";
 import type { InsertObject, Selectable, UpdateObject } from "kysely";
+import { sql } from "kysely";
 import { PostgresRepositoryError } from "./errors.js";
 import { authDb, operationNow, withTransaction } from "./context.js";
 import {
   PERMISSION_COLUMNS,
   ROLE_COLUMNS,
   type Database,
+  type PermissionsTable,
   type RepositoryContext,
   type RolesTable,
 } from "./schema.js";
 import { mapPermission, mapRole } from "./mapping.js";
-import type { AuthorizationScope, Permission, Role, UUID } from "../../shared/types.js";
+import type { AuthorizationScope, Permission, UUID } from "../../shared/types.js";
+
+/** Stable lock order for role/permission mutations: roles ascending, then permissions ascending. */
+export const AUTHORIZATION_LOCK_ORDER = "roles ascending by id -> permissions ascending by id";
 
 function normalizedScope(scope: AuthorizationScope | null | undefined): {
   readonly scope_type: string | null;
@@ -23,6 +28,42 @@ function normalizedScope(scope: AuthorizationScope | null | undefined): {
 } {
   if (scope === undefined || scope === null) return { scope_type: null, scope_id: null };
   return { scope_type: scope.type.trim().toLowerCase(), scope_id: scope.id.trim() };
+}
+
+async function lockRoles(
+  context: RepositoryContext,
+  requiredRoleIds: readonly UUID[],
+): Promise<void> {
+  const roleIds = [...new Set(requiredRoleIds)].sort((left, right) => left.localeCompare(right));
+  if (roleIds.length === 0) return;
+  const rows = await authDb(context)
+    .selectFrom("roles")
+    .select(["id"])
+    .where("id", "in", roleIds)
+    .orderBy("id", "asc")
+    .forUpdate()
+    .execute();
+  if (rows.length !== roleIds.length) {
+    throw new PostgresRepositoryError("not_found", "one or more roles were not found");
+  }
+}
+
+async function lockPermissions(
+  context: RepositoryContext,
+  requiredPermissionIds: readonly UUID[],
+): Promise<void> {
+  const permissionIds = [...new Set(requiredPermissionIds)].sort((left, right) => left.localeCompare(right));
+  if (permissionIds.length === 0) return;
+  const rows = await authDb(context)
+    .selectFrom("permissions")
+    .select(["id"])
+    .where("id", "in", permissionIds)
+    .orderBy("id", "asc")
+    .forUpdate()
+    .execute();
+  if (rows.length !== permissionIds.length) {
+    throw new PostgresRepositoryError("not_found", "one or more permissions were not found");
+  }
 }
 
 async function lockRole(context: RepositoryContext, roleId: UUID): Promise<Selectable<RolesTable>> {
@@ -38,117 +79,70 @@ async function lockRole(context: RepositoryContext, roleId: UUID): Promise<Selec
   return row;
 }
 
-async function lockAllRoles(context: RepositoryContext, requiredRoleIds: readonly UUID[]): Promise<void> {
-  const rows = await authDb(context)
-    .selectFrom("roles")
-    .select(["id"])
-    .orderBy("id", "asc")
-    .forUpdate()
-    .execute();
-  const available = new Set(rows.map((row) => row.id));
-  for (const roleId of requiredRoleIds) {
-    if (!available.has(roleId)) {
-      throw new PostgresRepositoryError("not_found", `role ${roleId} was not found`);
-    }
-  }
-}
-
-async function ensurePermissionsExist(
+async function existingPermissionIdsForRole(
   context: RepositoryContext,
-  permissionIds: readonly UUID[],
-): Promise<void> {
-  if (permissionIds.length === 0) return;
-  const rows = await authDb(context)
-    .selectFrom("permissions")
-    .select(["id"])
-    .where("id", "in", permissionIds)
-    .execute();
-  if (rows.length !== new Set(permissionIds).size) {
-    throw new PostgresRepositoryError("not_found", "one or more permissions were not found");
-  }
-}
-
-async function inheritedRoleIds(
-  context: RepositoryContext,
-  initialRoleIds: readonly UUID[],
+  roleId: UUID,
 ): Promise<readonly UUID[]> {
-  const all = new Set(initialRoleIds);
-  let frontier: UUID[] = [...new Set(initialRoleIds)];
-  while (frontier.length > 0) {
-    const edges = await authDb(context)
-      .selectFrom("role_inheritance")
-      .select(["role_id", "inherits_role_id"])
-      .where("role_id", "in", frontier)
-      .execute();
-    const next: UUID[] = [];
-    for (const edge of edges) {
-      if (!all.has(edge.inherits_role_id)) {
-        all.add(edge.inherits_role_id);
-        next.push(edge.inherits_role_id);
-      }
-    }
-    frontier = next;
-  }
-  return [...all];
+  const rows = await authDb(context)
+    .selectFrom("role_permissions")
+    .select(["permission_id"])
+    .where("role_id", "=", roleId)
+    .execute();
+  return rows.map((row) => row.permission_id);
 }
 
 function createAuthorizationRepository(context: RepositoryContext): AuthorizationRepository {
   return {
     async effectivePermissions(userId, requestedScope, options) {
-      const user = await authDb(context)
-        .selectFrom("users")
-        .select(["id"])
-        .where("id", "=", userId)
-        .where("deleted_at", "is", null)
-        .executeTakeFirst();
-      if (user === undefined) return [];
-
       const now = operationNow(options);
       const scope = normalizedScope(requestedScope);
-      const assignments = await authDb(context)
-        .selectFrom("user_roles")
-        .select(["role_id"])
-        .where("user_id", "=", userId)
-        .where((expression) =>
-          expression.or([
-            expression("expires_at", "is", null),
-            expression("expires_at", ">", now),
-          ]),
+      type PermissionRow = Pick<Selectable<PermissionsTable>,
+        "id" | "key" | "resource" | "action" | "description" | "created_at" | "updated_at">;
+      const query = sql<PermissionRow>`
+        WITH RECURSIVE direct_roles AS (
+          SELECT ur.role_id
+            FROM auth.user_roles AS ur
+            JOIN auth.users AS u ON u.id = ur.user_id
+           WHERE ur.user_id = ${userId}
+             AND u.deleted_at IS NULL
+             AND (ur.expires_at IS NULL OR ur.expires_at > ${now})
+             AND (
+               (ur.scope_type IS NULL AND ur.scope_id IS NULL)
+               OR (
+                 ur.scope_type = ${scope.scope_type}
+                 AND ur.scope_id = ${scope.scope_id}
+               )
+             )
+        ), effective_roles(role_id) AS (
+          SELECT role_id FROM direct_roles
+          UNION
+          SELECT inheritance.inherits_role_id
+            FROM auth.role_inheritance AS inheritance
+            JOIN effective_roles AS role_state
+              ON role_state.role_id = inheritance.role_id
         )
-        .where((expression) =>
-          scope.scope_type === null
-            ? expression("scope_type", "is", null)
-            : expression.or([
-                expression("scope_type", "is", null),
-                expression.and([
-                  expression("scope_type", "=", scope.scope_type),
-                  expression("scope_id", "=", scope.scope_id),
-                ]),
-              ]),
-        )
-        .execute();
-      const directRoleIds = assignments.map((assignment) => assignment.role_id);
-      if (directRoleIds.length === 0) return [];
-      const roleIds = await inheritedRoleIds(context, directRoleIds);
-      const permissionRows = await authDb(context)
-        .selectFrom("permissions")
-        .select(PERMISSION_COLUMNS)
-        .where(
-          "id",
-          "in",
-          authDb(context)
-            .selectFrom("role_permissions")
-            .select("permission_id")
-            .where("role_id", "in", roleIds),
-        )
-        .orderBy("key", "asc")
-        .execute();
+        SELECT DISTINCT
+               permission.id,
+               permission.key,
+               permission.resource,
+               permission.action,
+               permission.description,
+               permission.created_at,
+               permission.updated_at
+          FROM effective_roles
+          JOIN auth.role_permissions AS role_permission
+            ON role_permission.role_id = effective_roles.role_id
+          JOIN auth.permissions AS permission
+            ON permission.id = role_permission.permission_id
+         ORDER BY permission.key ASC
+      `;
+      const permissionRows = (await query.execute(context.db)).rows;
       const unique = new Map<string, Permission>();
       for (const permission of permissionRows) {
         const mapped = mapPermission(permission);
         unique.set(mapped.id, mapped);
       }
-      return [...unique.values()].sort((left, right) => left.key.localeCompare(right.key));
+      return [...unique.values()];
     },
 
     async assignRole(input: RoleAssignmentInput, options) {
@@ -168,7 +162,7 @@ function createAuthorizationRepository(context: RepositoryContext): Authorizatio
       });
     },
 
-    async unassignRole(userId, roleId, requestedScope, options) {
+    async unassignRole(userId, roleId, requestedScope) {
       await withTransaction(context, async (transaction) => {
         await lockRole(transaction, roleId);
         const normalized = normalizedScope(requestedScope);
@@ -187,26 +181,27 @@ function createAuthorizationRepository(context: RepositoryContext): Authorizatio
       });
     },
 
-    async setRolePermissions(roleId, permissionIds, options) {
+    async setRolePermissions(roleId, permissionIds) {
       await withTransaction(context, async (transaction) => {
-        await lockRole(transaction, roleId);
-        const uniquePermissionIds = [...new Set(permissionIds)];
-        await ensurePermissionsExist(transaction, uniquePermissionIds);
+        await lockRoles(transaction, [roleId]);
+        const currentPermissionIds = await existingPermissionIdsForRole(transaction, roleId);
+        const nextPermissionIds = [...new Set(permissionIds)].sort((left, right) => left.localeCompare(right));
+        await lockPermissions(transaction, [...currentPermissionIds, ...nextPermissionIds]);
         await authDb(transaction).deleteFrom("role_permissions").where("role_id", "=", roleId).execute();
-        if (uniquePermissionIds.length > 0) {
+        if (nextPermissionIds.length > 0) {
           await authDb(transaction)
             .insertInto("role_permissions")
-            .values(uniquePermissionIds.map((permission_id) => ({ role_id: roleId, permission_id })))
+            .values(nextPermissionIds.map((permission_id) => ({ role_id: roleId, permission_id })))
             .execute();
         }
       });
     },
 
-    async setRoleInheritance(roleId, inheritedRoleIdsInput, options) {
+    async setRoleInheritance(roleId, inheritedRoleIdsInput) {
       await withTransaction(context, async (transaction) => {
-        const uniqueRoleIds = [...new Set([roleId, ...inheritedRoleIdsInput])];
-        await lockAllRoles(transaction, uniqueRoleIds);
-        const inheritedRoleIds = [...new Set(inheritedRoleIdsInput)];
+        const inheritedRoleIds = [...new Set(inheritedRoleIdsInput)]
+          .sort((left, right) => left.localeCompare(right));
+        await lockRoles(transaction, [roleId, ...inheritedRoleIds]);
         await authDb(transaction).deleteFrom("role_inheritance").where("role_id", "=", roleId).execute();
         if (inheritedRoleIds.length > 0) {
           await authDb(transaction)
@@ -265,13 +260,18 @@ function createRoleRepository(context: RepositoryContext): RoleRepository {
 
     async update(id, patch, options) {
       return withTransaction(context, async (transaction) => {
-        await lockRole(transaction, id);
+        const role = await lockRole(transaction, id);
+        if (patch.is_system !== undefined && patch.is_system !== role.is_system) {
+          throw new PostgresRepositoryError(
+            "protected_role",
+            `system-role status for ${id} is immutable after creation`,
+          );
+        }
         const values: UpdateObject<Database, "roles"> = { updated_at: operationNow(options) };
         if (patch.key !== undefined) values.key = patch.key;
         if (patch.name !== undefined) values.name = patch.name;
         if (patch.description !== undefined) values.description = patch.description;
         if (patch.rank !== undefined) values.rank = patch.rank;
-        if (patch.is_system !== undefined) values.is_system = patch.is_system;
         const row = await authDb(transaction)
           .updateTable("roles")
           .set(values)
@@ -350,7 +350,23 @@ function createPermissionRepository(context: RepositoryContext): PermissionRepos
     },
 
     async delete(id) {
-      await authDb(context).deleteFrom("permissions").where("id", "=", id).execute();
+      await withTransaction(context, async (transaction) => {
+        const permission = await authDb(transaction)
+          .selectFrom("permissions")
+          .select(["id"])
+          .where("id", "=", id)
+          .executeTakeFirst();
+        if (permission === undefined) return;
+        const roles = await authDb(transaction)
+          .selectFrom("role_permissions")
+          .select(["role_id"])
+          .where("permission_id", "=", id)
+          .orderBy("role_id", "asc")
+          .execute();
+        await lockRoles(transaction, roles.map((role) => role.role_id));
+        await lockPermissions(transaction, [id]);
+        await authDb(transaction).deleteFrom("permissions").where("id", "=", id).execute();
+      });
     },
   } satisfies PermissionRepository;
 }

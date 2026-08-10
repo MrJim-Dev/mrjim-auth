@@ -33,19 +33,21 @@ objects or Hayahai/shipping business fields have been added here.
 
 Task 1 exposes only the documented experimental `createClient` scaffold. It
 returns an immutable empty object and performs no authentication work. The
-server, PostgreSQL, adapter, Next.js server, and testing subpaths remain
-loadable export-map targets but intentionally expose no unfinished public
-functions until their later tasks implement them.
+server, Next.js server, and testing subpaths remain loadable export-map targets
+without unfinished public functions. The PostgreSQL subpath is now the
+implemented Task 3 migration and Task 4 repository boundary.
 
 Task 4 implements the complete internal PostgreSQL repository aggregate with
 the exact-pinned free/open-source Kysely 0.29.5 PostgresDialect over the Task 3
 `auth` schema. The adapter has typed table/row mappings, explicit column
 lists, parameterized queries, transaction-scoped aggregates, atomic
-one-time/OAuth consumption, refresh rotation/revocation lineage, scoped
-recursive permission resolution, role-cycle-safe relationship writes,
-redacted immutable audit append, identity/password/API-key boundaries, and
-caller-owned versus internally owned pool lifecycle. It never runs migrations
-on construction and is exported only from the Node PostgreSQL subpath.
+one-time/OAuth consumption, active-owner session/credential boundaries,
+refresh rotation/revocation lineage with one stable lock order, scoped
+recursive permission resolution, role-system immutability and deterministic
+relationship locks, redacted immutable audit append, identity/password/API-key
+boundaries, and caller-owned versus internally owned pool lifecycle. It never
+runs migrations on construction and is exported only from the Node PostgreSQL
+subpath.
 
 ## Required dependency policy
 
@@ -75,7 +77,7 @@ Docker service, or paid application is required.
 | 1. Workspace and exports | Complete | Review Fix Pass 2 checks passed on 2026-08-11 |
 | 2. Shared contracts | Complete — Review Fix Pass 3 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
-| 4. PostgreSQL repositories | Complete | Task 4 RED/GREEN integration, full suite (63 tests), build, typecheck, docs, and diff checks recorded in Task 4 report |
+| 4. PostgreSQL repositories | Complete — Review Fix Pass 1 | Review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Pending | Not run |
 | 6. Users and recovery | Pending | Not run |
 | 7. OAuth and identities | Pending | Not run |
@@ -90,9 +92,9 @@ Docker service, or paid application is required.
 ## Blockers
 
 There is no external blocker for Task 4. Task 4 deliberately does not start
-repositories, auth flows, OAuth exchanges, authorization enforcement, HTTP
-routes, clients, adapters, administration, or the broader Task 13 documentation
-surface.
+JWT issuance, refresh replay response policy, OAuth provider exchanges,
+authorization enforcement, HTTP routes, clients, adapters, administration, or
+the broader Task 13 documentation surface.
 
 ## Remaining work
 
@@ -110,17 +112,24 @@ integration test starts only a disposable local PostgreSQL cluster with
 `initdb`/`pg_ctl`, explicitly migrates it, and never reads generic
 `DATABASE_URL`. It covers the complete Task 2 aggregate, transaction rollback,
 normalized-email uniqueness races, one-time/OAuth consume races, refresh
-locking and rotation races, session/family/user revocation, role inheritance
-and scope expiry, cycle rollback, CRUD mappings, SQL-injection-like values,
-audit redaction/immutability, and pool ownership.
+locking and rotation races, session/family/user revocation, active-owner
+filtering, replacement expiry/lineage, role inheritance and scope expiry,
+diamond deduplication, deterministic permission replacement/deletion, system
+role immutability, cycle rollback, CRUD mappings, SQL-injection-like values,
+audit/one-time metadata redaction and rollback, OAuth flow validation, and pool
+ownership. Migration tests also verify the database one-time metadata validator
+and exact OAuth flow check; browser boundary fixtures reject static and dynamic
+Kysely imports.
 
 Final evidence before commit:
 
-- `pnpm vitest run packages/mrjim-auth/test/integration/postgres-adapter.spec.ts` — 1 file, 11/11 tests passed.
+- `pnpm vitest run packages/mrjim-auth/test/integration/postgres-adapter.spec.ts` — 1 file, 16/16 tests passed.
 - `pnpm typecheck` — passed.
 - `pnpm build` — passed; browser and Node targets compiled and migration assets copied.
 - `pnpm docs:check` — passed (2 required documents).
-- `pnpm test` — 5 files, 63/63 tests passed; the first full-suite attempt found and corrected one unsorted export expectation, then the final run passed.
+- `pnpm test` — 5 files, 68/68 tests passed; includes migration provenance/schema checks, browser boundary checks, and packed-install CLI coverage.
+- `pnpm install --frozen-lockfile` — passed; lockfile is up to date.
+- `pnpm lint` — passed; strict TypeScript check completed.
 - `git diff --check` — passed.
 
 Remaining work is Task 5 onward. Task 4 does not implement JWT issuance,

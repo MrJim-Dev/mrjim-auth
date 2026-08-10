@@ -61,6 +61,9 @@ export const roleKeySchema = z
   .regex(/^[a-z][a-z0-9_-]*$/, "role keys must be lowercase identifiers")
   .transform((value) => value as LowercaseKey);
 
+/** Validates the only OAuth state flow modes accepted by the repository. */
+export const oauthFlowSchema = z.enum(["sign_in", "link_identity"]);
+
 const permissionResourceSchema = z
   .union([
     z

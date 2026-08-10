@@ -242,7 +242,11 @@ export interface SessionRepository {
     input: CreateSessionInput,
     options?: RepositoryOperationOptions,
   ): Promise<{ session: SessionRecord; refreshToken: RefreshTokenRecord }>;
-  /** Locks and reads a refresh-token row for rotation/replay handling. */
+  /**
+   * Locks and reads a refresh-token row for rotation/replay handling. The
+   * PostgreSQL adapter locks user, session, then refresh-token rows in sorted
+   * order; used/revoked token state remains readable for later replay policy.
+   */
   findRefreshForUpdate(
     tokenHash: Uint8Array,
     options?: RepositoryOperationOptions,

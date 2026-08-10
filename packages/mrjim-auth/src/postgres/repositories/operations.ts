@@ -1,6 +1,7 @@
 import type { OperationsRepository } from "../../shared/contracts.js";
+import { redactedMetadataSchema } from "../../shared/types.js";
 import type { InsertObject, Selectable } from "kysely";
-import { authDb, operationNow } from "./context.js";
+import { assertDigest, authDb, operationNow } from "./context.js";
 import {
   API_KEY_COLUMNS,
   type ApiKeysTable,
@@ -19,6 +20,7 @@ function mapApiKeyRow(
 export function createOperationsRepository(context: RepositoryContext): OperationsRepository {
   return {
     async appendAudit(input, options) {
+      const metadata = redactedMetadataSchema.parse(input.metadata ?? {});
       const values: InsertObject<Database, "audit_log"> = {
         actor_user_id: input.actor_user_id ?? null,
         actor_key_id: input.actor_key_id ?? null,
@@ -28,7 +30,7 @@ export function createOperationsRepository(context: RepositoryContext): Operatio
         target_id: input.target_id ?? null,
         ip_address: input.ip_address ?? null,
         user_agent: input.user_agent ?? null,
-        metadata: input.metadata ?? {},
+        metadata,
         outcome: input.outcome,
         occurred_at: input.occurred_at ?? operationNow(options),
       };
@@ -39,7 +41,7 @@ export function createOperationsRepository(context: RepositoryContext): Operatio
       const row = await authDb(context)
         .selectFrom("api_keys")
         .select(API_KEY_COLUMNS)
-        .where("key_hash", "=", Buffer.from(keyHash))
+        .where("key_hash", "=", assertDigest(keyHash, "API key hash"))
         .where("revoked_at", "is", null)
         .where((expression) =>
           expression.or([

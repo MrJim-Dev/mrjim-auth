@@ -37,7 +37,7 @@ const migrationAssetFiles = [
   "dist/postgres/migrations/0003_oauth_operations.sql",
 ] as const;
 const nodeOnlyImportPattern = /^(?:node:)?(?:assert|buffer|child_process|cluster|crypto|dgram|dns|events|fs|http|https|module|net|os|path|perf_hooks|process|readline|stream|string_decoder|timers|tls|tty|url|util|v8|vm|worker_threads|zlib)(?:\/.*)?$/;
-const serverOnlyDependencyPattern = /^(?:@node-rs\/argon2|argon2|pg|pg-native|postgres|postgresjs)(?:\/.*)?$/;
+const serverOnlyDependencyPattern = /^(?:@node-rs\/argon2|argon2|kysely|pg|pg-native|postgres|postgresjs)(?:\/.*)?$/;
 
 const browserBoundaryPlugin: Plugin = {
   name: "mrjim-auth-browser-boundary",
@@ -219,7 +219,7 @@ describe("package export boundaries", () => {
   });
 
   it("rejects bare server-only dependencies in browser code", async () => {
-    for (const source of ['import "pg";', 'await import("pg");']) {
+    for (const source of ['import "pg";', 'await import("pg");', 'import "kysely";', 'await import("kysely");']) {
       const error = await captureBrowserBuildError(source);
       expect(error).not.toBeNull();
       expect(errorMessages(error)).toContain("browser boundary rejected server-only dependency");

@@ -138,24 +138,53 @@ transaction. A callback rejection rolls back all writes. `sessions.findRefreshFo
 throws an adapter `transaction_required` error outside that scope because a
 row lock returned after autocommit would be an unsafe lock illusion. Refresh
 rotation and protected role/relationship changes wrap themselves in an atomic
-transaction when called on the root aggregate. One-time-token and OAuth-state
-consumption use one conditional `UPDATE ... RETURNING` statement, so only one
-concurrent caller can consume a matching, unexpired, unconsumed, under-attempt
-record.
+transaction when called on the root aggregate. Every session/refresh operation
+uses the same lock order: owning user, sessions sorted by UUID, then refresh
+tokens sorted by UUID. Discovery reads are unlocked; rows are re-read and
+validated after acquiring that order. Session creation locks the active owner
+before inserting its session and first token. Rotation locks and validates the
+active owner, session, and complete session token set, rejects revoked/expired
+state and invalid lineage, caps replacement expiry at the session expiry, and
+updates `sessions.refreshed_at` in the same transaction. Session, family, and
+user revocation use the same order, so a replacement inserted by a concurrent
+rotation cannot escape a completed revocation.
+
+One-time-token and OAuth-state consumption use one conditional
+`UPDATE ... RETURNING` statement inside an adapter transaction, so only one
+concurrent caller can consume a matching, correctly purposed, unexpired,
+unconsumed, under-attempt record. Metadata is parsed with the shared redaction
+schema before issue/audit SQL, and consume mapping failures roll back
+`consumed_at`; the database validator/check remains defense in depth. OAuth
+flows are exactly `sign_in` or `link_identity` at both the database and mapping
+boundaries. Identity, password, one-time-token, OAuth-link, and session reads
+filter soft-deleted owners; admin-only cleanup methods may still address
+already-deleted rows explicitly.
 
 The database remains authoritative for normalized-email uniqueness. The
 `users_email_normalized_key` violation maps to the internal `email_exists`
 adapter error; unrelated PostgreSQL errors, including JSON, foreign-key, and
 deferred role-cycle constraints, are preserved. Refresh rows retain their
-family, parent, replacement, used, expiry, and revocation invariants. Replay
-response policy is intentionally deferred to Task 5.
+family, parent, replacement, used, expiry, and revocation invariants.
+`findRefreshForUpdate` may return a used/revoked token record to the later
+replay layer, but `rotate` always rejects it. Replay response policy is
+intentionally deferred to Task 5.
+
+Authorization permission replacement and permission deletion use the symmetric
+lock order of affected roles sorted by UUID, then permissions sorted by UUID.
+Role inheritance locks only the requested role IDs in that order, and its
+deferred database cycle constraint remains authoritative. `roles.is_system` is
+immutable after creation under the role row lock; system-role deletion remains
+blocked. Effective permissions are returned by one parameterized
+`WITH RECURSIVE` snapshot query with `DISTINCT`, covering direct and multi-hop
+inherited roles, global/exact scopes, and unexpired assignments.
 
 Repository reads map snake_case rows to the shared Supabase-shaped user,
 identity, role, permission, session, and internal credential records. Public
 identity mapping validates the safe scalar identity allowlist and never
 returns password hashes, provider access tokens, refresh tokens, or raw key
-values. `appendAudit` accepts the branded redacted metadata contract while
-the Task 3 database validator and immutable triggers remain defense in depth.
+values. `appendAudit` and one-time-token issue parse the redacted metadata
+contract before SQL while the Task 3 database validator and immutable triggers
+remain defense in depth.
 
 For lifecycle ownership, `close()` is idempotent and ends only a pool created
 from `connectionString`; it is a no-op for a caller-supplied pool, which the

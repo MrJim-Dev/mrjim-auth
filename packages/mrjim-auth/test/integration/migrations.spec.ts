@@ -657,15 +657,33 @@ describe("Task 3 PostgreSQL migrations", () => {
       ),
       /one_time_tokens_expiry_check/i,
     );
+    await expectDatabaseError(
+      () => pool.query(
+        `INSERT INTO auth.one_time_tokens
+          (user_id, purpose, token_hash, target, metadata, expires_at)
+         VALUES ($1, 'invite', $2, 'invite@example.com', $3::jsonb, now() + interval '1 hour')`,
+        [validUserId, Buffer.alloc(32, 37), JSON.stringify({ token: "raw-secret" })],
+      ),
+      /one_time_tokens_metadata_redaction_check/i,
+    );
 
     await expectDatabaseError(
       () => pool.query(
         `INSERT INTO auth.oauth_states
           (state_hash, provider, flow, pkce_challenge, redirect_target, created_at, expires_at)
-         VALUES ($1, 'google', 'login', 'challenge', 'https://example.com/callback', now(), now() + interval '11 minutes')`,
+         VALUES ($1, 'google', 'sign_in', 'challenge', 'https://example.com/callback', now(), now() + interval '11 minutes')`,
         [Buffer.alloc(32, 35)],
       ),
       /oauth_states_ttl_check/i,
+    );
+    await expectDatabaseError(
+      () => pool.query(
+        `INSERT INTO auth.oauth_states
+          (state_hash, provider, flow, pkce_challenge, redirect_target, created_at, expires_at)
+         VALUES ($1, 'google', 'invalid_flow', 'challenge', 'https://example.com/callback', now(), now() + interval '1 minute')`,
+        [Buffer.alloc(32, 38)],
+      ),
+      /oauth_states_flow_check/i,
     );
     await expectDatabaseError(
       () => pool.query(
@@ -778,7 +796,7 @@ describe("Task 3 PostgreSQL migrations", () => {
     await pool.query(
       `INSERT INTO auth.oauth_states
         (state_hash, provider, flow, pkce_challenge, redirect_target, linking_user_id, expires_at)
-       VALUES ($1, 'google', 'login', 'challenge', 'https://example.com/callback', $2, now() + interval '1 minute')`,
+       VALUES ($1, 'google', 'sign_in', 'challenge', 'https://example.com/callback', $2, now() + interval '1 minute')`,
       [Buffer.alloc(32, 10), userId],
     );
     await pool.query(

@@ -1,5 +1,6 @@
 import {
   lowercaseKeySchema,
+  oauthFlowSchema,
   permissionKeySchema,
   redactedMetadataSchema,
   roleKeySchema,
@@ -135,7 +136,7 @@ export function mapOAuthState(
     id: row.id,
     state_hash: copyBytes(row.state_hash),
     provider: row.provider,
-    flow: row.flow as OAuthStateRecord["flow"],
+    flow: oauthFlowSchema.parse(row.flow),
     pkce_challenge: row.pkce_challenge,
     encrypted_verifier: row.encrypted_verifier === null ? null : copyBytes(row.encrypted_verifier),
     redirect: row.redirect_target,

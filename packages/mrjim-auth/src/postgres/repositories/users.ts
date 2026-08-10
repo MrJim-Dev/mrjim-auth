@@ -8,7 +8,11 @@ import type {
   UserRepository,
 } from "../../shared/contracts.js";
 import type { Identity, User, UUID } from "../../shared/types.js";
-import { safeIdentityDataSchema } from "../../shared/types.js";
+import {
+  oauthFlowSchema,
+  redactedMetadataSchema,
+  safeIdentityDataSchema,
+} from "../../shared/types.js";
 import type { InsertObject, Selectable, UpdateObject } from "kysely";
 import { PostgresRepositoryError, mapDuplicateNormalizedEmail } from "./errors.js";
 import {
@@ -46,6 +50,29 @@ function userNotFound(id: UUID): PostgresRepositoryError {
 
 function mapUserRow(row: Selectable<UsersTable>): User {
   return mapUser(row);
+}
+
+const IDENTITY_JOIN_COLUMNS = [
+  "identities.id as id",
+  "identities.user_id as user_id",
+  "identities.provider as provider",
+  "identities.provider_subject as provider_subject",
+  "identities.email as email",
+  "identities.email_normalized as email_normalized",
+  "identities.identity_data as identity_data",
+  "identities.created_at as created_at",
+  "identities.updated_at as updated_at",
+] as const;
+
+async function lockActiveUser(context: RepositoryContext, userId: UUID): Promise<boolean> {
+  const row = await authDb(context)
+    .selectFrom("users")
+    .select(["id"])
+    .where("id", "=", userId)
+    .where("deleted_at", "is", null)
+    .forUpdate()
+    .executeTakeFirst();
+  return row !== undefined;
 }
 
 function createUsersRepository(context: RepositoryContext): UserRepository {
@@ -158,11 +185,21 @@ function createUsersRepository(context: RepositoryContext): UserRepository {
     },
 
     async softDelete(id, deletedAt, options) {
-      await authDb(context)
-        .updateTable("users")
-        .set({ deleted_at: deletedAt ?? operationNow(options), updated_at: operationNow(options) })
-        .where("id", "=", id)
-        .execute();
+      await withTransaction(context, async (transaction) => {
+        const row = await authDb(transaction)
+          .selectFrom("users")
+          .select(["id"])
+          .where("id", "=", id)
+          .forUpdate()
+          .executeTakeFirst();
+        if (row === undefined) return;
+        const now = operationNow(options);
+        await authDb(transaction)
+          .updateTable("users")
+          .set({ deleted_at: deletedAt ?? now, updated_at: now })
+          .where("id", "=", id)
+          .execute();
+      });
     },
   } satisfies UserRepository;
 }
@@ -172,9 +209,11 @@ function createIdentityRepository(context: RepositoryContext): IdentityRepositor
     async findByProviderSubject(provider, providerSubject) {
       const row = await authDb(context)
         .selectFrom("identities")
-        .select(IDENTITY_COLUMNS)
+        .innerJoin("users", "users.id", "identities.user_id")
+        .select(IDENTITY_JOIN_COLUMNS)
         .where("provider", "=", provider.trim().toLowerCase())
         .where("provider_subject", "=", providerSubject)
+        .where("users.deleted_at", "is", null)
         .executeTakeFirst();
       return row === undefined ? null : mapIdentity(row);
     },
@@ -182,33 +221,40 @@ function createIdentityRepository(context: RepositoryContext): IdentityRepositor
     async listByUserId(userId) {
       const rows = await authDb(context)
         .selectFrom("identities")
-        .select(IDENTITY_COLUMNS)
+        .innerJoin("users", "users.id", "identities.user_id")
+        .select(IDENTITY_JOIN_COLUMNS)
         .where("user_id", "=", userId)
-        .orderBy("created_at", "asc")
-        .orderBy("id", "asc")
+        .where("users.deleted_at", "is", null)
+        .orderBy("identities.created_at", "asc")
+        .orderBy("identities.id", "asc")
         .execute();
       return rows.map(mapIdentity);
     },
 
     async create(input, options) {
-      const email = normalizeEmail(input.email);
-      const now = operationNow(options);
-      const values: InsertObject<Database, "identities"> = {
-        user_id: input.user_id,
-        provider: input.provider.trim().toLowerCase(),
-        provider_subject: input.provider_subject,
-        email: email.display,
-        email_normalized: email.normalized,
-        identity_data: safeIdentityDataSchema.parse(input.identity_data),
-        created_at: now,
-        updated_at: now,
-      };
-      const row = await authDb(context)
-        .insertInto("identities")
-        .values(values)
-        .returning(IDENTITY_COLUMNS)
-        .executeTakeFirstOrThrow();
-      return mapIdentity(row);
+      return withTransaction(context, async (transaction) => {
+        if (!(await lockActiveUser(transaction, input.user_id))) {
+          throw userNotFound(input.user_id);
+        }
+        const email = normalizeEmail(input.email);
+        const now = operationNow(options);
+        const values: InsertObject<Database, "identities"> = {
+          user_id: input.user_id,
+          provider: input.provider.trim().toLowerCase(),
+          provider_subject: input.provider_subject,
+          email: email.display,
+          email_normalized: email.normalized,
+          identity_data: safeIdentityDataSchema.parse(input.identity_data),
+          created_at: now,
+          updated_at: now,
+        };
+        const row = await authDb(transaction)
+          .insertInto("identities")
+          .values(values)
+          .returning(IDENTITY_COLUMNS)
+          .executeTakeFirstOrThrow();
+        return mapIdentity(row);
+      });
     },
 
     async deleteById(id) {
@@ -222,8 +268,10 @@ function createPasswordCredentialRepository(context: RepositoryContext): Passwor
     async findByUserId(userId) {
       const row = await authDb(context)
         .selectFrom("password_credentials")
+        .innerJoin("users", "users.id", "password_credentials.user_id")
         .select(PASSWORD_COLUMNS)
-        .where("user_id", "=", userId)
+        .where("password_credentials.user_id", "=", userId)
+        .where("users.deleted_at", "is", null)
         .executeTakeFirst();
       if (row === undefined) return null;
       return {
@@ -234,17 +282,20 @@ function createPasswordCredentialRepository(context: RepositoryContext): Passwor
     },
 
     async upsert(userId, passwordHash, updatedAt, options) {
-      const now = updatedAt ?? operationNow(options);
-      await authDb(context)
-        .insertInto("password_credentials")
-        .values({ user_id: userId, password_hash: passwordHash, password_updated_at: now })
-        .onConflict((conflict) =>
-          conflict.column("user_id").doUpdateSet({
-            password_hash: passwordHash,
-            password_updated_at: now,
-          }),
-        )
-        .execute();
+      await withTransaction(context, async (transaction) => {
+        if (!(await lockActiveUser(transaction, userId))) throw userNotFound(userId);
+        const now = updatedAt ?? operationNow(options);
+        await authDb(transaction)
+          .insertInto("password_credentials")
+          .values({ user_id: userId, password_hash: passwordHash, password_updated_at: now })
+          .onConflict((conflict) =>
+            conflict.column("user_id").doUpdateSet({
+              password_hash: passwordHash,
+              password_updated_at: now,
+            }),
+          )
+          .execute();
+      });
     },
 
     async deleteByUserId(userId) {
@@ -256,33 +307,53 @@ function createPasswordCredentialRepository(context: RepositoryContext): Passwor
 function createOneTimeTokenRepository(context: RepositoryContext): OneTimeTokenRepository {
   return {
     async issue(input, options) {
-      const values: InsertObject<Database, "one_time_tokens"> = {
-        user_id: input.user_id ?? null,
-        purpose: input.purpose,
-        token_hash: assertDigest(input.token_hash, "one-time token hash"),
-        target: input.target,
-        redirect: input.redirect ?? null,
-        metadata: input.metadata ?? {},
-        attempt_count: 0,
-        created_at: operationNow(options),
-        expires_at: input.expires_at,
-        consumed_at: null,
-      };
-      await authDb(context).insertInto("one_time_tokens").values(values).execute();
+      const metadata = redactedMetadataSchema.parse(input.metadata ?? {});
+      const tokenHash = assertDigest(input.token_hash, "one-time token hash");
+      await withTransaction(context, async (transaction) => {
+        if (input.user_id !== null && input.user_id !== undefined
+          && !(await lockActiveUser(transaction, input.user_id))) {
+          throw userNotFound(input.user_id);
+        }
+        const values: InsertObject<Database, "one_time_tokens"> = {
+          user_id: input.user_id ?? null,
+          purpose: input.purpose,
+          token_hash: tokenHash,
+          target: input.target,
+          redirect: input.redirect ?? null,
+          metadata,
+          attempt_count: 0,
+          created_at: operationNow(options),
+          expires_at: input.expires_at,
+          consumed_at: null,
+        };
+        await authDb(transaction).insertInto("one_time_tokens").values(values).execute();
+      });
     },
 
     async consume(tokenHash, purpose, now) {
-      const row = await authDb(context)
-        .updateTable("one_time_tokens")
-        .set({ consumed_at: now })
-        .where("token_hash", "=", assertDigest(tokenHash, "one-time token hash"))
-        .where("purpose", "=", purpose)
-        .where("consumed_at", "is", null)
-        .where("expires_at", ">", now)
-        .where("attempt_count", "<", 5)
-        .returning(ONE_TIME_TOKEN_COLUMNS)
-        .executeTakeFirst();
-      return row === undefined ? null : mapConsumedOneTimeToken(row);
+      return withTransaction(context, async (transaction) => {
+        const row = await authDb(transaction)
+          .updateTable("one_time_tokens")
+          .set({ consumed_at: now })
+          .where("token_hash", "=", assertDigest(tokenHash, "one-time token hash"))
+          .where("purpose", "=", purpose)
+          .where("consumed_at", "is", null)
+          .where("expires_at", ">", now)
+          .where("attempt_count", "<", 5)
+          .where((expression) => expression.or([
+            expression("user_id", "is", null),
+            expression.exists(
+              expression
+                .selectFrom("users")
+                .select("id")
+                .whereRef("users.id", "=", "one_time_tokens.user_id")
+                .where("deleted_at", "is", null),
+            ),
+          ]))
+          .returning(ONE_TIME_TOKEN_COLUMNS)
+          .executeTakeFirst();
+        return row === undefined ? null : mapConsumedOneTimeToken(row);
+      });
     },
   } satisfies OneTimeTokenRepository;
 }
@@ -290,34 +361,54 @@ function createOneTimeTokenRepository(context: RepositoryContext): OneTimeTokenR
 function createOAuthStateRepository(context: RepositoryContext): OAuthStateRepository {
   return {
     async create(input, options) {
-      const values: InsertObject<Database, "oauth_states"> = {
-        state_hash: assertDigest(input.state_hash, "OAuth state hash"),
-        provider: input.provider.trim().toLowerCase(),
-        flow: input.flow,
-        pkce_challenge: input.pkce_challenge,
-        encrypted_verifier:
-          input.encrypted_verifier === undefined || input.encrypted_verifier === null
-            ? null
-            : Buffer.from(input.encrypted_verifier),
-        redirect_target: input.redirect,
-        linking_user_id: input.linking_user_id ?? null,
-        expires_at: input.expires_at,
-        consumed_at: null,
-        created_at: operationNow(options),
-      };
-      await authDb(context).insertInto("oauth_states").values(values).execute();
+      const flow = oauthFlowSchema.parse(input.flow);
+      const stateHash = assertDigest(input.state_hash, "OAuth state hash");
+      await withTransaction(context, async (transaction) => {
+        if (input.linking_user_id !== null && input.linking_user_id !== undefined
+          && !(await lockActiveUser(transaction, input.linking_user_id))) {
+          throw userNotFound(input.linking_user_id);
+        }
+        const values: InsertObject<Database, "oauth_states"> = {
+          state_hash: stateHash,
+          provider: input.provider.trim().toLowerCase(),
+          flow,
+          pkce_challenge: input.pkce_challenge,
+          encrypted_verifier:
+            input.encrypted_verifier === undefined || input.encrypted_verifier === null
+              ? null
+              : Buffer.from(input.encrypted_verifier),
+          redirect_target: input.redirect,
+          linking_user_id: input.linking_user_id ?? null,
+          expires_at: input.expires_at,
+          consumed_at: null,
+          created_at: operationNow(options),
+        };
+        await authDb(transaction).insertInto("oauth_states").values(values).execute();
+      });
     },
 
     async consume(stateHash, now) {
-      const row = await authDb(context)
-        .updateTable("oauth_states")
-        .set({ consumed_at: now })
-        .where("state_hash", "=", assertDigest(stateHash, "OAuth state hash"))
-        .where("consumed_at", "is", null)
-        .where("expires_at", ">", now)
-        .returning(OAUTH_STATE_COLUMNS)
-        .executeTakeFirst();
-      return row === undefined ? null : mapOAuthState(row);
+      return withTransaction(context, async (transaction) => {
+        const row = await authDb(transaction)
+          .updateTable("oauth_states")
+          .set({ consumed_at: now })
+          .where("state_hash", "=", assertDigest(stateHash, "OAuth state hash"))
+          .where("consumed_at", "is", null)
+          .where("expires_at", ">", now)
+          .where((expression) => expression.or([
+            expression("linking_user_id", "is", null),
+            expression.exists(
+              expression
+                .selectFrom("users")
+                .select("id")
+                .whereRef("users.id", "=", "oauth_states.linking_user_id")
+                .where("deleted_at", "is", null),
+            ),
+          ]))
+          .returning(OAUTH_STATE_COLUMNS)
+          .executeTakeFirst();
+        return row === undefined ? null : mapOAuthState(row);
+      });
     },
   } satisfies OAuthStateRepository;
 }
