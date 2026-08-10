@@ -199,6 +199,7 @@ export interface SessionRecord {
   user_id: UUID;
   aal: number;
   ip_address: string | null;
+  /** Deterministic `ua-sha256:` fingerprint; raw user-agent input is never persisted. */
   user_agent: string | null;
   created_at: Date;
   refreshed_at: Date;
@@ -225,6 +226,7 @@ export interface CreateSessionInput {
   user_id: UUID;
   aal?: number;
   ip_address?: string | null;
+  /** Already-fingerprinted durable value; raw user-agent input must not cross this boundary. */
   user_agent?: string | null;
   expires_at: Date;
   token_hash: Uint8Array;
@@ -357,6 +359,7 @@ export interface AuditEventInput {
   target_type: string;
   target_id?: UUID | null;
   ip_address?: string | null;
+  /** Already-fingerprinted durable value; raw user-agent input must not cross this boundary. */
   user_agent?: string | null;
   metadata?: RedactedMetadata;
   outcome: "success" | "failure";

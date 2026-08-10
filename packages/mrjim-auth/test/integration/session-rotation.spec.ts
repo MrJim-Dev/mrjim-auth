@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -246,42 +246,77 @@ describe("Task 5 rotating PostgreSQL sessions", () => {
     expect(rows[0]?.token_hash.toString("utf8")).not.toContain(session.refresh_token);
   });
 
-  it("bounds and redacts hostile context before durable session and audit writes", async () => {
-    const user = await createUser("session-context-redaction@example.com");
-    const rawBearer = "Bearer eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature";
-    const hostileUserAgent = `Mozilla/5.0\n${rawBearer} ${"x".repeat(2_048)}\u0000`;
-    const session = requireData(await requireSessionService().create(user, {
-      ip_address: "not-an-ip-address",
-      user_agent: hostileUserAgent,
+  it("persists only bounded one-way user-agent fingerprints in sessions and audits", async () => {
+    const opaque = "A".repeat(43);
+    const cases = [
+      `Mozilla/5.0 embedded=${opaque}/tail`,
+      'Mozilla/5.0 password="quoted password with spaces"',
+      "Mozilla/5.0\r\nAuthorization: Bearer secret-value",
+      "Mozilla/5.0\u0000\u0009\u001f\u007f\u0085",
+      "Mozilla/5.0\u200b\u200e\u202e\u2066",
+      `Mozilla/5.0 ${"long-value-".repeat(20_000)}`,
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15",
+    ];
+    const storedValues: string[] = [];
+
+    for (const [index, source] of cases.entries()) {
+      const user = await createUser(`session-context-fingerprint-${index}@example.com`);
+      const session = requireData(await requireSessionService().create(user, {
+        ip_address: "127.0.0.1",
+        user_agent: source,
+      }));
+      const claims = requireData(await requireTokenService().verifyAccessToken(session.access_token));
+      const sessionRow = (await requirePool().query<{
+        readonly user_agent: string | null;
+      }>(
+        "SELECT user_agent FROM auth.sessions WHERE id = $1",
+        [claims.sid],
+      )).rows[0];
+      const auditRow = (await requirePool().query<{
+        readonly user_agent: string | null;
+      }>(
+        `SELECT user_agent
+           FROM auth.audit_log
+          WHERE actor_session_id = $1
+            AND action = 'session.created'
+          ORDER BY occurred_at DESC, id DESC
+          LIMIT 1`,
+        [claims.sid],
+      )).rows[0];
+
+      expect(sessionRow?.user_agent).toMatch(/^ua-sha256:[0-9a-f]{64}$/);
+      expect(sessionRow?.user_agent?.length).toBe(74);
+      expect(auditRow?.user_agent).toBe(sessionRow?.user_agent);
+      expect(sessionRow?.user_agent).not.toContain(source);
+      expect(auditRow?.user_agent).not.toContain(source);
+      storedValues.push(sessionRow?.user_agent ?? "");
+    }
+
+    const ordinaryUserAgent = cases.at(-1);
+    if (ordinaryUserAgent === undefined) throw new Error("ordinary user-agent fixture missing");
+    const expectedFingerprint = `ua-sha256:${createHash("sha256")
+      .update(ordinaryUserAgent, "utf8")
+      .digest("hex")}`;
+    expect(storedValues.at(-1)).toBe(expectedFingerprint);
+
+    const repeatUser = await createUser("session-context-fingerprint-repeat@example.com");
+    const first = requireData(await requireSessionService().create(repeatUser, {
+      user_agent: ordinaryUserAgent,
     }));
-    const claims = requireData(await requireTokenService().verifyAccessToken(session.access_token));
-
-    const sessionRow = (await requirePool().query<{
-      readonly ip_address: string | null;
+    const second = requireData(await requireSessionService().create(repeatUser, {
+      user_agent: ordinaryUserAgent,
+    }));
+    const firstClaims = requireData(await requireTokenService().verifyAccessToken(first.access_token));
+    const secondClaims = requireData(await requireTokenService().verifyAccessToken(second.access_token));
+    const repeatedRows = (await requirePool().query<{
       readonly user_agent: string | null;
     }>(
-      "SELECT ip_address, user_agent FROM auth.sessions WHERE id = $1",
-      [claims.sid],
-    )).rows[0];
-    expect(sessionRow?.ip_address).toBeNull();
-    expect(sessionRow?.user_agent).toContain("Mozilla/5.0");
-    expect(sessionRow?.user_agent?.length).toBeLessThanOrEqual(512);
-    expect(sessionRow?.user_agent).not.toContain(rawBearer);
-    expect(sessionRow?.user_agent).not.toMatch(/[\u0000-\u001f\u007f]/);
-
-    const auditRows = (await requirePool().query<{
-      readonly ip_address: string | null;
-      readonly user_agent: string | null;
-      readonly metadata: Record<string, unknown>;
-    }>(
-      "SELECT ip_address, user_agent, metadata FROM auth.audit_log WHERE actor_session_id = $1",
-      [claims.sid],
+      "SELECT user_agent FROM auth.sessions WHERE id IN ($1, $2) ORDER BY id",
+      [firstClaims.sid, secondClaims.sid],
     )).rows;
-    expect(auditRows.length).toBeGreaterThan(0);
-    expect(auditRows.every((row) => row.ip_address === null)).toBe(true);
-    expect(auditRows.every((row) => (row.user_agent?.length ?? 0) <= 512)).toBe(true);
-    expect(JSON.stringify(auditRows)).not.toContain(rawBearer);
-    expect(JSON.stringify(auditRows)).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(repeatedRows).toHaveLength(2);
+    expect(repeatedRows[0]?.user_agent).toBe(expectedFingerprint);
+    expect(repeatedRows[1]?.user_agent).toBe(expectedFingerprint);
   });
 
   it("rotates one refresh winner while preserving family and parent lineage", async () => {

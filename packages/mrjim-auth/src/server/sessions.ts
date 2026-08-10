@@ -1,8 +1,12 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { decodeJwt } from "jose";
 import { authFailure, authSuccess, type AuthResult } from "../shared/result.js";
-import { AuthApiError, AuthConfigurationError } from "../shared/errors.js";
+import {
+  AuthApiError,
+  AuthConfigurationError,
+  AuthProgrammingError,
+} from "../shared/errors.js";
 import type {
   AuthRepository,
   RefreshTokenRecord,
@@ -13,9 +17,10 @@ import { sanitizeRedactedMetadata, uuidSchema } from "../shared/types.js";
 import type { AccessTokenClaims } from "./tokens.js";
 import { TokenService } from "./tokens.js";
 
-/** Context attached to a session operation and its redacted audit event. */
+/** Context attached to a session operation; raw user-agent values are never persisted. */
 export interface SessionContext {
   readonly ip_address?: string | null;
+  /** Untrusted input used only to derive a bounded `ua-sha256:` fingerprint. */
   readonly user_agent?: string | null;
   /** Authentication assurance level for a newly created session. */
   readonly aal?: number;
@@ -51,14 +56,7 @@ type RefreshOutcome =
 
 const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const OPAQUE_REFRESH_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const MAX_USER_AGENT_LENGTH = 512;
-const USER_AGENT_TRUNCATION_MARKER = "…[TRUNCATED]";
-const PEM_CREDENTIAL_PATTERN = /-----BEGIN [^-]+-----.*?-----END [^-]+-----/giu;
-const JWT_CREDENTIAL_PATTERN = /\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu;
-const AUTHORIZATION_CREDENTIAL_PATTERN = /\b(Bearer|Basic)\s+[^\s,;]+/giu;
-const SENSITIVE_ASSIGNMENT_PATTERN =
-  /\b(authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|secret|password|credential|cookie|session[_-]?token|token)\s*([=:])\s*[^\s,;]+/giu;
-const OPAQUE_CREDENTIAL_PATTERN = /\b[A-Za-z0-9_-]{43}\b/gu;
+const USER_AGENT_FINGERPRINT_PREFIX = "ua-sha256:";
 
 type NormalizedSessionContext = {
   readonly ip_address: string | null;
@@ -89,20 +87,11 @@ function normalizeIpAddress(value: unknown): string | null {
   return normalized.toLowerCase();
 }
 
-function normalizeUserAgent(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
-  if (normalized === "") return null;
-
-  const redacted = normalized
-    .replace(PEM_CREDENTIAL_PATTERN, "[REDACTED_KEY]")
-    .replace(JWT_CREDENTIAL_PATTERN, "[REDACTED_JWT]")
-    .replace(AUTHORIZATION_CREDENTIAL_PATTERN, "$1 [REDACTED]")
-    .replace(SENSITIVE_ASSIGNMENT_PATTERN, "$1$2[REDACTED]")
-    .replace(OPAQUE_CREDENTIAL_PATTERN, "[REDACTED_TOKEN]");
-  const codePoints = Array.from(redacted);
-  if (codePoints.length <= MAX_USER_AGENT_LENGTH) return redacted;
-  return `${codePoints.slice(0, MAX_USER_AGENT_LENGTH - USER_AGENT_TRUNCATION_MARKER.length).join("")}${USER_AGENT_TRUNCATION_MARKER}`;
+function userAgentFingerprint(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  return `${USER_AGENT_FINGERPRINT_PREFIX}${createHash("sha256")
+    .update(value, "utf8")
+    .digest("hex")}`;
 }
 
 function normalizeSessionContext(
@@ -111,7 +100,7 @@ function normalizeSessionContext(
   const source = (context !== null && typeof context === "object" ? context : {}) as SessionContext;
   return {
     ip_address: normalizeIpAddress(source.ip_address),
-    user_agent: normalizeUserAgent(source.user_agent),
+    user_agent: userAgentFingerprint(source.user_agent),
     aal: sessionAal(source),
   };
 }
@@ -149,6 +138,17 @@ function sessionExpired(): AuthApiError {
 
 function refreshTokenReused(): AuthApiError {
   return new AuthApiError("refresh_token_reused", 401, "Refresh token reuse detected");
+}
+
+function internalError(): AuthApiError {
+  return new AuthApiError("internal_error", 500, "Internal authentication error");
+}
+
+function mapUnexpectedOperationalError(error: unknown): AuthResult<never> {
+  if (error instanceof AuthConfigurationError || error instanceof AuthProgrammingError) {
+    throw error;
+  }
+  return authFailure(internalError());
 }
 
 function publicSession(user: User, accessToken: string, refreshToken: string): Session {
@@ -273,7 +273,7 @@ export class SessionService {
     } catch (error) {
       const mapped = mapCreateError(error);
       if (mapped !== null) return authFailure(mapped);
-      throw error;
+      return mapUnexpectedOperationalError(error);
     }
   }
 
@@ -362,7 +362,7 @@ export class SessionService {
       ) {
         return authFailure(invalidRefreshToken());
       }
-      throw error;
+      return mapUnexpectedOperationalError(error);
     }
 
     switch (outcome.kind) {
@@ -377,7 +377,11 @@ export class SessionService {
       case "missing":
         return authFailure(invalidRefreshToken());
       case "reused":
-        await this.containReuse(outcome, normalizedContext, now);
+        try {
+          await this.containReuse(outcome, normalizedContext, now);
+        } catch (error) {
+          return mapUnexpectedOperationalError(error);
+        }
         return authFailure(refreshTokenReused());
     }
   }
@@ -400,29 +404,33 @@ export class SessionService {
     }
 
     const now = nowFrom(this.clock);
-    await this.repository.transaction(async (transaction) => {
-      if (scope === "local") {
-        await transaction.sessions.revokeSession(sessionId.data, { now });
-      } else if (scope === "global") {
-        await transaction.sessions.revokeUserSessions(userId.data, undefined, { now });
-      } else {
-        await transaction.sessions.revokeUserSessions(userId.data, sessionId.data, { now });
-      }
+    try {
+      await this.repository.transaction(async (transaction) => {
+        if (scope === "local") {
+          await transaction.sessions.revokeSession(sessionId.data, { now });
+        } else if (scope === "global") {
+          await transaction.sessions.revokeUserSessions(userId.data, undefined, { now });
+        } else {
+          await transaction.sessions.revokeUserSessions(userId.data, sessionId.data, { now });
+        }
 
-      await transaction.operations.appendAudit(
-        {
-          actor_user_id: userId.data,
-          actor_session_id: sessionId.data,
-          action: `session.sign_out.${scope}`,
-          target_type: scope === "local" ? "session" : "user",
-          target_id: scope === "local" ? sessionId.data : userId.data,
-          metadata: auditMetadata("session.sign_out", { operation: scope }),
-          outcome: "success",
-          occurred_at: now,
-        },
-        { now },
-      );
-    });
+        await transaction.operations.appendAudit(
+          {
+            actor_user_id: userId.data,
+            actor_session_id: sessionId.data,
+            action: `session.sign_out.${scope}`,
+            target_type: scope === "local" ? "session" : "user",
+            target_id: scope === "local" ? sessionId.data : userId.data,
+            metadata: auditMetadata("session.sign_out", { operation: scope }),
+            outcome: "success",
+            occurred_at: now,
+          },
+          { now },
+        );
+      });
+    } catch (error) {
+      return mapUnexpectedOperationalError(error);
+    }
     return authSuccess(null);
   }
 
