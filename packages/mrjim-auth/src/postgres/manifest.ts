@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 
 /** One ordered SQL migration and its content-derived checksum. */
 export interface MigrationDefinition {
+  /** Positive contiguous ordinal in the packaged migration history. */
+  readonly migrationOrder: number;
   readonly version: string;
   readonly fileName: string;
   readonly sql: string;
@@ -25,15 +27,15 @@ function readPackageVersion(): string {
   return packageJson.version;
 }
 
-function readMigration(version: string, fileName: string): MigrationDefinition {
+function readMigration(migrationOrder: number, version: string, fileName: string): MigrationDefinition {
   const sql = readFileSync(new URL(`./migrations/${fileName}`, import.meta.url), "utf8");
   const checksum = createHash("sha256").update(sql, "utf8").digest("hex");
-  return Object.freeze({ version, fileName, sql, checksum });
+  return Object.freeze({ migrationOrder, version, fileName, sql, checksum });
 }
 
 /** The deterministic, source-ordered migration manifest. */
 export const MIGRATIONS: readonly MigrationDefinition[] = Object.freeze(
-  migrationFileNames.map(([version, fileName]) => readMigration(version, fileName)),
+  migrationFileNames.map(([version, fileName], index) => readMigration(index + 1, version, fileName)),
 );
 
 /** Version recorded with every migration application. */

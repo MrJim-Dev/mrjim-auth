@@ -101,6 +101,7 @@ CREATE TABLE auth.user_roles (
       AND scope_type = lower(btrim(scope_type)) AND btrim(scope_type) <> ''
       AND btrim(scope_id) <> '')
   ),
+  CONSTRAINT user_roles_expiry_check CHECK (expires_at IS NULL OR expires_at > assigned_at),
   CONSTRAINT user_roles_user_id_fkey FOREIGN KEY (user_id)
     REFERENCES auth.users (id) ON DELETE CASCADE,
   CONSTRAINT user_roles_role_id_fkey FOREIGN KEY (role_id)

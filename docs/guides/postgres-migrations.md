@@ -28,6 +28,12 @@ The package contains the SQL files in its built and packed `dist` output:
 - `0003_oauth_operations.sql` — OAuth state, API keys, and immutable audit
   records.
 
+The migration manifest is authoritative: callers cannot inject another SQL
+manifest or package version. Each applied row records its positive
+`migration_order`, version, SHA-256 checksum, applied timestamp, and package
+version. The runner rejects unknown, duplicate, gapped, and out-of-order
+history before writing.
+
 The only application schema created is `auth`, with these 15 tables:
 
 ```text
@@ -37,6 +43,27 @@ role_inheritance, user_roles, api_keys, audit_log, schema_migrations
 ```
 
 No default roles or permissions are inserted. A project owns its own seed data.
+
+The verifier checks column PostgreSQL types/UDTs, nullability and critical
+defaults, full index definitions and predicates, constraint expressions and
+foreign-key actions, function properties, and enabled trigger definitions.
+The canonical forbidden-name list for auth tables, columns, indexes,
+constraints, functions, and non-internal triggers is:
+
+```text
+mrjim, shipping, tenant, passenger, port, vessel, cabin, tms, marketplace
+```
+
+Audit metadata is enforced at the database boundary. Recursive nested/case/
+style variants of passwords, hashes, bearer/JWT material, reset or OTP codes,
+OAuth authorization codes/verifiers, provider tokens/secrets,
+cookies/sessions, and private keys are rejected by both a JSONB check and a
+before-insert trigger. Audit rows remain immutable.
+
+Database-bound invariants also require Argon2id v=19 with at least
+`m=65536,t=3,p=1`, expiry after issued/created timestamps, recovery tokens at
+most 15 minutes, signup tokens at most 24 hours, and OAuth state at most 10
+minutes. Stronger Argon2id parameters remain valid.
 
 ## Doctor
 
@@ -51,3 +78,9 @@ The schema stores only token digests, not raw bearer values. Role inheritance
 cycles are rejected by a deferred database constraint trigger, scoped role
 assignments have separate global/scoped uniqueness keys, and audit rows reject
 both updates and deletes.
+
+Integration tests always create and destroy their own local PostgreSQL cluster
+in an OS temporary directory; generic `DATABASE_URL` is ignored by the test
+fixture. The packed-install test runs `pnpm pack`, installs that tarball into
+a temporary consumer, and executes the installed `node_modules/.bin/mrjim-auth`
+against the disposable database.

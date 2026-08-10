@@ -59,7 +59,7 @@ hosted service is required.
 | --- | --- | --- |
 | 1. Workspace and exports | Complete | Review Fix Pass 2 checks passed on 2026-08-11 |
 | 2. Shared contracts | Complete — Review Fix Pass 3 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
-| 3. PostgreSQL schema and CLI | Complete | RED/GREEN integration, build/export, CLI, full suite, docs, and package checks recorded in Task 3 report |
+| 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 1 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite, build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Pending | Not run |
 | 5. JWT and sessions | Pending | Not run |
 | 6. Users and recovery | Pending | Not run |
@@ -97,23 +97,26 @@ read-only `doctor` CLI commands. The built package copies SQL into
 assets through the package `files` list. The browser entrypoints remain free of
 PostgreSQL and migration imports.
 
-The integration suite starts a disposable local PostgreSQL cluster in an OS
-temporary directory using the available Homebrew binaries and always stops and
-removes it in `afterAll`. `MRJIM_AUTH_TEST_DATABASE_URL` or a non-empty
-`DATABASE_URL` can point the suite at an isolated test database when needed.
+The integration suite always starts its own disposable local PostgreSQL cluster
+in an OS temporary directory using the available Homebrew binaries and stops
+and removes the exact cluster in nested `finally`/`afterAll` paths. Generic
+`DATABASE_URL` is deliberately ignored by the fixture; there is no external
+database override and no supplied database is mutated.
 
 Task 3 RED evidence: before the migration modules and runner existed,
 `pnpm vitest run packages/mrjim-auth/test/integration/migrations.spec.ts`
 failed during collection with `Cannot find module
 ../../src/cli/commands/doctor.js`.
 
-Task 3 GREEN evidence and remaining commands are recorded in
-`.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-3-report.md`. The focused
-integration coverage includes clean naming and exact table/column inventory,
-normalization/provider/digest uniqueness, token checks, cascades, deferred
-inheritance cycle rejection, scoped assignment uniqueness, audit immutability,
-checksum fail-closed behavior, lock release/concurrency, idempotence,
-read-only status/verify/doctor, CLI return codes, and built SQL assets.
+Task 3 Review Fix Pass 1 GREEN evidence and remaining commands are appended to
+`.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-3-report.md`. Coverage includes
+clean naming with the canonical forbidden list, exact typed column/default
+inventory, normalized/provider/digest uniqueness and blank rejection, strong
+Argon2id and expiry/TTL checks, cascades, deferred inheritance cycles, scoped
+assignment uniqueness, recursive database-bound audit redaction and
+immutability, checksum/history fail-closed behavior, same-client lock release,
+fresh bootstrap races, idempotence, read-only status/verify/doctor, canonical
+catalog tamper detection, and a real packed-consumer CLI run.
 
 Remaining work is Tasks 4-14. PostgreSQL repository behavior, password hashing,
 session rotation, OAuth, authorization evaluation, HTTP/client surfaces,

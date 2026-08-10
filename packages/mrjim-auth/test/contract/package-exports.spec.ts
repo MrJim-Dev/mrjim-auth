@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, type BuildResult, type Plugin } from "esbuild";
 import { describe, expect, it } from "vitest";
+import { FORBIDDEN_AUTH_NAMES } from "../../src/postgres/internal/schema-contract.js";
 
 interface ExportTarget {
   readonly types: string;
@@ -152,18 +153,21 @@ describe("package export boundaries", () => {
       "migrationStatus",
       "verifySchema",
     ]);
-    expect(postgres.MIGRATIONS.map(({ version, fileName, checksum }) => ({ version, fileName, checksum }))).toEqual([
+    expect(postgres.MIGRATIONS.map(({ migrationOrder, version, fileName, checksum }) => ({ migrationOrder, version, fileName, checksum }))).toEqual([
       {
+        migrationOrder: 1,
         version: "0001_core",
         fileName: "0001_core.sql",
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
       },
       {
+        migrationOrder: 2,
         version: "0002_authorization",
         fileName: "0002_authorization.sql",
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
       },
       {
+        migrationOrder: 3,
         version: "0003_oauth_operations",
         fileName: "0003_oauth_operations.sql",
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -174,6 +178,11 @@ describe("package export boundaries", () => {
     }
   });
 
+  it("keeps the canonical forbidden-name list in reviewable documentation", async () => {
+    const guide = await readFile(resolve(packageRoot, "../../docs/guides/postgres-migrations.md"), "utf8");
+    expect(guide).toContain(FORBIDDEN_AUTH_NAMES.join(", "));
+  });
+
   it("does not expose unfinished behavior from later-task subpaths", async () => {
     for (const exportKey of requiredExportKeys.slice(1).filter((key) => key !== "./postgres")) {
       expect(Object.keys(await import(packageSpecifier(exportKey)))).toEqual([]);
@@ -182,9 +191,11 @@ describe("package export boundaries", () => {
 
   it("builds a functional ESM CLI with a shebang", async () => {
     const cli = await readFile(resolve(packageRoot, "dist/cli/index.js"), "utf8");
+    const runner = await readFile(resolve(packageRoot, "dist/cli/runner.js"), "utf8");
     expect(cli.startsWith("#!/usr/bin/env node")).toBe(true);
-    expect(cli).toContain("migrate");
-    expect(cli).toContain("doctor");
+    expect(cli).toContain("./runner.js");
+    expect(runner).toContain("migrate");
+    expect(runner).toContain("doctor");
   });
 
   it("bundles browser entries through browser-platform resolution", async () => {

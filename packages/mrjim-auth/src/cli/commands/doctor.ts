@@ -5,14 +5,17 @@ import { verifySchema } from "../../postgres/migrate.js";
 const minimumKeyBytes = 32;
 
 export interface DoctorEnvironment {
+  /** Environment variable name to value; secrets are validated but never echoed. */
   readonly [key: string]: string | undefined;
 }
 
+/** One read-only doctor check result. */
 export interface DoctorCheck {
   readonly name: string;
   readonly ok: boolean;
 }
 
+/** Read-only deployment and database health report. */
 export interface DoctorReport {
   readonly ok: boolean;
   readonly checks: readonly DoctorCheck[];
