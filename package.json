@@ -1,0 +1,21 @@
+{
+  "name": "mrjim-auth-workspace",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "build": "tsc -p packages/mrjim-auth/tsconfig.browser.json && tsc -p packages/mrjim-auth/tsconfig.node.json",
+    "typecheck": "tsc -p packages/mrjim-auth/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "tsc -p packages/mrjim-auth/tsconfig.json --noEmit",
+    "docs:check": "node scripts/check-docs.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

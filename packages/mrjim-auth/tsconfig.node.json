@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "lib": ["ES2022"],
+    "types": ["node"]
+  },
+  "files": [
+    "src/server/index.ts",
+    "src/postgres/index.ts",
+    "src/adapters/express.ts",
+    "src/adapters/nextjs-server.ts",
+    "src/testing/index.ts",
+    "src/cli/index.ts"
+  ]
+}

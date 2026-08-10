@@ -1,0 +1,45 @@
+{
+  "name": "mrjim-auth",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres/index.d.ts",
+      "import": "./dist/postgres/index.js"
+    },
+    "./express": {
+      "types": "./dist/adapters/express.d.ts",
+      "import": "./dist/adapters/express.js"
+    },
+    "./nextjs": {
+      "types": "./dist/adapters/nextjs-browser.d.ts",
+      "import": "./dist/adapters/nextjs-browser.js"
+    },
+    "./nextjs/server": {
+      "types": "./dist/adapters/nextjs-server.d.ts",
+      "import": "./dist/adapters/nextjs-server.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
+  },
+  "bin": {
+    "mrjim-auth": "./dist/cli/index.js"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ]
+}
