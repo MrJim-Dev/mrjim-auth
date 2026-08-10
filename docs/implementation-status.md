@@ -56,8 +56,12 @@ digests. `SessionService` creates 256-bit opaque refresh sessions, rotates
 refresh families through real PostgreSQL transactions with one concurrent
 winner, commits replay containment independently of the discovery transaction,
 and implements exact local/global/others logout scopes with redacted audit
-events. Browser exports remain unchanged and do not import the server
-boundary. No Task 6+ behavior has been added.
+events. Review Fix Pass 1 adds a bounded/redacted server-context boundary,
+pre-transaction PostgreSQL IP validation, a service-owned clock, strict
+session/user/state/timestamp checks for access-token issuance, public-only
+private-JWK handling, and distinct revoked-versus-reused refresh outcomes.
+Browser exports remain unchanged and do not import the server boundary. No
+Task 6+ behavior has been added.
 
 ## Required dependency policy
 
@@ -92,7 +96,7 @@ token/JWKS boundary; no paid or hosted service is required.
 | 2. Shared contracts | Complete — Review Fix Pass 3 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
-| 5. JWT and sessions | Complete | RED/GREEN focused tests, frozen install, build, full suite (78 tests), typecheck, lint, docs, diff, dependency provenance, and scoped security review passed on 2026-08-11 |
+| 5. JWT and sessions | Complete — Review Fix Pass 1 | Review RED/GREEN evidence, frozen install, build, full suite (86 tests), typecheck, lint, docs, and diff checks recorded below; post-fix security scan finalization was blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Pending | Not run |
 | 7. OAuth and identities | Pending | Not run |
 | 8. Dynamic authorization | Pending | Not run |
@@ -105,13 +109,16 @@ token/JWKS boundary; no paid or hosted service is required.
 
 ## Blockers
 
-There is no external blocker for Task 5. Task 5 deliberately does not start
-users/passwords/recovery, OAuth provider exchanges, authorization enforcement,
-HTTP routes, browser refresh orchestration, framework adapters,
-administration, or the broader Task 13 documentation surface. The security
-review ran parent-agent-only because delegated workers were unavailable; all
-nine scoped Task 5 files still received full-file review receipts and no
-reportable finding.
+There is no product-code blocker for Task 5. The scoped post-fix security scan
+did not finalize because its canonical manifest was missing the required
+`scan.target.snapshotDigest` value and the scanner returned exactly:
+`scan.target.snapshotDigest: expected a non-empty string`. The scan was not
+retried, and this handoff does not claim a no-findings result for the fix
+range; an independent reviewer will re-review the code separately. Task 5
+deliberately does not start users/passwords/recovery, OAuth provider exchanges,
+authorization enforcement, HTTP routes, browser refresh orchestration,
+framework adapters, administration, or the broader Task 13 documentation
+surface.
 
 ## Remaining work
 
@@ -155,7 +162,7 @@ verification, email/OTP/recovery, OAuth/provider exchange, authorization
 enforcement decisions, HTTP routes, browser clients, framework adapters,
 administration APIs, examples, or release artifacts.
 
-## Task 5 scope and verification
+## Task 5 scope and verification — Review Fix Pass 1
 
 Task 5 changes are:
 
@@ -181,26 +188,64 @@ Detailed handoff evidence is recorded in
 No migration was necessary. Migrations `0001`-`0004`, migration provenance,
 verifier, and packing assets were not rewritten or added to. The integration
 fixture explicitly starts a disposable local PostgreSQL cluster, applies the
-existing migrations, and removes only that temporary cluster.
+existing migrations, and removes only that temporary cluster. Review Fix Pass
+1 changed no migration or dependency files; the exact-pinned free/open-source
+MIT `jose@6.2.8` remains from the original Task 5 implementation. No paid or
+hosted service was added or required.
 
-Strict TDD evidence:
+Review Fix Pass 1 resolves all six reviewer findings:
 
-- RED: `pnpm vitest run packages/mrjim-auth/test/unit/tokens.spec.ts packages/mrjim-auth/test/integration/session-rotation.spec.ts` failed during collection because the new `tokens.js` and `sessions.js` modules were missing (2 suites, 0 tests).
-- GREEN: the same exact command passed with 2 files and 8 tests.
+1. `SessionService` normalizes context before any transaction, drops invalid
+   IP addresses to `null`, removes controls, redacts bearer/basic/JWT/opaque
+   token, PEM, and sensitive-assignment patterns, and bounds user-agent data to
+   512 code points for both session and audit persistence.
+2. Invalid IP context can no longer abort replay containment. A real
+   PostgreSQL regression proves invalid-IP replay returns
+   `refresh_token_reused` and durably revokes the complete family and owning
+   session.
+3. Caller-controlled `SessionContext.now` was removed. Both services use an
+   injected service clock; backdated caller context cannot revive an expired
+   session or refresh token.
+4. `TokenService.issueAccessToken` validates UUIDs, user/session ownership,
+   user/session active state, AAL, timestamp ordering, future timestamps, and
+   session expiry, then caps JWT expiry at the owning session expiry.
+5. Private JWK inputs are converted to public P-256 material before JWKS
+   export, export failures become deterministic `AuthConfigurationError`s,
+   and regression coverage proves no private JWK fields are published.
+6. A revoked-but-never-used refresh token returns ordinary `invalid_token`
+   without replay containment or a reuse audit; used/replaced tokens retain
+   `refresh_token_reused` containment. Known `invalid_refresh_lineage` errors
+   also map to the stable `{ data, error }` contract.
+
+Strict TDD evidence for Review Fix Pass 1:
+
+- RED against reviewed HEAD `a81a40dd9b039fbf28817741d31a915b1ec81097`:
+  `pnpm vitest run packages/mrjim-auth/test/unit/tokens.spec.ts packages/mrjim-auth/test/integration/session-rotation.spec.ts`
+  ran 2 files and 16 tests with 9 failed and 7 passed. Failures covered
+  private-JWK JWKS export, invalid session records, session-expiry capping,
+  hostile/invalid context, invalid-IP replay containment, caller time
+  backdating, invalid-lineage mapping, and revoked-token classification.
+- GREEN: the same exact command passed with 2 files and 16/16 tests.
+- Implementation commit: `e94ee61f09ed3979aca78bcfd2c28cf63c6d53cf`.
 
 Final verification evidence:
 
 - `pnpm install --frozen-lockfile` — passed; lockfile up to date.
 - `pnpm build` — passed; browser and Node targets compiled and migration assets copied.
-- `pnpm test` — passed; 7 files and 78 tests.
+- `pnpm test` — passed; 7 files and 86 tests.
 - `pnpm typecheck` — passed.
 - `pnpm lint` — passed.
 - `pnpm docs:check` — passed (2 required documents).
 - `git diff --check` — passed.
 - `pnpm view jose@6.2.8 license repository.url --json` — MIT, `panva/jose`.
-- Scoped Codex Security diff review — 9/9 Task 5 files reviewed, complete
-  coverage, 0 reportable findings; delegated-worker unavailability is the
-  only recorded scan warning.
+- Scoped post-fix Codex Security diff scan was started for
+  `a81a40dd9b039fbf28817741d31a915b1ec81097..e94ee61f09ed3979aca78bcfd2c28cf63c6d53cf`
+  and its three changed server source worklist rows received full-file
+  discovery receipts. Finalization failed because the canonical manifest did
+  not contain `scan.target.snapshotDigest`; the exact scanner error was
+  `scan.target.snapshotDigest: expected a non-empty string`. It was not
+  retried. No finalized result, including no no-findings result, is claimed
+  for this fix range.
 
 ## Task 3 scope and verification
 
