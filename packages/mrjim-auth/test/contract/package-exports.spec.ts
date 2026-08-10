@@ -35,6 +35,7 @@ const migrationAssetFiles = [
   "dist/postgres/migrations/0001_core.sql",
   "dist/postgres/migrations/0002_authorization.sql",
   "dist/postgres/migrations/0003_oauth_operations.sql",
+  "dist/postgres/migrations/0004_repository_hardening.sql",
 ] as const;
 const nodeOnlyImportPattern = /^(?:node:)?(?:assert|buffer|child_process|cluster|crypto|dgram|dns|events|fs|http|https|module|net|os|path|perf_hooks|process|readline|stream|string_decoder|timers|tls|tty|url|util|v8|vm|worker_threads|zlib)(?:\/.*)?$/;
 const serverOnlyDependencyPattern = /^(?:@node-rs\/argon2|argon2|kysely|pg|pg-native|postgres|postgresjs)(?:\/.*)?$/;
@@ -173,6 +174,13 @@ describe("package export boundaries", () => {
         migrationOrder: 3,
         version: "0003_oauth_operations",
         fileName: "0003_oauth_operations.sql",
+        checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+        introducedIn: "0.1.0",
+      },
+      {
+        migrationOrder: 4,
+        version: "0004_repository_hardening",
+        fileName: "0004_repository_hardening.sql",
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
         introducedIn: "0.1.0",
       },

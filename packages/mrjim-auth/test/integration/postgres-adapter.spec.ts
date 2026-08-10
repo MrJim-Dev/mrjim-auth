@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { migrate } from "../../src/postgres/migrate.js";
+import { migrate, verifySchema } from "../../src/postgres/migrate.js";
 import {
   createPostgresAdapter,
   type PostgresAdapter,
@@ -484,7 +484,7 @@ describe("Task 4 PostgreSQL adapter", () => {
       expires_at: new Date(now.getTime() + 10 * 60 * 1000),
     });
     await requirePool().query(
-      "ALTER TABLE auth.one_time_tokens DROP CONSTRAINT IF EXISTS one_time_tokens_metadata_redaction_check",
+      "ALTER TABLE auth.one_time_tokens DROP CONSTRAINT one_time_tokens_metadata_redaction_check",
     );
     await requirePool().query(
       "UPDATE auth.one_time_tokens SET metadata = $1::jsonb WHERE token_hash = $2",
@@ -501,8 +501,30 @@ describe("Task 4 PostgreSQL adapter", () => {
       expect(consumedAt[0]?.consumed_at).toBeNull();
     } finally {
       await requirePool().query(
+        "DELETE FROM auth.one_time_tokens WHERE token_hash = $1",
+        [Buffer.from(corruptHash)],
+      );
+      await requirePool().query(
         "ALTER TABLE auth.one_time_tokens ADD CONSTRAINT one_time_tokens_metadata_redaction_check CHECK (auth.audit_metadata_is_safe(metadata))",
-      ).catch(() => undefined);
+      );
+      const restoredConstraint = await rows<{
+        readonly conname: string;
+        readonly convalidated: boolean;
+      }>(
+        `SELECT con.conname, con.convalidated
+           FROM pg_constraint AS con
+           JOIN pg_class AS rel ON rel.oid = con.conrelid
+           JOIN pg_namespace AS namespace ON namespace.oid = rel.relnamespace
+          WHERE namespace.nspname = $1
+            AND rel.relname = $2
+            AND con.conname = $3`,
+        ["auth", "one_time_tokens", "one_time_tokens_metadata_redaction_check"],
+      );
+      expect(restoredConstraint).toEqual([{
+        conname: "one_time_tokens_metadata_redaction_check",
+        convalidated: true,
+      }]);
+      expect((await verifySchema(requirePool())).ok).toBe(true);
     }
   });
 
@@ -1147,7 +1169,7 @@ describe("Task 4 PostgreSQL adapter", () => {
       redirect: "https://example.com/oauth/callback",
       expires_at: new Date(Date.now() + 5 * 60 * 1000),
     });
-    await requirePool().query("ALTER TABLE auth.oauth_states DROP CONSTRAINT IF EXISTS oauth_states_flow_check");
+    await requirePool().query("ALTER TABLE auth.oauth_states DROP CONSTRAINT oauth_states_flow_check");
     await requirePool().query(
       "UPDATE auth.oauth_states SET flow = 'invalid_flow' WHERE state_hash = $1",
       [Buffer.from(corruptStateHash)],
@@ -1163,8 +1185,30 @@ describe("Task 4 PostgreSQL adapter", () => {
       expect(consumedAt[0]?.consumed_at).toBeNull();
     } finally {
       await requirePool().query(
+        "DELETE FROM auth.oauth_states WHERE state_hash = $1",
+        [Buffer.from(corruptStateHash)],
+      );
+      await requirePool().query(
         "ALTER TABLE auth.oauth_states ADD CONSTRAINT oauth_states_flow_check CHECK (flow IN ('sign_in', 'link_identity'))",
-      ).catch(() => undefined);
+      );
+      const restoredConstraint = await rows<{
+        readonly conname: string;
+        readonly convalidated: boolean;
+      }>(
+        `SELECT con.conname, con.convalidated
+           FROM pg_constraint AS con
+           JOIN pg_class AS rel ON rel.oid = con.conrelid
+           JOIN pg_namespace AS namespace ON namespace.oid = rel.relnamespace
+          WHERE namespace.nspname = $1
+            AND rel.relname = $2
+            AND con.conname = $3`,
+        ["auth", "oauth_states", "oauth_states_flow_check"],
+      );
+      expect(restoredConstraint).toEqual([{
+        conname: "oauth_states_flow_check",
+        convalidated: true,
+      }]);
+      expect((await verifySchema(requirePool())).ok).toBe(true);
     }
   });
 

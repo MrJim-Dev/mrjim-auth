@@ -77,7 +77,7 @@ Docker service, or paid application is required.
 | 1. Workspace and exports | Complete | Review Fix Pass 2 checks passed on 2026-08-11 |
 | 2. Shared contracts | Complete — Review Fix Pass 3 | Review RED/GREEN tests, full suite, build, typecheck, lint, docs, frozen-lockfile, and diff checks passed on 2026-08-11 |
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
-| 4. PostgreSQL repositories | Complete — Review Fix Pass 1 | Review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
+| 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Pending | Not run |
 | 6. Users and recovery | Pending | Not run |
 | 7. OAuth and identities | Pending | Not run |
@@ -118,8 +118,9 @@ diamond deduplication, deterministic permission replacement/deletion, system
 role immutability, cycle rollback, CRUD mappings, SQL-injection-like values,
 audit/one-time metadata redaction and rollback, OAuth flow validation, and pool
 ownership. Migration tests also verify the database one-time metadata validator
-and exact OAuth flow check; browser boundary fixtures reject static and dynamic
-Kysely imports.
+and exact OAuth flow check; the canonical verifier is exercised after both
+fresh installation and incremental 0004 upgrade; browser boundary fixtures
+reject static and dynamic Kysely imports.
 
 Final evidence before commit:
 
@@ -127,7 +128,7 @@ Final evidence before commit:
 - `pnpm typecheck` — passed.
 - `pnpm build` — passed; browser and Node targets compiled and migration assets copied.
 - `pnpm docs:check` — passed (2 required documents).
-- `pnpm test` — 5 files, 68/68 tests passed; includes migration provenance/schema checks, browser boundary checks, and packed-install CLI coverage.
+- `pnpm test` — 5 files, 69/69 tests passed; includes immutable migration provenance/schema checks, browser boundary checks, and packed-install CLI coverage.
 - `pnpm install --frozen-lockfile` — passed; lockfile is up to date.
 - `pnpm lint` — passed; strict TypeScript check completed.
 - `git diff --check` — passed.
@@ -139,7 +140,9 @@ clients, administration APIs, or release artifacts.
 
 ## Task 3 scope and verification
 
-Task 3 adds the exact 15-table `auth` schema in three ordered SQL migrations,
+Task 3 adds the exact 15-table `auth` schema in three ordered SQL migrations;
+Task 4 preserves those three files byte-for-byte and adds the explicit fourth
+hardening migration,
 the SHA-256 manifest, the transactional/advisory-locked `up` runner, read-only
 status and schema verification, and the `migrate status|up|verify` and
 read-only `doctor` CLI commands. The built package copies SQL into

@@ -17,6 +17,10 @@ import {
 } from "../../src/postgres/migrate.js";
 
 const packageVersion = "0.1.0";
+const task4BaseMigrationChecksums = {
+  "0001_core": "542cb353f119e1e0d5f655d7611edefd301eb3cdc6cb9afcef0211f398ba3c4f",
+  "0003_oauth_operations": "af1c65925dbb63c0dacb332ff429b4cc6911482dc7cd1f560a73221016850b58",
+} as const;
 const packageRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const workspaceRoot = resolve(packageRoot, "../..");
 const originalDatabaseUrl = process.env.DATABASE_URL;
@@ -309,6 +313,28 @@ async function queryRows(query: string, values: readonly unknown[] = []): Promis
   return result.rows as Record<string, unknown>[];
 }
 
+async function applyTask4BaseHistory(legacyPool: Pool): Promise<void> {
+  const client = await legacyPool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const migration of MIGRATIONS.slice(0, 3)) {
+      await client.query(migration.sql);
+      await client.query(
+        `INSERT INTO auth.schema_migrations
+          (version, migration_order, checksum, package_version)
+         VALUES ($1, $2, $3, $4)`,
+        [migration.version, migration.migrationOrder, migration.checksum, migration.introducedIn],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function scalar<T>(query: string, values: readonly unknown[] = []): Promise<T> {
   const rows = await queryRows(query, values);
   const value = rows[0]?.value;
@@ -444,6 +470,42 @@ describe("Task 3 PostgreSQL migrations", () => {
     expect(verification.errors).toContain("auth schema is missing");
     expect(await authSchemaExists()).toBe(false);
   });
+
+  it("upgrades the immutable 0001-0003 history with only repository hardening 0004", async () => {
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
+      "0001_core",
+      "0002_authorization",
+      "0003_oauth_operations",
+      "0004_repository_hardening",
+    ]);
+    expect(MIGRATIONS.find((migration) => migration.version === "0001_core")?.checksum).toBe(
+      task4BaseMigrationChecksums["0001_core"],
+    );
+    expect(MIGRATIONS.find((migration) => migration.version === "0003_oauth_operations")?.checksum).toBe(
+      task4BaseMigrationChecksums["0003_oauth_operations"],
+    );
+    expect(MIGRATIONS.slice(0, 3).every((migration) => migration.introducedIn === packageVersion)).toBe(true);
+
+    const legacy = await startDisposablePostgres("mja4-inc");
+    try {
+      await applyTask4BaseHistory(legacy.pool);
+      const before = await migrationStatus(legacy.pool);
+      expect(before.slice(0, 3).every((migration) => migration.state === "applied")).toBe(true);
+      expect(before[3]?.state).toBe("pending");
+
+      const result = await migrate(legacy.pool, { direction: "up" });
+      expect(result.applied).toEqual(["0004_repository_hardening"]);
+
+      const after = await migrationStatus(legacy.pool);
+      expect(after.map((migration) => migration.version)).toEqual(
+        MIGRATIONS.map((migration) => migration.version),
+      );
+      expect(after.every((migration) => migration.state === "applied")).toBe(true);
+      expect((await verifySchema(legacy.pool)).ok).toBe(true);
+    } finally {
+      await stopDisposablePostgres(legacy);
+    }
+  }, 120_000);
 
   it("creates exactly the clean auth tables and columns", async () => {
     await migrate(pool, { direction: "up" });
@@ -1083,7 +1145,7 @@ describe("Task 3 PostgreSQL migrations", () => {
     );
     await pool.query(
       `INSERT INTO auth.schema_migrations (version, migration_order, checksum, package_version)
-       VALUES ('0004_unknown', 4, repeat('a', 64), $1)`,
+       VALUES ('0004_unknown', 5, repeat('a', 64), $1)`,
       [packageVersion],
     );
 
@@ -1101,6 +1163,7 @@ describe("Task 3 PostgreSQL migrations", () => {
             WHEN '0001_core' THEN 2
             WHEN '0002_authorization' THEN 1
             WHEN '0003_oauth_operations' THEN 3
+            WHEN '0004_repository_hardening' THEN 4
           END`,
     );
     try {
@@ -1115,12 +1178,12 @@ describe("Task 3 PostgreSQL migrations", () => {
       }
     }
 
-    await pool.query("UPDATE auth.schema_migrations SET migration_order = 4 WHERE version = '0002_authorization'");
-    await pool.query("UPDATE auth.schema_migrations SET migration_order = 5 WHERE version = '0003_oauth_operations'");
+    await pool.query("UPDATE auth.schema_migrations SET migration_order = 5 WHERE version = '0002_authorization'");
+    await pool.query("UPDATE auth.schema_migrations SET migration_order = 6 WHERE version = '0003_oauth_operations'");
     try {
       await expect(migrate(pool, { direction: "up" })).rejects.toThrow(/history|order|contiguous/i);
     } finally {
-      await pool.query("UPDATE auth.schema_migrations SET migration_order = migration_order - 2 WHERE version IN ('0002_authorization', '0003_oauth_operations')");
+      await pool.query("UPDATE auth.schema_migrations SET migration_order = migration_order - 3 WHERE version IN ('0002_authorization', '0003_oauth_operations')");
     }
   });
 
@@ -1205,6 +1268,7 @@ describe("Task 3 PostgreSQL migrations", () => {
   });
 
   it("installs the packed package and executes its real shim-backed CLI", async () => {
+    await migrate(pool, { direction: "up" });
     const consumerRoot = await mkdtemp(join(tmpdir(), "mrjim-auth-consumer-"));
     try {
       await writeFile(

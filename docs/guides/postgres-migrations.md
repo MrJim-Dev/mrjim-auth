@@ -26,7 +26,9 @@ The package contains the SQL files in its built and packed `dist` output:
 - `0002_authorization.sql` — roles, permissions, joins, inheritance cycle
   prevention, and scoped user-role assignments;
 - `0003_oauth_operations.sql` — OAuth state, API keys, and immutable audit
-  records.
+  records;
+- `0004_repository_hardening.sql` — the one-time-token metadata redaction
+  check and the exact OAuth flow check added by the repository adapter.
 
 The migration manifest is authoritative: callers cannot inject another SQL
 manifest or package version. Each immutable manifest entry has an
@@ -35,6 +37,10 @@ positive `migration_order`, version, SHA-256 checksum, applied timestamp, and
 that migration's own introduction version. A later package release does not
 invalidate older rows; tampering with a row's provenance does. The runner
 rejects unknown, duplicate, gapped, and out-of-order history before writing.
+The Task 4 base files `0001_core.sql`, `0002_authorization.sql`, and
+`0003_oauth_operations.sql` are immutable history: their bytes and checksums
+are never rewritten. Existing installations apply only the new `0004`
+hardening migration, while fresh installations apply all four in order.
 
 The only application schema created is `auth`, with these 15 tables:
 
