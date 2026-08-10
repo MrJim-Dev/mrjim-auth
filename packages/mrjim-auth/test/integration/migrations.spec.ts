@@ -382,6 +382,11 @@ async function authObjectNames(): Promise<string[]> {
        JOIN pg_namespace AS n ON n.oid = p.pronamespace
       WHERE n.nspname = 'auth'
      UNION ALL
+     SELECT t.typname
+       FROM pg_type AS t
+       JOIN pg_namespace AS n ON n.oid = t.typnamespace
+      WHERE n.nspname = 'auth' AND t.typisdefined
+     UNION ALL
      SELECT t.tgname
        FROM pg_trigger AS t
        JOIN pg_class AS c ON c.oid = t.tgrelid
@@ -470,7 +475,9 @@ describe("Task 3 PostgreSQL migrations", () => {
     expect(firstStatus.map((migration) => migration.checksum)).toEqual(
       MIGRATIONS.map((migration) => migration.checksum),
     );
-    expect(firstStatus.every((migration) => migration.packageVersion === packageVersion)).toBe(true);
+    expect(firstStatus.map((migration) => migration.packageVersion)).toEqual(
+      MIGRATIONS.map((migration) => migration.introducedIn),
+    );
 
     const appliedAt = firstStatus.map((migration) => migration.appliedAt);
     const secondRun = await migrate(pool, { direction: "up" });
@@ -782,7 +789,7 @@ describe("Task 3 PostgreSQL migrations", () => {
     await pool.query(
       `INSERT INTO auth.audit_log
         (actor_user_id, actor_key_id, actor_session_id, action, target_type, metadata, outcome)
-       VALUES ($1, $2, $3, 'user.created', 'user', '{"safe":true}', 'success')`,
+       VALUES ($1, $2, $3, 'user.created', 'user', '{"success":true}', 'success')`,
       [userId, apiKeyId, sessionId],
     );
 
@@ -807,7 +814,7 @@ describe("Task 3 PostgreSQL migrations", () => {
   it("keeps audit rows immutable", async () => {
     const rows = await queryRows(
       `INSERT INTO auth.audit_log (action, target_type, metadata, outcome)
-       VALUES ('login', 'session', '{"safe":true}', 'success')
+       VALUES ('login', 'session', '{"success":true}', 'success')
        RETURNING id`,
     );
     const id = String(rows[0]?.id);
@@ -822,25 +829,45 @@ describe("Task 3 PostgreSQL migrations", () => {
     expect(await countRows("audit_log")).toBeGreaterThan(0);
   });
 
-  it("rejects sensitive audit metadata recursively and accepts safe metadata", async () => {
+  it("enforces the documented flat audit metadata allowlist at the database boundary", async () => {
     await pool.query(
       `INSERT INTO auth.audit_log (action, target_type, metadata, outcome)
        VALUES ('safe.event', 'user', $1::jsonb, 'success')`,
-      [JSON.stringify({ event: "password_reset_requested", provider: "google", error_code: "AUTH_FAILED", request_id: "req-1", nested: { result: "success" } })],
+      [JSON.stringify({
+        event: "password_reset_requested",
+        reason: "user_requested",
+        error_code: "AUTH_FAILED",
+        provider: "google",
+        operation: "login",
+        status: "success",
+        user_id: "00000000-0000-4000-8000-000000000001",
+        session_id: "00000000-0000-4000-8000-000000000002",
+        api_key_id: "00000000-0000-4000-8000-000000000003",
+        target_id: "00000000-0000-4000-8000-000000000004",
+        request_id: "req-1",
+        success: true,
+        dry_run: false,
+        changed: true,
+        count: 2,
+        attempt_count: 1,
+        rank: 10,
+        changed_fields: ["email_normalized", "phone_normalized"],
+      })],
     );
 
     const forbiddenMetadata = [
+      { code: "123456" },
+      { credential: "raw-password" },
+      { api_key: "sk_live_123456789" },
       { password: "raw-password" },
       { nested: { passwordHash: "$argon2id$v=19$m=65536,t=3,p=1$c2FsdA$aGFzaA" } },
-      { authorization: "Bearer abc.def.ghi" },
-      { nested: { jwt_token: "abc.def.ghi" } },
-      { reset_code: "123456" },
-      { OAuthCode: "provider-authorization-code" },
-      { code_verifier: "pkce-verifier" },
-      { provider: { accessToken: "provider-token" } },
-      { cookie: "session=secret" },
-      { session_id: "raw-session-material" },
-      { privateKey: "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----" },
+      { reason: "Bearer abc.def.ghi" },
+      { reason: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature" },
+      { reason: "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----" },
+      { reason: "https://user:password@example.com/token" },
+      { reason: "sk_live_123456789" },
+      { changed_fields: [{ name: "email" }] },
+      { result: { status: "success" } },
     ];
 
     for (const metadata of forbiddenMetadata) {
@@ -852,6 +879,46 @@ describe("Task 3 PostgreSQL migrations", () => {
         ),
         /audit_metadata_redaction/i,
       );
+    }
+  });
+
+  it("rejects forbidden auth names across relation kinds, types, and triggers", async () => {
+    await pool.query("CREATE TABLE auth.hayahai_data (id integer NOT NULL)");
+    try {
+      const verification = await verifySchema(pool);
+      expect(verification.ok).toBe(false);
+      expect(verification.errors.join(" ")).toMatch(/hayahai_data/i);
+    } finally {
+      await pool.query("DROP TABLE auth.hayahai_data");
+    }
+
+    await pool.query("CREATE SEQUENCE auth.mrjim_sequence");
+    try {
+      const verification = await verifySchema(pool);
+      expect(verification.ok).toBe(false);
+      expect(verification.errors.join(" ")).toMatch(/mrjim_sequence/i);
+    } finally {
+      await pool.query("DROP SEQUENCE auth.mrjim_sequence");
+    }
+
+    await pool.query("CREATE TYPE auth.ayahay_kind AS ENUM ('safe')");
+    try {
+      const verification = await verifySchema(pool);
+      expect(verification.ok).toBe(false);
+      expect(verification.errors.join(" ")).toMatch(/ayahay_kind/i);
+    } finally {
+      await pool.query("DROP TYPE auth.ayahay_kind");
+    }
+
+    await pool.query(
+      "CREATE TRIGGER ayahay_guard BEFORE INSERT ON auth.audit_log FOR EACH ROW EXECUTE FUNCTION auth.audit_metadata_redaction_guard()",
+    );
+    try {
+      const verification = await verifySchema(pool);
+      expect(verification.ok).toBe(false);
+      expect(verification.errors.join(" ")).toMatch(/ayahay_guard/i);
+    } finally {
+      await pool.query("DROP TRIGGER ayahay_guard ON auth.audit_log");
     }
   });
 
@@ -935,6 +1002,29 @@ describe("Task 3 PostgreSQL migrations", () => {
       }
       expect((await verifySchema(pool)).ok, `${tamperCase.name} restore`).toBe(true);
     }
+
+    const originalDefinitionRows = await queryRows(
+      "SELECT pg_get_functiondef('auth.audit_metadata_is_safe(jsonb)'::regprocedure) AS value",
+    );
+    const originalDefinition = String(originalDefinitionRows[0]?.value ?? "");
+    expect(originalDefinition).toContain("audit_metadata_is_safe");
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION auth.audit_metadata_is_safe(metadata jsonb)
+      RETURNS boolean
+      LANGUAGE sql
+      IMMUTABLE
+      PARALLEL SAFE
+      SET search_path = pg_catalog, auth
+      AS $$ SELECT true /* WITH RECURSIVE regexp_replace privatekey jsonb_array_elements */ $$;
+    `);
+    try {
+      const verification = await verifySchema(pool);
+      expect(verification.ok, "behavior-changing function body").toBe(false);
+      expect(verification.errors.join(" "), "behavior-changing function body").toMatch(/function/i);
+    } finally {
+      await pool.query(originalDefinition);
+    }
+    expect((await verifySchema(pool)).ok, "function body restore").toBe(true);
   });
 
   it("rejects unknown, duplicate, gapped, and out-of-order migration history", async () => {

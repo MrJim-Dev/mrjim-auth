@@ -29,10 +29,12 @@ The package contains the SQL files in its built and packed `dist` output:
   records.
 
 The migration manifest is authoritative: callers cannot inject another SQL
-manifest or package version. Each applied row records its positive
-`migration_order`, version, SHA-256 checksum, applied timestamp, and package
-version. The runner rejects unknown, duplicate, gapped, and out-of-order
-history before writing.
+manifest or package version. Each immutable manifest entry has an
+`introducedIn` release (currently `0.1.0`). Each applied row records its
+positive `migration_order`, version, SHA-256 checksum, applied timestamp, and
+that migration's own introduction version. A later package release does not
+invalidate older rows; tampering with a row's provenance does. The runner
+rejects unknown, duplicate, gapped, and out-of-order history before writing.
 
 The only application schema created is `auth`, with these 15 tables:
 
@@ -46,19 +48,43 @@ No default roles or permissions are inserted. A project owns its own seed data.
 
 The verifier checks column PostgreSQL types/UDTs, nullability and critical
 defaults, full index definitions and predicates, constraint expressions and
-foreign-key actions, function properties, and enabled trigger definitions.
-The canonical forbidden-name list for auth tables, columns, indexes,
-constraints, functions, and non-internal triggers is:
+foreign-key actions, complete function signatures/properties/configuration and
+normalized body hashes, and enabled trigger definitions. It inspects every
+relevant `pg_class` relation kind (tables, partitioned tables, indexes,
+sequences, views, materialized views, composite relations, and foreign
+tables), plus columns, constraints, functions, types, and non-internal
+triggers. The canonical forbidden-name list is:
 
 ```text
-mrjim, shipping, tenant, passenger, port, vessel, cabin, tms, marketplace
+mrjim, shipping, tenant, passenger, port, vessel, cabin, tms, marketplace, hayahai, ayahay
 ```
 
-Audit metadata is enforced at the database boundary. Recursive nested/case/
-style variants of passwords, hashes, bearer/JWT material, reset or OTP codes,
-OAuth authorization codes/verifiers, provider tokens/secrets,
-cookies/sessions, and private keys are rejected by both a JSONB check and a
-before-insert trigger. Audit rows remain immutable.
+Audit metadata is enforced at the database boundary by a deterministic
+recursive SQL validator, a JSONB check, and a before-insert trigger. V1 accepts
+only this flat, exact-key allowlist; unknown keys fail even when their values
+look harmless:
+
+- bounded enum-like strings: `event` and `reason` (`[a-z][a-z0-9_.:-]{0,63}`),
+  `error_code` (`[A-Za-z][A-Za-z0-9_.:-]{0,63}`), `operation`
+  (`[a-z][a-z0-9_.:-]{0,63}`), `provider`
+  (`[a-z][a-z0-9_.:-]{0,31}`), and `status`
+  (`[a-z][a-z0-9_.:-]{0,31}`);
+- UUID identifier strings: `user_id`, `session_id`, `api_key_id`, and
+  `target_id`; `request_id` is a bounded `[A-Za-z0-9][A-Za-z0-9_-]{0,127}`
+  identifier;
+- booleans: `success`, `changed`, and `dry_run`;
+- non-negative bounded integers from 0 through 1,000,000: `count`,
+  `attempt_count`, and `rank`;
+- `changed_fields`, an array of at most 32 lowercase field names, each at most
+  64 characters.
+
+No arbitrary nested object is accepted; the only array shape is the documented
+flat `changed_fields` string array. String values are also rejected when they
+look like bearer/basic credentials, JWTs, PEM/private keys, credential-bearing
+URLs, Argon2/bcrypt/scrypt/PBKDF2 hashes, long hex digests, or common
+secret-like prefixes. Actor, target, session, and API-key identifiers belong
+in dedicated columns or the explicitly safe `*_id` keys above. Audit rows
+remain immutable.
 
 Database-bound invariants also require Argon2id v=19 with at least
 `m=65536,t=3,p=1`, expiry after issued/created timestamps, recovery tokens at

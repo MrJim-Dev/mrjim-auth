@@ -47,41 +47,130 @@ IMMUTABLE
 PARALLEL SAFE
 SET search_path = pg_catalog, auth
 AS $$
-WITH RECURSIVE nodes(value, key_name) AS (
-  SELECT metadata, NULL::text
-  WHERE metadata IS NOT NULL
+WITH RECURSIVE nodes(value, depth) AS (
+  SELECT metadata, 0
   UNION ALL
-  SELECT child.value, child.key_name
+  SELECT child.value, nodes.depth + 1
     FROM nodes
     CROSS JOIN LATERAL (
-      SELECT object_entry.value, object_entry.key AS key_name
-        FROM jsonb_each(nodes.value) AS object_entry(key, value)
-       WHERE jsonb_typeof(nodes.value) = 'object'
+      SELECT object_entry.value
+        FROM jsonb_each(
+          CASE WHEN jsonb_typeof(nodes.value) = 'object'
+            THEN nodes.value ELSE '{}'::jsonb END
+        ) AS object_entry(key, value)
       UNION ALL
-      SELECT array_entry.value, nodes.key_name
-        FROM jsonb_array_elements(nodes.value) AS array_entry(value)
-       WHERE jsonb_typeof(nodes.value) = 'array'
+      SELECT array_entry.value
+        FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof(nodes.value) = 'array'
+            THEN nodes.value ELSE '[]'::jsonb END
+        ) AS array_entry(value)
     ) AS child
+   WHERE nodes.depth < 64
+), strings AS (
+  SELECT value #>> '{}' AS text_value
+    FROM nodes
+   WHERE jsonb_typeof(value) = 'string'
 )
-SELECT jsonb_typeof(metadata) = 'object'
+SELECT metadata IS NOT NULL
+   AND jsonb_typeof(metadata) = 'object'
    AND NOT EXISTS (
      SELECT 1
-       FROM nodes
-      WHERE (
-        key_name IS NOT NULL
-        AND regexp_replace(lower(key_name), '[^a-z0-9]', '', 'g') ~
-          '(password|passwd|pwd|passphrase|hash|bearer|jwt|token|secret|cookie|session|privatekey|verifier|authorizationcode|oauthcode|authcode|codeverifier|resetcode|verificationcode|magiclinkcode|signupcode|emailchangecode|recoverycode|otp|onetime|providertoken|providersecret|providercredential|providerkey)'
-      )
-      OR (
-        jsonb_typeof(value) = 'string'
-        AND (
-          value #>> '{}' ~* '^\s*bearer\s+\S+'
-          OR value #>> '{}' ~ '^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
-          OR value #>> '{}' ~* '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'
-          OR value #>> '{}' ~ '^\$(argon2(id|i|d)|2[aby]?|scrypt|pbkdf2)\$'
-          OR value #>> '{}' ~ '^[0-9a-fA-F]{64}$'
-        )
-      )
+       FROM jsonb_each(metadata) AS entry(key, value)
+      WHERE CASE entry.key
+        WHEN 'event' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND length(entry.value #>> '{}') BETWEEN 1 AND 64
+          AND entry.value #>> '{}' ~ '^[a-z][a-z0-9_.:-]{0,63}$'
+        WHEN 'reason' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND length(entry.value #>> '{}') BETWEEN 1 AND 64
+          AND entry.value #>> '{}' ~ '^[a-z][a-z0-9_.:-]{0,63}$'
+        WHEN 'error_code' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND length(entry.value #>> '{}') BETWEEN 1 AND 64
+          AND entry.value #>> '{}' ~ '^[A-Za-z][A-Za-z0-9_.:-]{0,63}$'
+        WHEN 'provider' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND length(entry.value #>> '{}') BETWEEN 1 AND 32
+          AND entry.value #>> '{}' ~ '^[a-z][a-z0-9_.:-]{0,31}$'
+        WHEN 'operation' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND length(entry.value #>> '{}') BETWEEN 1 AND 64
+          AND entry.value #>> '{}' ~ '^[a-z][a-z0-9_.:-]{0,63}$'
+        WHEN 'status' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND length(entry.value #>> '{}') BETWEEN 1 AND 32
+          AND entry.value #>> '{}' ~ '^[a-z][a-z0-9_.:-]{0,31}$'
+        WHEN 'user_id' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND entry.value #>> '{}' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        WHEN 'session_id' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND entry.value #>> '{}' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        WHEN 'api_key_id' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND entry.value #>> '{}' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        WHEN 'target_id' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND entry.value #>> '{}' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        WHEN 'request_id' THEN
+          jsonb_typeof(entry.value) = 'string'
+          AND length(entry.value #>> '{}') BETWEEN 1 AND 128
+          AND entry.value #>> '{}' ~ '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+        WHEN 'success' THEN jsonb_typeof(entry.value) = 'boolean'
+        WHEN 'changed' THEN jsonb_typeof(entry.value) = 'boolean'
+        WHEN 'dry_run' THEN jsonb_typeof(entry.value) = 'boolean'
+        WHEN 'count' THEN
+          jsonb_typeof(entry.value) = 'number'
+          AND entry.value #>> '{}' ~ '^(0|[1-9][0-9]{0,6})$'
+          AND CASE WHEN entry.value #>> '{}' ~ '^(0|[1-9][0-9]{0,6})$'
+            THEN (entry.value #>> '{}')::numeric ELSE -1 END BETWEEN 0 AND 1000000
+        WHEN 'attempt_count' THEN
+          jsonb_typeof(entry.value) = 'number'
+          AND entry.value #>> '{}' ~ '^(0|[1-9][0-9]{0,6})$'
+          AND CASE WHEN entry.value #>> '{}' ~ '^(0|[1-9][0-9]{0,6})$'
+            THEN (entry.value #>> '{}')::numeric ELSE -1 END BETWEEN 0 AND 1000000
+        WHEN 'rank' THEN
+          jsonb_typeof(entry.value) = 'number'
+          AND entry.value #>> '{}' ~ '^(0|[1-9][0-9]{0,6})$'
+          AND CASE WHEN entry.value #>> '{}' ~ '^(0|[1-9][0-9]{0,6})$'
+            THEN (entry.value #>> '{}')::numeric ELSE -1 END BETWEEN 0 AND 1000000
+        WHEN 'changed_fields' THEN
+          jsonb_typeof(entry.value) = 'array'
+          AND jsonb_array_length(
+            CASE WHEN jsonb_typeof(entry.value) = 'array'
+              THEN entry.value ELSE '[]'::jsonb END
+          ) BETWEEN 0 AND 32
+          AND NOT EXISTS (
+            SELECT 1
+              FROM jsonb_array_elements(
+                CASE WHEN jsonb_typeof(entry.value) = 'array'
+                  THEN entry.value ELSE '[]'::jsonb END
+              ) AS field(value)
+             WHERE jsonb_typeof(field.value) <> 'string'
+                OR length(field.value #>> '{}') NOT BETWEEN 1 AND 64
+                OR field.value #>> '{}' !~ '^[a-z][a-z0-9_]{0,63}$'
+          )
+        ELSE false
+      END IS NOT TRUE
+   )
+   AND NOT EXISTS (
+     SELECT 1 FROM nodes
+      WHERE depth > 0 AND jsonb_typeof(value) = 'object'
+   )
+   AND NOT EXISTS (
+     SELECT 1 FROM nodes
+      WHERE depth >= 64 AND jsonb_typeof(value) IN ('object', 'array')
+   )
+   AND NOT EXISTS (
+     SELECT 1 FROM strings
+      WHERE text_value ~* '^\s*(bearer|basic)\s+\S+'
+         OR text_value ~ '^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
+         OR text_value ~* '-----BEGIN[[:space:]]+[A-Z0-9 ]*(PRIVATE|ENCRYPTED)?[[:space:]]+KEY-----'
+         OR text_value ~* '^[[:space:]]*(https?|postgres(?:ql)?|redis|mongodb(?:\+srv)?):\/\/[^[:space:]@\/]+:[^[:space:]@\/]+@'
+         OR text_value ~* '^(sk|pk|rk|tok|secret|key)_[A-Za-z0-9_-]{8,}$'
+         OR text_value ~* '^\$(argon2(id|i|d)|2[aby]?|scrypt|pbkdf2)\$'
+         OR text_value ~ '^[0-9a-fA-F]{64}$'
    );
 $$;
 

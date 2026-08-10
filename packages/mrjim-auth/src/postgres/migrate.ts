@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { MIGRATIONS, PACKAGE_VERSION } from "./manifest.js";
+import { MIGRATIONS } from "./manifest.js";
 import { readAppliedMigrationRows } from "./internal/catalog.js";
 import {
   readMigrationStatuses,
@@ -70,7 +70,7 @@ export async function migrate(
           `INSERT INTO auth.schema_migrations
             (version, migration_order, checksum, package_version)
            VALUES ($1, $2, $3, $4)`,
-          [migration.version, migration.migrationOrder, migration.checksum, PACKAGE_VERSION],
+          [migration.version, migration.migrationOrder, migration.checksum, migration.introducedIn],
         );
         await client.query("COMMIT");
       } catch (error) {

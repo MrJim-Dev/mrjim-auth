@@ -153,26 +153,31 @@ describe("package export boundaries", () => {
       "migrationStatus",
       "verifySchema",
     ]);
-    expect(postgres.MIGRATIONS.map(({ migrationOrder, version, fileName, checksum }) => ({ migrationOrder, version, fileName, checksum }))).toEqual([
+    expect(postgres.MIGRATIONS.map(({ migrationOrder, version, fileName, checksum, introducedIn }) => ({ migrationOrder, version, fileName, checksum, introducedIn }))).toEqual([
       {
         migrationOrder: 1,
         version: "0001_core",
         fileName: "0001_core.sql",
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+        introducedIn: "0.1.0",
       },
       {
         migrationOrder: 2,
         version: "0002_authorization",
         fileName: "0002_authorization.sql",
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+        introducedIn: "0.1.0",
       },
       {
         migrationOrder: 3,
         version: "0003_oauth_operations",
         fileName: "0003_oauth_operations.sql",
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+        introducedIn: "0.1.0",
       },
     ]);
+    expect(Object.isFrozen(postgres.MIGRATIONS)).toBe(true);
+    expect(postgres.MIGRATIONS.every((migration) => Object.isFrozen(migration))).toBe(true);
     for (const assetFile of migrationAssetFiles) {
       await access(resolve(packageRoot, assetFile));
     }

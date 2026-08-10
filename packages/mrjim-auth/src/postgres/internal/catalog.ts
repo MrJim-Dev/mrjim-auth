@@ -49,11 +49,22 @@ export interface ConstraintCatalogRow extends QueryResultRow {
 export interface FunctionCatalogRow extends QueryResultRow {
   readonly function_name: string;
   readonly identity_arguments: string;
+  readonly return_type: string;
+  readonly language_name: string;
   readonly definition: string;
+  readonly prosrc: string;
   readonly volatility: "i" | "s" | "v";
   readonly parallel_safety: "s" | "r" | "u";
   readonly security_definer: boolean;
+  readonly leakproof: boolean;
+  readonly is_strict: boolean;
   readonly config: readonly (string | null)[] | null;
+}
+
+/** Typed catalog row for an auth-schema type. */
+export interface TypeCatalogRow extends QueryResultRow {
+  readonly type_name: string;
+  readonly type_kind: string;
 }
 
 /** Typed catalog row for a non-internal auth trigger. */
@@ -125,6 +136,7 @@ export async function readSchemaCatalog(executor: QueryExecutor): Promise<{
   readonly indexes: readonly IndexCatalogRow[];
   readonly constraints: readonly ConstraintCatalogRow[];
   readonly functions: readonly FunctionCatalogRow[];
+  readonly types: readonly TypeCatalogRow[];
   readonly triggers: readonly TriggerCatalogRow[];
   readonly objects: readonly AuthObjectNameRow[];
 }> {
@@ -203,15 +215,30 @@ export async function readSchemaCatalog(executor: QueryExecutor): Promise<{
     executor,
     `SELECT proc.proname AS function_name,
             pg_get_function_identity_arguments(proc.oid) AS identity_arguments,
+            pg_get_function_result(proc.oid) AS return_type,
+            language_row.lanname AS language_name,
             pg_get_functiondef(proc.oid) AS definition,
+            proc.prosrc AS prosrc,
             proc.provolatile AS volatility,
             proc.proparallel AS parallel_safety,
             proc.prosecdef AS security_definer,
+            proc.proleakproof AS leakproof,
+            proc.proisstrict AS is_strict,
             proc.proconfig AS config
        FROM pg_proc AS proc
        JOIN pg_namespace AS namespace_row ON namespace_row.oid = proc.pronamespace
+       JOIN pg_language AS language_row ON language_row.oid = proc.prolang
       WHERE namespace_row.nspname = 'auth' AND proc.prokind = 'f'
       ORDER BY proc.proname, pg_get_function_identity_arguments(proc.oid)`,
+  );
+  const types = await queryRows<TypeCatalogRow>(
+    executor,
+    `SELECT type_row.typname AS type_name,
+            type_row.typtype AS type_kind
+       FROM pg_type AS type_row
+       JOIN pg_namespace AS namespace_row ON namespace_row.oid = type_row.typnamespace
+      WHERE namespace_row.nspname = 'auth' AND type_row.typisdefined
+      ORDER BY type_row.typname`,
   );
   const triggers = await queryRows<TriggerCatalogRow>(
     executor,
@@ -230,10 +257,21 @@ export async function readSchemaCatalog(executor: QueryExecutor): Promise<{
   );
   const objects = await queryRows<AuthObjectNameRow>(
     executor,
-    `SELECT 'table' AS object_type, class_row.relname AS object_name
+    `SELECT CASE class_row.relkind
+              WHEN 'r' THEN 'table'
+              WHEN 'p' THEN 'partitioned_table'
+              WHEN 'i' THEN 'index'
+              WHEN 'S' THEN 'sequence'
+              WHEN 'v' THEN 'view'
+              WHEN 'm' THEN 'materialized_view'
+              WHEN 'c' THEN 'composite_relation'
+              WHEN 'f' THEN 'foreign_table'
+              ELSE 'relation'
+            END AS object_type,
+            class_row.relname AS object_name
        FROM pg_class AS class_row
        JOIN pg_namespace AS namespace_row ON namespace_row.oid = class_row.relnamespace
-      WHERE namespace_row.nspname = 'auth' AND class_row.relkind IN ('r', 'p', 'v', 'm', 'f')
+      WHERE namespace_row.nspname = 'auth' AND class_row.relkind IN ('r', 'p', 'i', 'S', 'v', 'm', 'c', 'f')
      UNION ALL
      SELECT 'column' AS object_type, attribute_row.attname AS object_name
        FROM pg_attribute AS attribute_row
@@ -243,11 +281,6 @@ export async function readSchemaCatalog(executor: QueryExecutor): Promise<{
         AND attribute_row.attnum > 0
         AND NOT attribute_row.attisdropped
      UNION ALL
-     SELECT 'index' AS object_type, class_row.relname AS object_name
-       FROM pg_class AS class_row
-       JOIN pg_namespace AS namespace_row ON namespace_row.oid = class_row.relnamespace
-      WHERE namespace_row.nspname = 'auth' AND class_row.relkind = 'i'
-     UNION ALL
      SELECT 'constraint' AS object_type, constraint_row.conname AS object_name
        FROM pg_constraint AS constraint_row
        JOIN pg_namespace AS namespace_row ON namespace_row.oid = constraint_row.connamespace
@@ -256,7 +289,7 @@ export async function readSchemaCatalog(executor: QueryExecutor): Promise<{
      SELECT 'function' AS object_type, proc.proname AS object_name
        FROM pg_proc AS proc
        JOIN pg_namespace AS namespace_row ON namespace_row.oid = proc.pronamespace
-      WHERE namespace_row.nspname = 'auth' AND proc.prokind = 'f'
+      WHERE namespace_row.nspname = 'auth'
      UNION ALL
      SELECT 'trigger' AS object_type, trigger_row.tgname AS object_name
        FROM pg_trigger AS trigger_row
@@ -266,5 +299,5 @@ export async function readSchemaCatalog(executor: QueryExecutor): Promise<{
       ORDER BY object_type, object_name`,
   );
 
-  return { tables, columns, indexes, constraints, functions, triggers, objects };
+  return { tables, columns, indexes, constraints, functions, types, triggers, objects };
 }

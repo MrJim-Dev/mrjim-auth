@@ -155,6 +155,12 @@ export async function verifySchema(pool: Pool): Promise<SchemaVerification> {
       errors.push(`forbidden auth ${object.object_type} name exists: ${object.object_name}`);
     }
   }
+  for (const type of catalog.types) {
+    const normalizedName = type.type_name.toLowerCase();
+    if (FORBIDDEN_AUTH_NAMES.some((forbidden) => normalizedName.includes(forbidden))) {
+      errors.push(`forbidden auth type name exists: ${type.type_name}`);
+    }
+  }
 
   try {
     const statuses = await readMigrationStatuses(pool);

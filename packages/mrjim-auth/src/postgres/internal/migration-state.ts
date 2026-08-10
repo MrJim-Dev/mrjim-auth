@@ -41,8 +41,12 @@ export interface MigrationStatus {
 export function validateAppliedHistory(
   rows: readonly AppliedMigrationCatalogRow[],
   manifest: readonly MigrationDefinition[] = MIGRATIONS,
-  packageVersion: string = PACKAGE_VERSION,
+  currentPackageVersion: string = PACKAGE_VERSION,
 ): void {
+  // The current package may be newer than the rows it is verifying. The third
+  // parameter is retained for internal callers that carry current-version
+  // context, but provenance is always checked against each migration entry.
+  void currentPackageVersion;
   const known = new Map(manifest.map((migration) => [migration.version, migration]));
   const seenVersions = new Set<string>();
 
@@ -62,8 +66,8 @@ export function validateAppliedHistory(
     if (row.checksum !== expected.checksum) {
       throw new Error(`Migration checksum mismatch for ${row.version}`);
     }
-    if (row.package_version !== packageVersion) {
-      throw new Error(`Migration package version mismatch for ${row.version}`);
+    if (row.package_version !== expected.introducedIn) {
+      throw new Error(`Migration provenance mismatch for ${row.version}`);
     }
   }
 }
@@ -72,12 +76,12 @@ export function validateAppliedHistory(
 export async function readMigrationStatuses(
   executor: QueryExecutor,
   manifest: readonly MigrationDefinition[] = MIGRATIONS,
-  packageVersion: string = PACKAGE_VERSION,
+  currentPackageVersion: string = PACKAGE_VERSION,
 ): Promise<readonly MigrationStatus[]> {
   const rows = await readAppliedMigrationRows(executor);
   let historyError = false;
   try {
-    validateAppliedHistory(rows, manifest, packageVersion);
+    validateAppliedHistory(rows, manifest, currentPackageVersion);
   } catch {
     historyError = true;
   }
@@ -101,7 +105,7 @@ export async function readMigrationStatuses(
     const state: MigrationState = historyError
       ? row.checksum !== migration.checksum
         ? "checksum_mismatch"
-        : row.package_version !== packageVersion
+        : row.package_version !== migration.introducedIn
           ? "package_version_mismatch"
           : "history_invalid"
       : "applied";

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   ColumnCatalogRow,
   ConstraintCatalogRow,
@@ -39,6 +40,8 @@ export const FORBIDDEN_AUTH_NAMES = [
   "cabin",
   "tms",
   "marketplace",
+  "hayahai",
+  "ayahay",
 ] as const;
 
 /** Expected PostgreSQL column shape, including type, nullability, and critical defaults. */
@@ -435,52 +438,83 @@ export const REQUIRED_CONSTRAINTS: readonly ConstraintContract[] = [
 export interface FunctionContract {
   readonly functionName: string;
   readonly identityArguments: string;
+  readonly returnType: string;
+  readonly languageName: string;
   readonly volatility: "i" | "s" | "v";
   readonly parallelSafety: "s" | "r" | "u";
   readonly securityDefiner: boolean;
-  readonly requiredDefinitionFragments: readonly string[];
+  readonly leakproof: boolean;
+  readonly isStrict: boolean;
+  readonly config: readonly string[];
+  /** SHA-256 of normalized pg_proc.prosrc, not a marker substring. */
+  readonly sourceHash: string;
 }
 
 export const REQUIRED_FUNCTIONS: readonly FunctionContract[] = [
   {
     functionName: "is_strong_argon2id_hash",
     identityArguments: "password_hash text",
+    returnType: "boolean",
+    languageName: "sql",
     volatility: "i",
     parallelSafety: "s",
     securityDefiner: false,
-    requiredDefinitionFragments: ["argon2id", "65536", "regexp_match"],
+    leakproof: false,
+    isStrict: false,
+    config: ["search_path=pg_catalog, auth"],
+    sourceHash: "5e3e4b1b6cffa04eb85bebb1e4dcf19f88424b88bbd4b12765b3c6a6ffd5cb71",
   },
   {
     functionName: "prevent_role_inheritance_cycle",
     identityArguments: "",
+    returnType: "trigger",
+    languageName: "plpgsql",
     volatility: "v",
     parallelSafety: "u",
     securityDefiner: false,
-    requiredDefinitionFragments: ["WITH RECURSIVE", "role_inheritance", "role_inheritance_cycle"],
+    leakproof: false,
+    isStrict: false,
+    config: ["search_path=pg_catalog, auth"],
+    sourceHash: "949ed5a52c4c627baf9caab0bd6acd10994f4711f423686f808c04953b926f43",
   },
   {
     functionName: "audit_metadata_is_safe",
     identityArguments: "metadata jsonb",
+    returnType: "boolean",
+    languageName: "sql",
     volatility: "i",
     parallelSafety: "s",
     securityDefiner: false,
-    requiredDefinitionFragments: ["WITH RECURSIVE", "regexp_replace", "privatekey", "jsonb_array_elements"],
+    leakproof: false,
+    isStrict: false,
+    config: ["search_path=pg_catalog, auth"],
+    sourceHash: "11f58c472f4032afa2972d32dde04194e4b77608dd64b48d4f4b71f69f306292",
   },
   {
     functionName: "audit_metadata_redaction_guard",
     identityArguments: "",
+    returnType: "trigger",
+    languageName: "plpgsql",
     volatility: "v",
     parallelSafety: "u",
     securityDefiner: false,
-    requiredDefinitionFragments: ["audit_metadata_is_safe", "audit_metadata_redaction"],
+    leakproof: false,
+    isStrict: false,
+    config: ["search_path=pg_catalog, auth"],
+    sourceHash: "ffa9e7cafd29af950875789bc92c3b07f77334bddfda75b4de39055c2c2a5eae",
   },
   {
     functionName: "reject_audit_mutation",
     identityArguments: "",
+    returnType: "trigger",
+    languageName: "plpgsql",
     volatility: "v",
     parallelSafety: "u",
     securityDefiner: false,
-    requiredDefinitionFragments: ["audit_log_immutable"],
+    leakproof: false,
+    isStrict: false,
+    config: ["search_path=pg_catalog, auth"],
+    sourceHash: "08cbbf898278ad0337e747a823be3c21b4f89d3625c46141bfea08971d1c2738",
   },
 ];
 
@@ -526,6 +560,21 @@ export function normalizeCatalogSql(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/** Normalize only platform formatting noise; preserve body tokens and structure. */
+export function normalizeFunctionSource(value: string): string {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n")
+    .trim();
+}
+
+/** Return the authoritative stable hash used for complete function-body matching. */
+export function hashFunctionSource(value: string): string {
+  return createHash("sha256").update(normalizeFunctionSource(value), "utf8").digest("hex");
+}
+
 /** Check a catalog row against a column contract. */
 export function columnMatches(row: ColumnCatalogRow | undefined, expected: ColumnContract): boolean {
   if (!row) return false;
@@ -566,17 +615,23 @@ export function constraintMatches(row: ConstraintCatalogRow | undefined, expecte
     && normalizeCatalogSql(row.definition) === normalizeCatalogSql(expected.definition);
 }
 
-/** Check a function row against volatility, parallelism, signature, and body markers. */
+/** Check the complete normalized function catalog contract, including its body hash. */
 export function functionMatches(row: FunctionCatalogRow | undefined, expected: FunctionContract): boolean {
   if (!row) return false;
-  const definition = normalizeCatalogSql(row.definition);
+  const actualConfig = (row.config ?? []).map((entry) => entry === null ? null : normalizeCatalogSql(entry));
+  const expectedConfig = expected.config.map(normalizeCatalogSql);
   return row.function_name === expected.functionName
     && row.identity_arguments === expected.identityArguments
+    && row.return_type === expected.returnType
+    && row.language_name === expected.languageName
     && row.volatility === expected.volatility
     && row.parallel_safety === expected.parallelSafety
     && row.security_definer === expected.securityDefiner
-    && expected.requiredDefinitionFragments.every((fragment) => definition.includes(normalizeCatalogSql(fragment)))
-    && (row.config ?? []).some((entry) => entry?.toLowerCase() === "search_path=pg_catalog, auth");
+    && row.leakproof === expected.leakproof
+    && row.is_strict === expected.isStrict
+    && actualConfig.length === expectedConfig.length
+    && actualConfig.every((entry, index) => entry === expectedConfig[index])
+    && hashFunctionSource(row.prosrc) === expected.sourceHash;
 }
 
 /** Check trigger definition, enabled state, trigger properties, table, and function. */
