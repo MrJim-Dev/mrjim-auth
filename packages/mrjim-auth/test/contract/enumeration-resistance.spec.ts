@@ -5,16 +5,37 @@ import { OneTimeTokenService } from "../../src/server/one-time-tokens.js";
 import { PasswordService } from "../../src/server/passwords.js";
 import { UserService } from "../../src/server/users.js";
 import type { AuthRepository, Mailer, RateLimiter } from "../../src/shared/contracts.js";
+import { AuthApiError } from "../../src/shared/errors.js";
 import { uuidSchema, roleKeySchema } from "../../src/shared/types.js";
 
 const CALLBACK = "https://project.example.com/auth/callback";
 const REJECTED_CALLBACK = "https://attacker.example.com/callback";
 const KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 11);
+const SECRET_EMAIL = "existing@example.com";
+const SECRET_TOKEN = "raw-adapter-token-6f4e";
+const SECRET_CODE = "raw-otp-code-918273";
+const SECRET_PROVIDER = "provider-secret-4d2c";
+
+const MALICIOUS_ADAPTER_ERRORS: readonly unknown[] = [
+  new AuthApiError("invalid_request", 400, `adapter ${SECRET_EMAIL} token=${SECRET_TOKEN} code=${SECRET_CODE} provider=${SECRET_PROVIDER}`),
+  new Error(`adapter ${SECRET_EMAIL} token=${SECRET_TOKEN} code=${SECRET_CODE} provider=${SECRET_PROVIDER}`),
+  `adapter ${SECRET_EMAIL} token=${SECRET_TOKEN} code=${SECRET_CODE} provider=${SECRET_PROVIDER}`,
+  {
+    code: "internal_error",
+    message: `adapter ${SECRET_EMAIL} token=${SECRET_TOKEN} code=${SECRET_CODE} provider=${SECRET_PROVIDER}`,
+    details: { email: SECRET_EMAIL, token: SECRET_TOKEN, code: SECRET_CODE, provider: SECRET_PROVIDER },
+    stack: `Error: ${SECRET_EMAIL} ${SECRET_TOKEN} ${SECRET_CODE} ${SECRET_PROVIDER}`,
+  },
+];
 
 interface ServiceOptions {
   readonly mailer?: Mailer;
-  readonly issueError?: Error;
-  readonly auditError?: Error;
+  readonly issueError?: unknown;
+  readonly auditError?: unknown;
+  readonly lookupError?: unknown;
+  readonly observerError?: unknown;
+  readonly auditEvents?: unknown[];
+  readonly observerEvents?: unknown[];
   readonly onOperationalFailure?: (event: unknown) => void | Promise<void>;
 }
 
@@ -50,7 +71,10 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter, options:
   const repository = {
     transaction: async (callback: (value: AuthRepository) => Promise<unknown>) => callback(repository as unknown as AuthRepository),
     users: {
-      findByNormalizedEmail: async (email: string) => existingEmail !== undefined && email === existingEmail ? existingUser : null,
+      findByNormalizedEmail: async (email: string) => {
+        if (options.lookupError !== undefined) throw options.lookupError;
+        return existingEmail !== undefined && email === existingEmail ? existingUser : null;
+      },
       findById: async () => existingUser,
       create: async (input: { email?: string | null }) => ({ ...existingUser, email: input.email ?? null }),
       update: async () => existingUser,
@@ -64,7 +88,8 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter, options:
     permissions: { list: async () => [], findById: async () => null, create: async () => ({}), update: async () => ({}), delete: async () => undefined },
     authorization: { effectivePermissions: async () => [], assignRole: async () => undefined, unassignRole: async () => undefined, setRolePermissions: async () => undefined, setRoleInheritance: async () => undefined },
     operations: {
-      appendAudit: async () => {
+      appendAudit: async (event: unknown) => {
+        options.auditEvents?.push(event);
         if (options.auditError !== undefined) throw options.auditError;
       },
       findApiKeyByHash: async () => null,
@@ -89,7 +114,15 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter, options:
     rateLimiter: suppliedLimiter ?? limiter(),
     concealUserExistence: true,
     requireEmailConfirmation: true,
-    ...(options.onOperationalFailure === undefined ? {} : { onOperationalFailure: options.onOperationalFailure }),
+    ...((options.onOperationalFailure === undefined && options.observerError === undefined && options.observerEvents === undefined)
+      ? {}
+      : {
+          onOperationalFailure: async (event: unknown) => {
+            options.observerEvents?.push(event);
+            if (options.observerError !== undefined) throw options.observerError;
+            await options.onOperationalFailure?.(event);
+          },
+        }),
   });
 }
 
@@ -200,6 +233,91 @@ describe("enumeration-resistant public lifecycle results", () => {
     }
   });
 
+  it.each([
+    ["mailer", (error: unknown, auditEvents: unknown[], observerEvents: unknown[]): ServiceOptions => ({
+      mailer: { send: async () => { throw error; } },
+      auditEvents,
+      observerEvents,
+    })],
+    ["repository", (error: unknown, auditEvents: unknown[], observerEvents: unknown[]): ServiceOptions => ({
+      issueError: error,
+      auditEvents,
+      observerEvents,
+    })],
+    ["audit", (error: unknown, auditEvents: unknown[], observerEvents: unknown[]): ServiceOptions => ({
+      auditError: error,
+      auditEvents,
+      observerEvents,
+    })],
+    ["account lookup", (error: unknown, auditEvents: unknown[], observerEvents: unknown[]): ServiceOptions => ({
+      lookupError: error,
+      auditEvents,
+      observerEvents,
+    })],
+  ] as const)("sanitizes malicious %s failures before concealed recovery results and observability", async (_label, optionsForFailure) => {
+    for (const adapterError of MALICIOUS_ADAPTER_ERRORS) {
+      const auditEvents: unknown[] = [];
+      const observerEvents: unknown[] = [];
+      const existing = await service(SECRET_EMAIL, undefined, optionsForFailure(adapterError, auditEvents, observerEvents))
+        .resetPasswordForEmail(SECRET_EMAIL, { redirectTo: CALLBACK }, {
+          ip_address: " 2001:DB8::1 ",
+          user_agent: "browser secret",
+        });
+      const missing = await service(SECRET_EMAIL)
+        .resetPasswordForEmail("missing@example.com", { redirectTo: CALLBACK });
+
+      expect(existing).toEqual(missing);
+      expect(existing).toEqual({ data: { sent: true }, error: null });
+      expect(observerEvents).toHaveLength(1);
+      expect(observerEvents[0]).toMatchObject({
+        action: "recovery",
+        template: "recovery",
+        outcome: "failure",
+        error_class: "adapter_error",
+        request: { ip_address: "2001:db8::1", user_agent: expect.stringMatching(/^ua-sha256:/u) },
+      });
+      const captured = JSON.stringify({ existing, missing, auditEvents, observerEvents });
+      expect(captured).not.toContain(SECRET_EMAIL);
+      expect(captured).not.toContain(SECRET_TOKEN);
+      expect(captured).not.toContain(SECRET_CODE);
+      expect(captured).not.toContain(SECRET_PROVIDER);
+    }
+  });
+
+  it("keeps observer failures sanitized and non-recursive", async () => {
+    const observerEvents: unknown[] = [];
+    const existing = await service(SECRET_EMAIL, undefined, {
+      mailer: { send: async () => { throw new Error("delivery failure"); } },
+      observerError: MALICIOUS_ADAPTER_ERRORS[0],
+      observerEvents,
+    }).resetPasswordForEmail(SECRET_EMAIL, { redirectTo: CALLBACK });
+    const missing = await service(SECRET_EMAIL)
+      .resetPasswordForEmail("missing@example.com", { redirectTo: CALLBACK });
+
+    expect(existing).toEqual(missing);
+    expect(existing).toEqual({ data: { sent: true }, error: null });
+    expect(observerEvents).toHaveLength(1);
+    expect(JSON.stringify(observerEvents)).not.toContain(SECRET_EMAIL);
+    expect(JSON.stringify(observerEvents)).not.toContain(SECRET_TOKEN);
+    expect(JSON.stringify(observerEvents)).not.toContain(SECRET_CODE);
+    expect(JSON.stringify(observerEvents)).not.toContain(SECRET_PROVIDER);
+  });
+
+  it("preserves trusted redirect prevalidation while sanitizing adapter failures", async () => {
+    const existing = await service(SECRET_EMAIL, undefined, {
+      mailer: { send: async () => { throw MALICIOUS_ADAPTER_ERRORS[0]; } },
+    }).resetPasswordForEmail(SECRET_EMAIL, { redirectTo: REJECTED_CALLBACK });
+    const missing = await service(SECRET_EMAIL)
+      .resetPasswordForEmail("missing@example.com", { redirectTo: REJECTED_CALLBACK });
+
+    expect(existing).toEqual(missing);
+    expect(existing.error).toMatchObject({
+      code: "redirect_not_allowed",
+      status: 400,
+      message: "Redirect URL is not allowed",
+    });
+  });
+
   it("conceals OTP, resend, and duplicate-signup mailer failures", async () => {
     const failingMailer: Mailer = {
       send: async () => { throw new Error("delivery secret existing@example.com"); },
@@ -266,5 +384,25 @@ describe("enumeration-resistant public lifecycle results", () => {
       expect(result).toMatchObject({ error: { code: "redirect_not_allowed" } });
       expect(keys).toEqual(["ip:unknown", "identifier:existing@example.com"]);
     }
+  });
+
+  it("consumes recovery verification rate-limit slots before invalid redirect validation", async () => {
+    const keys: string[] = [];
+    const current = service(SECRET_EMAIL, {
+      consume: async (key) => {
+        keys.push(key);
+        return { allowed: true, remaining: 99 };
+      },
+    });
+
+    const result = await current.resetPassword({
+      email: SECRET_EMAIL,
+      token: "not-a-valid-token",
+      password: "correct horse battery staple",
+      redirectTo: REJECTED_CALLBACK,
+    }, { ip_address: " 2001:DB8::1 " });
+
+    expect(result.error).toMatchObject({ code: "redirect_not_allowed" });
+    expect(keys).toEqual(["ip:2001:db8::1", "identifier:existing@example.com"]);
   });
 });

@@ -10,6 +10,7 @@ import type {
 import { authFailure, authSuccess, type AuthResult } from "../shared/result.js";
 import { AuthApiError, AuthConfigurationError, AuthProgrammingError } from "../shared/errors.js";
 import { sanitizeRedactedMetadata, type UUID } from "../shared/types.js";
+import { AdapterBoundaryFailure, adapterTransaction, isTrustedServiceFailure, trustedFailure } from "./adapter-boundary.js";
 import { EmailService, normalizeAndValidateEmail } from "./email.js";
 
 /** Every supported one-time flow is purpose-bound in PostgreSQL. */
@@ -134,16 +135,12 @@ function internalError(): AuthApiError {
   return new AuthApiError("internal_error", 500, "Internal authentication error");
 }
 
-function mapOperationalError(error: unknown): AuthResult<never> {
-  if (error instanceof AuthApiError) return authFailure(error);
-  if (error instanceof AuthConfigurationError || error instanceof AuthProgrammingError) throw error;
-  return authFailure(internalError());
-}
-
 function mapMutationError(error: unknown): AuthResult<never> {
-  if (error instanceof AuthApiError) return authFailure(error);
-  if (error instanceof AuthConfigurationError || error instanceof AuthProgrammingError) throw error;
-  if (typeof error === "object" && error !== null && (error as { readonly code?: unknown }).code === "email_exists") {
+  if (isTrustedServiceFailure(error)) {
+    if (error.error instanceof AuthApiError) return authFailure(error.error);
+    throw error.error;
+  }
+  if (error instanceof AdapterBoundaryFailure && error.classification === "email_exists") {
     return authFailure(new AuthApiError("conflict", 409, "Email address is already registered"));
   }
   return authFailure(internalError());
@@ -231,8 +228,10 @@ export class OneTimeTokenService {
       });
       await this.auditEmail(input.userId ?? input.user_id ?? null, template, input.context, now);
       return authSuccess({ sent: true, expires_at: expiresAt.toISOString() });
-    } catch (error) {
-      return mapOperationalError(error);
+    } catch {
+      // Adapter errors never cross the service boundary with their origin,
+      // code, message, cause, stack, or arbitrary thrown value.
+      return authFailure(internalError());
     }
   }
 
@@ -257,8 +256,8 @@ export class OneTimeTokenService {
       );
       if (consumed === null) return this.failedVerification(purpose, target, redirect, tokenHash, now);
       return authSuccess(this.verificationFromConsumed(purpose, consumed));
-    } catch (error) {
-      return mapOperationalError(error);
+    } catch {
+      return authFailure(internalError());
     }
   }
 
@@ -287,7 +286,7 @@ export class OneTimeTokenService {
     }
     const now = validNow(this.clock);
     try {
-      const result = await this.repository.transaction(async (transaction) => {
+      const result = await adapterTransaction(() => this.repository.transaction(async (transaction) => {
         const consumed = await transaction.oneTimeTokens.consumeBound(
           tokenHash,
           purpose,
@@ -296,10 +295,12 @@ export class OneTimeTokenService {
           now,
           { now },
         );
-        if (consumed === null) throw new AuthApiError("invalid_token", 401, "Invalid or expired link");
+        if (consumed === null) {
+          trustedFailure(new AuthApiError("invalid_token", 401, "Invalid or expired link"));
+        }
         const verification = this.verificationFromConsumed(purpose, consumed);
         return mutation(transaction, verification);
-      });
+      }));
       return authSuccess(result);
     } catch (error) {
       return mapMutationError(error);
@@ -359,8 +360,8 @@ export class OneTimeTokenService {
       if (purpose === "email_otp") {
         await this.repository.oneTimeTokens.recordFailure(tokenHash, purpose, target, redirect, now, { now });
       }
-    } catch (error) {
-      return mapOperationalError(error);
+    } catch {
+      return authFailure(internalError());
     }
     return authFailure(new AuthApiError(
       purpose === "email_otp" ? "otp_invalid" : "invalid_token",
