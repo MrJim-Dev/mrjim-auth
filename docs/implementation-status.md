@@ -289,20 +289,21 @@ JWKS/provider discovery, refresh-token logout, identities, permissions, and all
 other Task 9 routes are included; Task 10 browser behavior, Task 11 adapters,
 and Task 12 administration remain untouched.
 
-The Task 9 remediation round closes TSK9-SEC-001 through TSK9-SEC-005 with
-exact RED-before-fix regressions and bounded GREEN fixes: Fetch Metadata now
-protects secret keys without Origin, body readers are cancelled on all invalid
-stream paths, Content-Encoding is validated before body/service work, OpenAPI
-`$defs`/references/path parameters/statuses/server URLs are deterministic and
-closed, and construction captures frozen receiver-preserving service and
-repository facades. The focused remediation surface is GREEN at 2 files and
-21/21 tests (HTTP 20/20 plus OpenAPI 1/1). Full verification is GREEN at 19
-files and 261/261 tests, with frozen install, build, typecheck, lint, docs,
-package exports 12/12, migration state 1/1, migration integration 23/23,
-deterministic OpenAPI structural/parity checks, fresh packed root/server/browser
-imports plus a representative handler call, protected migration identity, and
-diff checks. No dependency, lockfile, migration, paid service, hosted service,
-or remote database behavior was added.
+The current Task 9 remediation round follows an independent `CHANGES_REQUIRED`
+verdict. It adds exact RED-before-fix regressions and bounded GREEN fixes for
+bodyless-route Content-Encoding validation, explicit absent/valid/invalid
+header states, fail-closed Fetch Metadata, parsed CORS request-header lists,
+pre-schema repository/mailer/limiter and required service/session callback
+capture, OAuth client-held PKCE binding, and OAuth wire redaction. The earlier stream-cancellation, OpenAPI structure,
+and service/repository immutability fixes remain covered and unchanged in
+scope. Current focused GREEN is HTTP 24/24, OpenAPI 1/1, and OAuth integration
+30/30; full verification is GREEN for this round. No dependency,
+lockfile, migration, paid service, hosted service, or remote database behavior
+was added. Controller verification is now GREEN for the full 19-file/267-test
+suite, frozen install, build, typecheck, lint, docs check, 12 export/browser
+tests, migration state 1/1, migration integration 23/23, deterministic
+OpenAPI validation, fresh packed-install handler checks, protected migration
+hashes, and diff checks; the same reviewer’s re-review is still required.
 
 The independent security review recorder remains blocked by the exact tooling
 error `scan.target.snapshotDigest: expected a non-empty string`. This is not a
@@ -364,7 +365,7 @@ database, external network, or paid SaaS service is required.
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
-| 9. HTTP and OpenAPI | Awaiting independent re-review — not approved | Five Important remediation regressions are RED→GREEN; focused 21/21, full 261/261, package exports 12/12, migration state/integration 1/1 and 23/23, packed root/server/browser imports plus handler, OpenAPI refs/path/status/server parity, protected migrations, and diff evidence in Task 9 report |
+| 9. HTTP and OpenAPI | Awaiting same-reviewer re-review — CHANGES_REQUIRED, not approved | Round-2 RED→GREEN regressions cover strict headers, bodyless encoding, CORS lists, construction capture, and OAuth wire/PKCE behavior; focused HTTP 24/24, OpenAPI 1/1, OAuth 30/30, full 267/267, exports/browser 12/12, migration state 1/1, migrations 23/23, frozen install, build/typecheck/lint/docs, deterministic OpenAPI, fresh packed handlers, protected hashes, and diff checks passed; independent re-review remains required |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
@@ -395,18 +396,19 @@ Task 7 Fix Pass 4 blockers: none. The same independent reviewer approved the
 final range and closed every Task 7 finding. No paid or hosted service is
 needed for review or operation.
 
-Task 9 product blockers: none. The controller verification gates passed and no
-new dependency, migration, paid/hosted service, or remote database was needed.
-The independent security review recorder is a tooling blocker with the exact
+Task 9 product blockers: none identified. The current same-reviewer verdict is
+`CHANGES_REQUIRED`; the controller is addressing that bounded round and does
+not claim approval. No new dependency, migration, paid/hosted service, or
+remote database is allowed or needed. The earlier independent scan recorder is
+also a tooling blocker with the exact
 `scan.target.snapshotDigest: expected a non-empty string` failure; it is not a
 clean scan or approval.
 
 ## Remaining work
 
 Task 8's third post-pass route-boundary hardening resolution is complete and
-independently approved. Task 9's controller implementation and verification
-gates are complete; Task 9 remains awaiting independent re-review and is not
-approved. Tasks 10-14 remain,
+independently approved. Task 9 remains in the current remediation round,
+awaiting same-reviewer re-review and is not approved. Tasks 10-14 remain,
 with independent review after each task, followed by the whole-branch review
 and release handoff. In particular, later work must use the clean `auth`
 schema and explicit migration CLI from Task 3 for the browser/SSR surface,

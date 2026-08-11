@@ -33,6 +33,21 @@ function query(request: Request, key: string): string | null {
   return new URL(request.url).searchParams.get(key);
 }
 
+function safeAuthorizeResult(result: AuthResult<OAuthAuthorizeResult>): AuthResult<{
+  readonly provider: string;
+  readonly url: string;
+  readonly redirect: string;
+  readonly expires_at: string;
+}> {
+  if (result.error !== null || result.data === null) return result as AuthResult<never>;
+  return authSuccess({
+    provider: result.data.provider,
+    url: result.data.url,
+    redirect: result.data.redirect,
+    expires_at: result.data.expiresAt,
+  });
+}
+
 /** Serves the public enabled-provider discovery endpoint. */
 export function providersRoute(service: OAuthService, request?: Request): Response {
   if (request !== undefined && request.method !== "GET") return methodNotAllowed();
@@ -47,13 +62,18 @@ export async function authorizeRoute(
 ): Promise<Response> {
   if (request.method !== "GET") return methodNotAllowed();
   const flow = query(request, "flow");
+  const codeChallengeMethod = query(request, "code_challenge_method");
+  if (codeChallengeMethod !== null && codeChallengeMethod !== "S256") {
+    return resultResponse(authFailure(new AuthApiError("invalid_request", 400, "Only PKCE S256 is supported")));
+  }
   const input = {
     provider: query(request, "provider") ?? "",
+    codeChallenge: query(request, "code_challenge") ?? "",
     ...(query(request, "redirect_to") === null ? {} : { redirectTo: query(request, "redirect_to") }),
     ...(flow === null ? {} : { flow: flow as "sign_in" | "link_identity" }),
     ...(subject === undefined ? {} : { subject }),
   };
-  return resultResponse(await service.authorize(input));
+  return resultResponse(safeAuthorizeResult(await service.authorize(input)));
 }
 
 /** Consumes a provider callback and returns a redirect carrying only an internal code. */

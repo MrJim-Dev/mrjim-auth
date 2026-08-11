@@ -272,7 +272,10 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
     const auth = serverModule.createAuthServer(makeOptions(calls));
     expect((await body(await auth.handle(request("/providers")))).data.providers).toHaveLength(1);
-    expect((await body(await auth.handle(request("/authorize?provider=google")))).data).toMatchObject({ provider: "google", code_verifier: "verifier" });
+    const authorizeBody = await body(await auth.handle(request("/authorize?provider=google&code_challenge=client-challenge")));
+    expect(authorizeBody.data).toMatchObject({ provider: "google", redirect: CALLBACK });
+    expect(authorizeBody.data).not.toHaveProperty("state");
+    expect(authorizeBody.data).not.toHaveProperty("code_verifier");
     const callback = await auth.handle(request("/callback/google?code=provider-code&state=state"));
     expect(callback.status).toBe(303);
     expect(callback.headers.get("location")).toContain("code=callback-code");
@@ -287,13 +290,45 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect((await body(jwks)).data.keys[0]).not.toHaveProperty("d");
   });
 
+  it("does not expose provider state or server PKCE material on the authorize wire contract", async () => {
+    const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+    const options = makeOptions(calls) as any;
+    options.services.oauth.authorize = async (input: unknown) => {
+      calls.push({ name: "authorize", input });
+      return success({
+        provider: "google",
+        url: "https://accounts.example/authorize?client_id=public-client",
+        redirect: CALLBACK,
+        state: "provider-state-sentinel",
+        codeVerifier: "server-verifier-sentinel",
+        expiresAt: "2026-08-11T00:10:00.000Z",
+      });
+    };
+    const auth = serverModule.createAuthServer(options);
+    const authorizeResponse = await auth.handle(request("/authorize?provider=google&code_challenge=client-challenge-sentinel&code_challenge_method=S256"));
+    expect(authorizeResponse.status).toBe(200);
+    const authorizeBody = await body(authorizeResponse);
+    expect(authorizeBody.data).not.toHaveProperty("state");
+    expect(authorizeBody.data).not.toHaveProperty("code_verifier");
+    expect(JSON.stringify(authorizeBody)).not.toContain("provider-state-sentinel");
+    expect(JSON.stringify(authorizeBody)).not.toContain("server-verifier-sentinel");
+    expect((calls.at(-1)?.input as Record<string, unknown>)).toMatchObject({ codeChallenge: "client-challenge-sentinel" });
+
+    const callback = await auth.handle(request("/callback/google?code=provider-code-sentinel&state=provider-state-sentinel"));
+    expect(callback.status).toBe(303);
+    const location = callback.headers.get("location") ?? "";
+    expect(location).not.toContain("provider-code-sentinel");
+    expect(location).not.toContain("provider-state-sentinel");
+    expect(location).not.toContain("server-verifier-sentinel");
+  });
+
   it("requires a strict API key and bearer session for current-user routes", async () => {
     const auth = serverModule.createAuthServer(makeOptions([]));
     const missingKey = await auth.handle(new Request(`${BASE_URL}/user`));
     expect(missingKey.status).toBe(401);
     expect((await body(missingKey)).error).toMatchObject({ code: "unauthorized", request_id: expect.any(String) });
     const invalidBearer = await auth.handle(request("/user", { headers: { authorization: "Bearer one two" } }));
-    expect(invalidBearer.status).toBe(401);
+    expect(invalidBearer.status).toBe(400);
     const userResponse = await auth.handle(request("/user", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } }));
     expect(userResponse.status).toBe(200);
     expect((await body(userResponse)).data.user.id).toBe(USER_ID);
@@ -479,6 +514,107 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("validates Content-Encoding before every bodyless dispatch and preflight", async () => {
+    const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+    const auth = serverModule.createAuthServer(makeOptions(calls));
+    const routes: readonly [string, RequestInit][] = [
+      ["/providers", {}],
+      ["/.well-known/jwks.json", {}],
+      ["/authorize?provider=google", {}],
+      ["/callback/google?code=provider-code&state=provider-state", {}],
+      ["/user", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } }],
+      ["/user/identities", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } }],
+      ["/logout", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }],
+    ];
+    for (const encoding of ["gzip", "br", "deflate", "identity, gzip", "gzip, identity", "identity,identity", ""]) {
+      for (const [path, init] of routes) {
+        const response = await auth.handle(request(path, {
+          ...init,
+          headers: { ...(init.headers ?? {}), "content-encoding": encoding },
+        }));
+        expect(response.status, `${path} ${encoding}`).toBe(400);
+      }
+      const preflight = await auth.handle(request("/signup", {
+        method: "OPTIONS",
+        headers: {
+          origin: SITE_URL,
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "apikey, content-type",
+          "content-encoding": encoding,
+        },
+      }));
+      expect(preflight.status, `OPTIONS ${encoding}`).toBe(400);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects ambiguous strict headers, parses preflight lists, and classifies Fetch Metadata failures as forbidden", async () => {
+    const cases: readonly [string, RequestInit, number][] = [
+      ["/providers", { headers: { authorization: "Bearer one, Bearer two" } }, 400],
+      ["/signup", {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": "1, 1000" },
+        body: JSON.stringify({ email: "user@example.com", password: "correct horse battery staple" }),
+      }, 400],
+      ["/signup", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer one, Bearer two" },
+        body: JSON.stringify({ email: "user@example.com", password: "correct horse battery staple" }),
+      }, 400],
+      ["/providers", { headers: { apikey: `${PUBLISHABLE_KEY}, ${PUBLISHABLE_KEY}` } }, 400],
+      ["/providers", { headers: { origin: `${SITE_URL}, https://attacker.example` } }, 400],
+      ["/signup", {
+        method: "POST",
+        headers: { "content-type": "application/json, application/json" },
+        body: JSON.stringify({ email: "user@example.com", password: "correct horse battery staple" }),
+      }, 400],
+    ];
+    for (const [path, init, status] of cases) {
+      const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+      const auth = serverModule.createAuthServer(makeOptions(calls));
+      const response = await auth.handle(request(path, init));
+      expect(response.status, path).toBe(status);
+      expect(calls, path).toHaveLength(0);
+    }
+
+    const fetchCases: readonly Record<string, string>[] = [
+      { "sec-fetch-site": "cross-site, same-origin" },
+      { "sec-fetch-site": "not-a-fetch-site" },
+      { "sec-fetch-mode": "cors, navigate" },
+      { "sec-fetch-dest": "" },
+      { "sec-fetch-user": "?1, ?0" },
+    ];
+    for (const headers of fetchCases) {
+      const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+      const auth = serverModule.createAuthServer(makeOptions(calls));
+      const response = await auth.handle(request("/providers", { headers: { apikey: SECRET_KEY, ...headers } }));
+      expect(response.status, JSON.stringify(headers)).toBe(403);
+      expect(calls).toHaveLength(0);
+    }
+
+    const preflightCalls: Array<{ readonly name: string; readonly input: unknown }> = [];
+    const preflightAuth = serverModule.createAuthServer(makeOptions(preflightCalls));
+    const legal = await preflightAuth.handle(request("/signup", {
+      method: "OPTIONS",
+      headers: {
+        origin: SITE_URL,
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "apikey, authorization, content-type, x-request-id",
+      },
+    }));
+    expect(legal.status).toBe(204);
+    const disallowed = await preflightAuth.handle(request("/signup", {
+      method: "OPTIONS",
+      headers: {
+        origin: SITE_URL,
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "apikey, x-evil, authorization",
+      },
+    }));
+    expect(disallowed.status).toBe(403);
+    expect(preflightCalls).toHaveLength(0);
+  });
+
   it("applies CORS, preflight, method, path, and origin rules without authorizing preflight", async () => {
     const auth = serverModule.createAuthServer(makeOptions([]));
     const preflight = await auth.handle(request("/user", {
@@ -582,7 +718,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
       ["recover", auth.handle(jsonRequest("/recover", { email: "user@example.com" })), 200],
       ["resend", auth.handle(jsonRequest("/resend", { type: "signup", email: "user@example.com" })), 200],
       ["providers", auth.handle(request("/providers")), 200],
-      ["authorize", auth.handle(request("/authorize?provider=google&redirect_to=https%3A%2F%2Fproject.example.com%2Fauth%2Fcallback")), 200],
+      ["authorize", auth.handle(request("/authorize?provider=google&code_challenge=client-challenge&redirect_to=https%3A%2F%2Fproject.example.com%2Fauth%2Fcallback")), 200],
       ["callback", auth.handle(request("/callback/google?code=provider-code&state=state")), 303],
       ["exchange", auth.handle(jsonRequest("/exchange", { code: "callback-code", code_verifier: "verifier" })), 200],
       ["getUser", auth.handle(request("/user", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } })), 200],
@@ -625,6 +761,33 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     });
     expect(() => serverModule.createAuthServer(thenableOptions)).toThrow();
     expect(thenGetterCalls).toBe(0);
+  });
+
+  it("captures configured repository, mailer, and limiter callbacks before schema inspection", () => {
+    const targets: readonly [string, (options: any, getter: () => unknown) => void][] = [
+      ["repository", (options, getter) => Object.defineProperty(options.database.users, "findById", { configurable: true, enumerable: true, get: getter })],
+      ["mailer", (options, getter) => Object.defineProperty(options.email, "send", { configurable: true, enumerable: true, get: getter })],
+      ["rateLimiter", (options, getter) => {
+        options.rateLimiter = {};
+        Object.defineProperty(options.rateLimiter, "consume", { configurable: true, enumerable: true, get: getter });
+      }],
+    ];
+    for (const [label, install] of targets) {
+      const options = makeOptions([]) as any;
+      let getterCalls = 0;
+      install(options, () => {
+        getterCalls += 1;
+        throw new Error(`${label}-sentinel`);
+      });
+      let thrown: unknown;
+      try {
+        serverModule.createAuthServer(options);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(getterCalls, label).toBe(0);
+      expect(String(thrown), label).not.toContain(`${label}-sentinel`);
+    }
   });
 
   it("rejects expired and revoked API keys before dispatch", async () => {
@@ -679,7 +842,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
       headers: { apikey: SECRET_KEY, "content-type": "application/json", "sec-fetch-site": "cross-site, same-origin" },
       body: signup,
     }));
-    expect(duplicate.status).toBe(400);
+    expect(duplicate.status).toBe(403);
     expect(calls).toHaveLength(1);
 
     const malformed = await auth.handle(request("/signup", {
@@ -687,7 +850,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
       headers: { apikey: SECRET_KEY, "content-type": "application/json", "sec-fetch-site": "not-a-fetch-site" },
       body: signup,
     }));
-    expect(malformed.status).toBe(400);
+    expect(malformed.status).toBe(403);
     expect(calls).toHaveLength(1);
 
     const hostileRequest = Object.create(null) as Request;

@@ -15,6 +15,8 @@ import { TokenService } from "./tokens.js";
 import { UserService } from "./users.js";
 import {
   AuthServer,
+  captureAuthServerMailer,
+  captureAuthServerRateLimiter,
   captureAuthServerRepository,
   captureAuthServerServices,
   type AuthServerRuntimeOptions,
@@ -31,6 +33,50 @@ export type CreateAuthServerOptions = AuthServerOptions & {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
+}
+
+const SERVER_OPTION_MEMBERS = [
+  "environment",
+  "baseUrl",
+  "siteUrl",
+  "database",
+  "signingKeys",
+  "secrets",
+  "email",
+  "rateLimiter",
+  "oauth",
+  "redirects",
+  "authorization",
+  "accessTokenTtlSeconds",
+  "refreshTokenTtlSeconds",
+] as const;
+
+function dataOptionMember(source: object, member: string): unknown {
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(source, member);
+  } catch {
+    throw new AuthConfigurationError(`auth server ${member} must be a data property`);
+  }
+  if (descriptor === undefined) return undefined;
+  if (!("value" in descriptor)) throw new AuthConfigurationError(`auth server ${member} must be a data property`);
+  return descriptor.value;
+}
+
+/** Captures all configured executable adapters before Zod inspects them. */
+function captureConfiguredCallbacks(input: CreateAuthServerOptions): CreateAuthServerOptions {
+  const source = asRecord(input);
+  if (source === null) throw new AuthConfigurationError("auth server configuration must be an object");
+  const captured = Object.create(null) as Record<string, unknown>;
+  for (const member of SERVER_OPTION_MEMBERS) {
+    const value = dataOptionMember(source, member);
+    if (value !== undefined) captured[member] = value;
+  }
+  captured.database = captureAuthServerRepository(dataOptionMember(source, "database") as AuthRepository);
+  captured.email = captureAuthServerMailer(dataOptionMember(source, "email") as AuthServerOptions["email"]);
+  const rateLimiter = dataOptionMember(source, "rateLimiter");
+  if (rateLimiter !== undefined) captured.rateLimiter = captureAuthServerRateLimiter(rateLimiter as NonNullable<AuthServerOptions["rateLimiter"]>);
+  return captured as CreateAuthServerOptions;
 }
 
 function parseAbsoluteUrl(value: string, label: string): URL {
@@ -191,7 +237,8 @@ function mergeServices(defaults: AuthServerServices, overrides: AuthServerServic
 
 /** Creates a fully validated, framework-neutral server synchronously. */
 export function createAuthServer(input: CreateAuthServerOptions): AuthServer {
-  const parsed = authServerOptionsSchema.parse(input);
+  const capturedInput = captureConfiguredCallbacks(input);
+  const parsed = authServerOptionsSchema.parse(capturedInput);
   const raw = asRecord(input);
   let rawServices: AuthServerServiceOverrides | undefined;
   if (raw !== null) {

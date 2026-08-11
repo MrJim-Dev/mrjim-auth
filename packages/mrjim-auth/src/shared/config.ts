@@ -213,11 +213,41 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+type DataPropertySnapshot =
+  | { readonly valid: true; readonly present: false }
+  | { readonly valid: true; readonly present: true; readonly value: unknown }
+  | { readonly valid: false; readonly present: boolean };
+
+function dataPropertySnapshot(value: object, key: PropertyKey): DataPropertySnapshot {
+  let current: object | null = value;
+  const seen = new Set<object>();
+  for (let depth = 0; current !== null && depth < 32; depth += 1) {
+    if (seen.has(current)) return { valid: false, present: true };
+    seen.add(current);
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(current, key);
+    } catch {
+      return { valid: false, present: false };
+    }
+    if (descriptor !== undefined) {
+      if (!("value" in descriptor)) return { valid: false, present: true };
+      return { valid: true, present: true, value: descriptor.value };
+    }
+    try {
+      current = Object.getPrototypeOf(current);
+    } catch {
+      return { valid: false, present: false };
+    }
+  }
+  return current === null ? { valid: true, present: false } : { valid: false, present: true };
+}
+
 function hasMethods(value: unknown, methods: readonly string[]): boolean {
-  return (
-    isObjectRecord(value) &&
-    methods.every((method) => typeof value[method] === "function")
-  );
+  return isObjectRecord(value) && methods.every((method) => {
+    const property = dataPropertySnapshot(value, method);
+    return property.valid && property.present && typeof property.value === "function";
+  });
 }
 
 /**
@@ -233,7 +263,10 @@ export function isAuthRepository(value: unknown): value is AuthRepository {
 
   return (Object.entries(requiredRepositoryMethods) as readonly [string, readonly string[]][])
     .filter(([member]) => member !== "root")
-    .every(([member, methods]) => hasMethods(value[member], methods));
+    .every(([member, methods]) => {
+      const property = dataPropertySnapshot(value, member);
+      return property.valid && property.present && hasMethods(property.value, methods);
+    });
 }
 
 /**
@@ -249,18 +282,12 @@ export const authRepositorySchema = z.custom<AuthRepository>(
 );
 
 const mailerSchema = z.custom<Mailer>(
-  (value) =>
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { send?: unknown }).send === "function",
+  (value) => hasMethods(value, ["send"]),
   "email must implement send",
 );
 
 const rateLimiterSchema = z.custom<RateLimiter>(
-  (value) =>
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { consume?: unknown }).consume === "function",
+  (value) => hasMethods(value, ["consume"]),
   "rateLimiter must implement consume",
 );
 

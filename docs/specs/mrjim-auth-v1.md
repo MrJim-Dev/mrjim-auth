@@ -336,7 +336,7 @@ All routes use `/auth/v1` by default. The project may mount the handler elsewher
 | `POST /recover` | `resetPasswordForEmail` | Publishable |
 | `POST /resend` | `resend` | Publishable |
 | `GET /providers` | provider discovery | Publishable |
-| `GET /authorize` | `signInWithOAuth` / `linkIdentity` | Publishable; user required for linking |
+| `GET /authorize` | `signInWithOAuth` / `linkIdentity` | Publishable; client-generated PKCE S256 challenge required; user required for linking |
 | `GET /callback/:provider` | OAuth callback | Signed state |
 | `POST /exchange` | `exchangeCodeForSession` | One-time code and PKCE verifier |
 | `GET /user` | `getUser` | User |
@@ -432,6 +432,15 @@ The audit log replaces separate login and user-history tables. Secrets, password
 
 - v1 ships Google plus a generic OIDC provider adapter.
 - Browser, SSR, and mobile JavaScript use authorization code with PKCE S256.
+- The HTTP `/authorize` request accepts a client-generated S256 `code_challenge`
+  (and an optional explicit `code_challenge_method=S256`). Its response contains
+  only the provider URL, configured redirect, provider name, and expiry; it never
+  exposes provider state or either PKCE verifier. The server keeps its separate
+  provider-exchange verifier encrypted, while the short-lived callback redirect
+  carries only a distinct one-time internal exchange code.
+- `exchangeCodeForSession(code)` submits that internal code together with the
+  client-held verifier and exact redirect. The code is single-use, expires after
+  60 seconds, and is bound to the client challenge and redirect.
 - State is random, HMAC-bound to flow type and redirect intent, short-lived, and single-use.
 - Redirect targets must exactly match or safely derive from the configured allowlist.
 - Mobile deep-link callbacks exchange a 60-second one-time code; provider tokens are never placed in a deep-link URL.

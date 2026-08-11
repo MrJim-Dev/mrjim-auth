@@ -58,8 +58,6 @@ function mapAuthorize(data: unknown): unknown {
     provider: value.provider,
     url: value.url,
     redirect: value.redirect,
-    state: value.state,
-    code_verifier: value.codeVerifier,
     expires_at: value.expiresAt,
   };
 }
@@ -183,8 +181,13 @@ export async function handlePublicRoute(
   if (path === "/authorize") {
     const oauth = requiredOauth(context);
     const flowValue = context.query.get("flow");
+    const codeChallengeMethod = context.query.get("code_challenge_method");
+    if (codeChallengeMethod !== null && codeChallengeMethod !== "S256") {
+      throw new AuthApiError("invalid_request", 400, "Only PKCE S256 is supported");
+    }
     const input = {
       provider: context.query.get("provider") ?? "",
+      codeChallenge: context.query.get("code_challenge") ?? "",
       ...(context.query.get("redirect_to") === null ? {} : { redirectTo: context.query.get("redirect_to") }),
       ...(flowValue === null ? {} : { flow: flowValue as "sign_in" | "link_identity" }),
       ...(flowValue === "link_identity" && context.auth?.subject !== undefined

@@ -96,8 +96,6 @@ export const authorizeDataSchema = z.object({
   provider: nonEmptyString,
   url: z.string().url(),
   redirect: z.string().url(),
-  state: nonEmptyString,
-  code_verifier: nonEmptyString,
   expires_at: z.string().min(1),
 }).strict();
 export const exchangeDataSchema = z.object({
@@ -288,7 +286,7 @@ export const routeContracts: readonly RouteContract[] = Object.freeze([
   { method: "POST", path: "/recover", operationId: "resetPasswordForEmail", security: "api_key", body: recoverRequestSchema, response: authResult(sentSchema), example: { email: "user@example.com" } },
   { method: "POST", path: "/resend", operationId: "resend", security: "api_key", body: resendRequestSchema, response: authResult(sentSchema), example: { type: "signup", email: "user@example.com" } },
   { method: "GET", path: "/providers", operationId: "listProviders", security: "api_key", response: authResult(providersDataSchema) },
-  { method: "GET", path: "/authorize", operationId: "authorizeOAuth", security: "api_key", query: [{ name: "provider", required: true, description: "Configured provider key" }, { name: "redirect_to", required: false, description: "Exact allowlisted redirect" }, { name: "flow", required: false, description: "sign_in or link_identity" }], response: authResult(authorizeDataSchema) },
+  { method: "GET", path: "/authorize", operationId: "authorizeOAuth", security: "api_key", query: [{ name: "provider", required: true, description: "Configured provider key" }, { name: "code_challenge", required: true, description: "Client-generated RFC 7636 S256 challenge" }, { name: "code_challenge_method", required: false, description: "Must be S256 when supplied" }, { name: "redirect_to", required: false, description: "Exact allowlisted redirect" }, { name: "flow", required: false, description: "sign_in or link_identity" }], response: authResult(authorizeDataSchema) },
   { method: "GET", path: "/callback/{provider}", operationId: "oauthCallback", security: "signed", query: [{ name: "code", required: true, description: "Provider authorization code" }, { name: "state", required: true, description: "Signed PKCE state" }], response: nullDataSchema },
   { method: "POST", path: "/exchange", operationId: "exchangeCodeForSession", security: "api_key", body: exchangeRequestSchema, response: authResult(exchangeDataSchema), example: { code: "callback-code", code_verifier: "verifier" } },
   { method: "GET", path: "/user", operationId: "getUser", security: "user", response: authResult(userDataSchema) },

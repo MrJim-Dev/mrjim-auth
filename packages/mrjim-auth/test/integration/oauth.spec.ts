@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -431,6 +431,110 @@ describe("Task 7 OAuth and identity safety", () => {
       error: { code: "oauth_state_invalid" },
     });
     now = NOW;
+  });
+
+  it("binds the internal callback handle to a client-held PKCE verifier without leaking provider inputs", async () => {
+    const clientVerifier = "a".repeat(43);
+    const clientChallenge = createHash("sha256").update(clientVerifier, "utf8").digest("base64url");
+    let providerInput: { readonly code: string; readonly state: string; readonly codeVerifier: string } | undefined;
+    const provider = deterministicProvider({
+      exchange: async (input) => {
+        providerInput = input;
+        return profile({ subject: "client-pkce-subject", email: "client-pkce@example.com" });
+      },
+    });
+    const service = createOAuthService({ provider });
+    const authorized = unwrap(await service.authorize({
+      provider: "google",
+      redirectTo: CALLBACK,
+      codeChallenge: clientChallenge,
+    } as any));
+    const providerCode = "provider-code-wire-sentinel";
+    const callback = unwrap(await service.callback({
+      provider: "google",
+      code: providerCode,
+      state: authorized.state,
+      redirectTo: CALLBACK,
+    }));
+    expect(JSON.stringify(callback)).not.toContain(providerCode);
+    expect(JSON.stringify(callback)).not.toContain(authorized.state);
+    expect(providerInput).toMatchObject({ code: providerCode, state: authorized.state });
+    expect(providerInput?.codeVerifier).not.toBe(clientVerifier);
+    const audit = await disposable?.pool.query<{ metadata: Record<string, unknown> }>(
+      "SELECT metadata FROM auth.audit_log WHERE action = 'oauth.callback.created' ORDER BY occurred_at DESC LIMIT 1",
+    );
+    expect(JSON.stringify(audit?.rows)).not.toContain(providerCode);
+    expect(JSON.stringify(audit?.rows)).not.toContain(authorized.state);
+
+    const exchanged = await service.exchangeCode({
+      code: callback.code,
+      codeVerifier: clientVerifier,
+      redirectTo: CALLBACK,
+    });
+    expect(exchanged.error).toBeNull();
+    expect(exchanged.data?.identity.provider_subject).toBe("client-pkce-subject");
+  });
+
+  it("captures OAuth adapter and clock callbacks without invoking hostile accessors", async () => {
+    const { sessions } = createServices();
+    const providerAccessor = deterministicProvider() as any;
+    let providerGetterCalls = 0;
+    Object.defineProperty(providerAccessor, "authorizationUrl", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        providerGetterCalls += 1;
+        throw new Error("oauth-provider-getter-sentinel");
+      },
+    });
+    expect(() => new OAuthService({
+      repository: requireRepository(),
+      sessions,
+      providers: [providerAccessor],
+      tokenHashKey: TOKEN_HASH_KEY,
+      encryptionKey: ENCRYPTION_KEY,
+      allowedRedirects: [CALLBACK],
+    })).toThrow();
+    expect(providerGetterCalls).toBe(0);
+
+    const provider = deterministicProvider() as any;
+    const options = {
+      repository: requireRepository(),
+      sessions,
+      providers: [provider],
+      tokenHashKey: TOKEN_HASH_KEY,
+      encryptionKey: ENCRYPTION_KEY,
+      allowedRedirects: [CALLBACK],
+    } as any;
+    let clockGetterCalls = 0;
+    Object.defineProperty(options, "clock", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        clockGetterCalls += 1;
+        throw new Error("oauth-clock-getter-sentinel");
+      },
+    });
+    expect(() => new OAuthService(options)).toThrow();
+    expect(clockGetterCalls).toBe(0);
+
+    const service = createOAuthService({ provider });
+    provider.authorizationUrl = () => { throw new Error("swapped-provider-callback"); };
+    const authorized = await service.authorize({ provider: "google", redirectTo: CALLBACK });
+    expect(authorized.error).toBeNull();
+
+    const { sessions: mutableSessions } = createServices();
+    const sessionService = new OAuthService({
+      repository: requireRepository(),
+      sessions: mutableSessions,
+      providers: [deterministicProvider()],
+      tokenHashKey: TOKEN_HASH_KEY,
+      encryptionKey: ENCRYPTION_KEY,
+      allowedRedirects: [CALLBACK],
+    });
+    mutableSessions.create = () => { throw new Error("swapped-session-callback"); };
+    const signedIn = await sessionService.signInFromProfile(profile({ subject: "captured-session-subject", email: "captured-session@example.com" }));
+    expect(signedIn.error).toBeNull();
   });
 
   it("signs in by provider subject, links only with a fresh session, and rejects collisions", async () => {

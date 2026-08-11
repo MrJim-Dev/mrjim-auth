@@ -40,6 +40,7 @@ import {
   type OAuthProvider,
   type OAuthProviderProfile,
 } from "./oauth-providers.js";
+import { captureAuthServerRepository } from "./auth-server.js";
 import { isCodeVerifier } from "../client/pkce.js";
 import { SessionService, type AuthenticatedSession, type SessionContext } from "./sessions.js";
 
@@ -95,6 +96,175 @@ const transactionValueDelete = Function.prototype.call.bind(WeakMap.prototype.de
 ) => boolean;
 const createTransactionMarker = Object.create;
 const freezeTransactionMarker = Object.freeze;
+const oauthObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const oauthObjectGetPrototypeOf = Object.getPrototypeOf;
+const oauthObjectCreate = Object.create;
+const oauthObjectDefineProperty = Object.defineProperty;
+const oauthMapEntries = Map.prototype.entries;
+const oauthReflectApply = Reflect.apply;
+
+type OAuthDataProperty =
+  | { readonly valid: true; readonly present: false }
+  | { readonly valid: true; readonly present: true; readonly value: unknown }
+  | { readonly valid: false; readonly present: boolean };
+
+function oauthDataProperty(value: object, key: PropertyKey): OAuthDataProperty {
+  let current: object | null = value;
+  const seen = new Set<object>();
+  for (let depth = 0; current !== null && depth < 32; depth += 1) {
+    if (seen.has(current)) return { valid: false, present: true };
+    seen.add(current);
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = oauthObjectGetOwnPropertyDescriptor(current, key);
+    } catch {
+      return { valid: false, present: false };
+    }
+    if (descriptor !== undefined) {
+      if (!("value" in descriptor)) return { valid: false, present: true };
+      return { valid: true, present: true, value: descriptor.value };
+    }
+    try {
+      current = oauthObjectGetPrototypeOf(current);
+    } catch {
+      return { valid: false, present: false };
+    }
+  }
+  return current === null ? { valid: true, present: false } : { valid: false, present: true };
+}
+
+function oauthHasThen(value: object): boolean {
+  let current: object | null = value;
+  for (let depth = 0; current !== null && depth < 8; depth += 1) {
+    const property = oauthDataProperty(current, "then");
+    if (!property.valid) return true;
+    if (property.present) return true;
+    try {
+      current = oauthObjectGetPrototypeOf(current);
+    } catch {
+      return true;
+    }
+  }
+  return current !== null;
+}
+
+function oauthRequiredFunction(value: object, label: string, method: string): Function {
+  const property = oauthDataProperty(value, method);
+  if (!property.valid || !property.present || typeof property.value !== "function") {
+    throw new AuthConfigurationError(`${label}.${method} must be a data-property function`);
+  }
+  return property.value;
+}
+
+function oauthStringArray(value: unknown, label: string, minimum = 1): readonly string[] {
+  if (!arrayIsArray(value) || oauthHasThen(value)) throw new AuthConfigurationError(`${label} must be a data array`);
+  const lengthProperty = oauthDataProperty(value, "length");
+  if (!lengthProperty.valid || !lengthProperty.present || typeof lengthProperty.value !== "number" || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value < minimum || lengthProperty.value > 128) {
+    throw new AuthConfigurationError(`${label} must be a non-empty string array`);
+  }
+  const output: string[] = [];
+  for (let index = 0; index < lengthProperty.value; index += 1) {
+    const property = oauthDataProperty(value, `${index}`);
+    if (!property.valid || !property.present || typeof property.value !== "string" || property.value.trim() === "") {
+      throw new AuthConfigurationError(`${label} must be a non-empty string array`);
+    }
+    output.push(property.value);
+  }
+  return Object.freeze(output);
+}
+
+function oauthOption(source: object, key: string): unknown {
+  let property: PropertyDescriptor | undefined;
+  try {
+    property = oauthObjectGetOwnPropertyDescriptor(source, key);
+  } catch {
+    throw new AuthConfigurationError(`OAuth ${key} must be a data property`);
+  }
+  if (property === undefined) return undefined;
+  if (!("value" in property)) throw new AuthConfigurationError(`OAuth ${key} must be a data property`);
+  return property.value;
+}
+
+function captureOAuthProvider(value: unknown, label: string): OAuthProvider {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    throw new AuthConfigurationError(`${label} adapter is incomplete`);
+  }
+  const source = value as object;
+  if (oauthHasThen(source)) throw new AuthConfigurationError(`${label} adapter must not be thenable`);
+  const name = oauthDataProperty(source, "name");
+  const clientId = oauthDataProperty(source, "clientId");
+  const issuer = oauthDataProperty(source, "issuer");
+  const scopes = oauthDataProperty(source, "scopes");
+  if (!name.valid || !name.present || typeof name.value !== "string") throw new AuthConfigurationError(`${label}.name must be a data property`);
+  if (!clientId.valid || !clientId.present || typeof clientId.value !== "string") throw new AuthConfigurationError(`${label}.clientId must be a data property`);
+  if (!scopes.valid || !scopes.present) throw new AuthConfigurationError(`${label}.scopes must be a data property`);
+  const authorizationUrl = oauthRequiredFunction(source, label, "authorizationUrl");
+  const exchange = oauthRequiredFunction(source, label, "exchange");
+  const facade = oauthObjectCreate(null) as Record<string, unknown>;
+  oauthObjectDefineProperty(facade, "name", { configurable: false, enumerable: true, writable: false, value: name.value });
+  oauthObjectDefineProperty(facade, "clientId", { configurable: false, enumerable: true, writable: false, value: clientId.value });
+  oauthObjectDefineProperty(facade, "scopes", { configurable: false, enumerable: true, writable: false, value: oauthStringArray(scopes.value, `${label}.scopes`) });
+  if (!issuer.valid) throw new AuthConfigurationError(`${label}.issuer must be a data property`);
+  if (issuer.present) oauthObjectDefineProperty(facade, "issuer", { configurable: false, enumerable: true, writable: false, value: issuer.value });
+  oauthObjectDefineProperty(facade, "capabilities", { configurable: false, enumerable: true, writable: false, value: Object.freeze({ authorization_code: true, pkce: true, identity_linking: true }) });
+  oauthObjectDefineProperty(facade, "authorizationUrl", { configurable: false, enumerable: true, writable: false, value: (...args: unknown[]) => oauthReflectApply(authorizationUrl, source, args) });
+  oauthObjectDefineProperty(facade, "exchange", { configurable: false, enumerable: true, writable: false, value: (...args: unknown[]) => oauthReflectApply(exchange, source, args) });
+  return Object.freeze(facade) as unknown as OAuthProvider;
+}
+
+function captureOAuthSessions(value: SessionService): SessionService {
+  const source = value as unknown as object;
+  const create = oauthRequiredFunction(source, "OAuth sessions", "create");
+  const authorizeSession = oauthRequiredFunction(source, "OAuth sessions", "authorizeSession");
+  const facade = oauthObjectCreate(null) as Record<string, unknown>;
+  oauthObjectDefineProperty(facade, "create", {
+    configurable: false,
+    enumerable: true,
+    writable: false,
+    value: (...args: unknown[]) => oauthReflectApply(create, source, args),
+  });
+  oauthObjectDefineProperty(facade, "authorizeSession", {
+    configurable: false,
+    enumerable: true,
+    writable: false,
+    value: (...args: unknown[]) => oauthReflectApply(authorizeSession, source, args),
+  });
+  return Object.freeze(facade) as unknown as SessionService;
+}
+
+function captureOAuthProviders(value: unknown): readonly (readonly [string, OAuthProvider])[] {
+  const entries: Array<readonly [string, OAuthProvider]> = [];
+  if (arrayIsArray(value)) {
+    const lengthProperty = oauthDataProperty(value, "length");
+    if (!lengthProperty.valid || !lengthProperty.present || typeof lengthProperty.value !== "number" || !Number.isSafeInteger(lengthProperty.value)) {
+      throw new AuthConfigurationError("OAuth providers must be a provider array or map");
+    }
+    for (let index = 0; index < lengthProperty.value; index += 1) {
+      const property = oauthDataProperty(value, `${index}`);
+      if (!property.valid || !property.present) throw new AuthConfigurationError("OAuth providers must be a provider array or map");
+      const provider = captureOAuthProvider(property.value, `OAuth provider ${index}`);
+      entries.push([provider.name, provider]);
+    }
+    return Object.freeze(entries);
+  }
+  if (value instanceof Map) {
+    for (const entry of oauthReflectApply(oauthMapEntries, value, []) as Iterable<unknown>) {
+      if (!arrayIsArray(entry)) throw new AuthConfigurationError("OAuth providers must be a provider array or map");
+      const length = oauthDataProperty(entry, "length");
+      const key = oauthDataProperty(entry, "0");
+      const valueProperty = oauthDataProperty(entry, "1");
+      if (
+        !length.valid || !length.present || length.value !== 2
+        || !key.valid || !key.present || typeof key.value !== "string"
+        || !valueProperty.valid || !valueProperty.present
+      ) throw new AuthConfigurationError("OAuth providers must be a provider array or map");
+      const provider = captureOAuthProvider(valueProperty.value, "OAuth provider");
+      entries.push([key.value, provider]);
+    }
+    return Object.freeze(entries);
+  }
+  throw new AuthConfigurationError("OAuth providers must be a provider array or map");
+}
 
 function trustedTransactionValue<T>(value: T): object {
   const marker = createTransactionMarker(null) as object;
@@ -116,6 +286,8 @@ export type OAuthFlow = "sign_in" | "link_identity";
 /** Input for starting a provider authorization flow. */
 export interface OAuthAuthorizeInput {
   readonly provider: string;
+  /** Client-generated S256 challenge used to bind the internal exchange handle. */
+  readonly codeChallenge?: string;
   readonly redirectTo?: string | null;
   readonly flow?: OAuthFlow;
   readonly subject?: OAuthSubject;
@@ -200,6 +372,8 @@ export interface OAuthServiceOptions {
 
 type EncryptedStatePayload = {
   readonly verifier: string;
+  readonly providerChallenge?: string;
+  readonly clientChallenge?: string;
   readonly nonce: string;
   readonly linkingSessionId: UUID | null;
 };
@@ -279,6 +453,13 @@ function validVerifier(value: unknown): string {
   return value;
 }
 
+function validChallenge(value: unknown): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(value)) {
+    throw new AuthApiError("invalid_request", 400, "Invalid PKCE challenge");
+  }
+  return value;
+}
+
 function validCode(value: unknown): string {
   if (typeof value !== "string" || !CALLBACK_CODE_PATTERN.test(value)) {
     throw new AuthApiError("invalid_token", 401, "Invalid OAuth code");
@@ -331,16 +512,26 @@ function decryptState(value: Uint8Array | null, key: Buffer): EncryptedStatePayl
     ]).toString("utf8"));
     if (typeof parsed !== "object" || parsed === null) throw new Error("invalid state payload");
     const candidate = parsed as Record<string, unknown>;
+    const providerChallenge = candidate.providerChallenge === undefined
+      ? undefined
+      : candidate.providerChallenge;
+    const clientChallenge = candidate.clientChallenge === undefined
+      ? undefined
+      : candidate.clientChallenge;
     if (
       typeof candidate.verifier !== "string"
       || typeof candidate.nonce !== "string"
       || !("linkingSessionId" in candidate)
       || (candidate.linkingSessionId !== null && !uuidSchema.safeParse(candidate.linkingSessionId).success)
       || !isCodeVerifier(candidate.verifier)
+      || (providerChallenge !== undefined && (typeof providerChallenge !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(providerChallenge)))
+      || (clientChallenge !== undefined && (typeof clientChallenge !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(clientChallenge)))
       || candidate.nonce.length < 16
     ) throw new Error("invalid state payload");
     return {
       verifier: candidate.verifier,
+      ...(providerChallenge === undefined ? {} : { providerChallenge }),
+      ...(clientChallenge === undefined ? {} : { clientChallenge }),
       nonce: candidate.nonce,
       linkingSessionId: candidate.linkingSessionId as UUID | null,
     };
@@ -640,49 +831,60 @@ export class OAuthService {
   private readonly clock: () => Date;
 
   constructor(options: OAuthServiceOptions) {
-    if (options.repository === null || typeof options.repository !== "object" || typeof options.repository.transaction !== "function") {
+    if (options === null || typeof options !== "object") throw new AuthConfigurationError("OAuth options are incomplete");
+    const source = options as unknown as object;
+    const repositoryValue = oauthOption(source, "repository");
+    const sessionsValue = oauthOption(source, "sessions");
+    const providersValue = oauthOption(source, "providers");
+    const tokenHashKey = oauthOption(source, "tokenHashKey");
+    const encryptionKey = oauthOption(source, "encryptionKey");
+    const allowedRedirectsValue = oauthOption(source, "allowedRedirects");
+    const defaultRedirectValue = oauthOption(source, "defaultRedirect");
+    const allowVerifiedEmailAutoLinkValue = oauthOption(source, "allowVerifiedEmailAutoLink");
+    const defaultRoleKeysValue = oauthOption(source, "defaultRoleKeys");
+    const freshSessionMaxAgeValue = oauthOption(source, "freshSessionMaxAgeSeconds");
+    const clockValue = oauthOption(source, "clock");
+    if (repositoryValue === null || typeof repositoryValue !== "object") {
       throw new AuthConfigurationError("OAuth repository is incomplete");
     }
-    if (!(options.sessions instanceof SessionService)) throw new AuthConfigurationError("OAuth session service is required");
-    const providerEntries: readonly (readonly [string, OAuthProvider])[] = Array.isArray(options.providers)
-      ? options.providers.map((provider) => [provider.name, provider] as const)
-      : [...options.providers.entries()];
+    if (!(sessionsValue instanceof SessionService)) throw new AuthConfigurationError("OAuth session service is required");
+    if (typeof clockValue !== "undefined" && typeof clockValue !== "function") throw new AuthConfigurationError("OAuth clock must be a data-property function");
+    const repository = captureAuthServerRepository(repositoryValue as AuthRepository);
+    const sessions = captureOAuthSessions(sessionsValue);
+    const providerEntries = captureOAuthProviders(providersValue);
     const providers = new Map<string, OAuthProvider>();
     for (const [key, provider] of providerEntries) {
-      if (provider === null || typeof provider !== "object" || typeof provider.authorizationUrl !== "function" || typeof provider.exchange !== "function") {
-        throw new AuthConfigurationError("OAuth provider adapter is incomplete");
-      }
       const name = normalizeProvider(key);
       if (providers.has(name)) throw new AuthConfigurationError(`duplicate OAuth provider: ${name}`);
       if (normalizeProvider(provider.name) !== name) throw new AuthConfigurationError("OAuth provider map key does not match adapter name");
       if (typeof provider.clientId !== "string" || provider.clientId.trim() === "") throw new AuthConfigurationError("OAuth provider client ID is required");
-      if (!Array.isArray(provider.scopes) || provider.scopes.length === 0 || !provider.scopes.every((scope) => typeof scope === "string" && scope.trim() !== "")) {
+      if (!arrayIsArray(provider.scopes) || provider.scopes.length === 0 || !provider.scopes.every((scope) => typeof scope === "string" && scope.trim() !== "")) {
         throw new AuthConfigurationError("OAuth provider scopes are required");
       }
       providers.set(name, provider);
     }
     if (providers.size === 0) throw new AuthConfigurationError("at least one OAuth provider is required");
-    const allowed = options.allowedRedirects.map(normalizeRedirect);
+    const allowed = oauthStringArray(allowedRedirectsValue, "OAuth redirects").map(normalizeRedirect);
     if (allowed.length === 0 || new Set(allowed).size !== allowed.length) throw new AuthConfigurationError("OAuth redirects must be non-empty and unique");
-    const defaultRedirect = normalizeRedirect(options.defaultRedirect ?? allowed[0]);
+    const defaultRedirect = normalizeRedirect(defaultRedirectValue ?? allowed[0]);
     if (!allowed.includes(defaultRedirect)) throw new AuthConfigurationError("OAuth default redirect must be exactly allowlisted");
-    const freshAge = options.freshSessionMaxAgeSeconds ?? 5 * 60;
+    const freshAge = (freshSessionMaxAgeValue as number | undefined) ?? 5 * 60;
     if (!Number.isSafeInteger(freshAge) || freshAge <= 0 || freshAge > 15 * 60) throw new AuthConfigurationError("OAuth fresh-session age is invalid");
-    const defaultRoleKeys = [...(options.defaultRoleKeys ?? [])];
+    const defaultRoleKeys = defaultRoleKeysValue === undefined ? [] : [...oauthStringArray(defaultRoleKeysValue, "OAuth default roles", 0)];
     if (!defaultRoleKeys.every((key) => roleKeySchema.safeParse(key).success)) {
       throw new AuthConfigurationError("OAuth default role keys are invalid");
     }
-    this.repository = options.repository;
-    this.sessions = options.sessions;
+    this.repository = repository;
+    this.sessions = sessions;
     this.providers = providers;
-    this.tokenHashKey = validKey(options.tokenHashKey, "OAuth token hash key");
-    this.encryptionKey = deriveEncryptionKey(options.encryptionKey);
+    this.tokenHashKey = validKey(tokenHashKey as string | Uint8Array, "OAuth token hash key");
+    this.encryptionKey = deriveEncryptionKey(encryptionKey as string | Uint8Array);
     this.allowedRedirects = Object.freeze([...allowed]);
     this.defaultRedirect = defaultRedirect;
-    this.allowVerifiedEmailAutoLink = options.allowVerifiedEmailAutoLink === true;
+    this.allowVerifiedEmailAutoLink = allowVerifiedEmailAutoLinkValue === true;
     this.defaultRoleKeys = Object.freeze([...new Set(defaultRoleKeys)]);
     this.freshSessionMaxAgeSeconds = freshAge;
-    this.clock = options.clock ?? (() => new Date());
+    this.clock = (clockValue as (() => Date) | undefined) ?? (() => new Date());
     validNow(this.clock);
   }
 
@@ -722,7 +924,10 @@ export class OAuthService {
       }
       const now = validNow(this.clock);
       const codeVerifier = randomOpaque();
-      const codeChallenge = pkceChallenge(codeVerifier);
+      const providerChallenge = pkceChallenge(codeVerifier);
+      const clientChallenge = input.codeChallenge === undefined
+        ? providerChallenge
+        : validChallenge(input.codeChallenge);
       const state = randomOpaque();
       const nonce = generateProviderNonce();
       const expiresAt = new Date(now.getTime() + OAUTH_STATE_TTL_SECONDS * 1000);
@@ -733,7 +938,7 @@ export class OAuthService {
           state,
           nonce,
           scopes: provider.scopes,
-          codeChallenge,
+          codeChallenge: providerChallenge,
           codeChallengeMethod: "S256",
         });
         if (typeof value !== "string" || value.trim() === "") throw new TypeError("invalid provider authorization URL");
@@ -748,9 +953,11 @@ export class OAuthService {
           state_hash: hmac(this.tokenHashKey, "oauth_state", stateBinding(state, providerName, flow, redirect)),
           provider: providerName,
           flow,
-          pkce_challenge: codeChallenge,
+          pkce_challenge: clientChallenge,
           encrypted_verifier: encryptState({
             verifier: codeVerifier,
+            providerChallenge,
+            clientChallenge,
             nonce,
             linkingSessionId: linkingSubject?.session_id ?? null,
           }, this.encryptionKey),
@@ -815,7 +1022,12 @@ export class OAuthService {
       }
       if (consumed === null || redirect === null) return authFailure(oauthStateInvalid());
       const payload = decryptState(consumed.encrypted_verifier ?? null, this.encryptionKey);
-      if (pkceChallenge(payload.verifier) !== consumed.pkce_challenge) return authFailure(oauthStateInvalid());
+      const providerChallenge = payload.providerChallenge ?? consumed.pkce_challenge;
+      const clientChallenge = payload.clientChallenge ?? consumed.pkce_challenge;
+      if (
+        pkceChallenge(payload.verifier) !== providerChallenge
+        || clientChallenge !== consumed.pkce_challenge
+      ) return authFailure(oauthStateInvalid());
       if (
         (consumed.flow === "link_identity" && (
           payload.linkingSessionId === null

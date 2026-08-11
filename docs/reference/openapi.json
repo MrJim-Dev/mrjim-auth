@@ -360,10 +360,6 @@
           "data": {
             "additionalProperties": false,
             "properties": {
-              "code_verifier": {
-                "minLength": 1,
-                "type": "string"
-              },
               "expires_at": {
                 "minLength": 1,
                 "type": "string"
@@ -376,10 +372,6 @@
                 "format": "uri",
                 "type": "string"
               },
-              "state": {
-                "minLength": 1,
-                "type": "string"
-              },
               "url": {
                 "format": "uri",
                 "type": "string"
@@ -389,8 +381,6 @@
               "provider",
               "url",
               "redirect",
-              "state",
-              "code_verifier",
               "expires_at"
             ],
             "type": "object"
@@ -3093,6 +3083,24 @@
             "in": "query",
             "name": "provider",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Client-generated RFC 7636 S256 challenge",
+            "in": "query",
+            "name": "code_challenge",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Must be S256 when supplied",
+            "in": "query",
+            "name": "code_challenge_method",
+            "required": false,
             "schema": {
               "type": "string"
             }

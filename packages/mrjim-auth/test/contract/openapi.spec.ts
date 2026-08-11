@@ -45,6 +45,18 @@ describe("Task 9 deterministic OpenAPI contract", () => {
     expect(refs.every((ref) => ref.startsWith("#/components/schemas/") && Object.hasOwn(schemas, ref.slice("#/components/schemas/".length)))).toBe(true);
     expect(collectReferences(configured).some((ref) => ref.startsWith("#/$defs/"))).toBe(false);
 
+    const authorize = paths["/authorize"].get as Record<string, any>;
+    const authorizeParameters = authorize.parameters as Array<Record<string, any>>;
+    expect(authorizeParameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "code_challenge", in: "query", required: true }),
+      expect.objectContaining({ name: "code_challenge_method", in: "query", required: false }),
+    ]));
+    const authorizeResponseRef = authorize.responses["200"].content["application/json"].schema.$ref as string;
+    const authorizeResponseName = authorizeResponseRef.slice("#/components/schemas/".length);
+    const authorizeDataProperties = (schemas[authorizeResponseName] as any).properties.data.properties as Record<string, unknown>;
+    expect(authorizeDataProperties).not.toHaveProperty("state");
+    expect(authorizeDataProperties).not.toHaveProperty("code_verifier");
+
     for (const [path, _method, operation] of operations(configured)) {
       const templateNames = [...path.matchAll(/\{([^}]+)\}/gu)].map((match) => match[1]);
       const parameters = operation.parameters as Array<Record<string, any>>;

@@ -6,7 +6,7 @@ import {
   isPublicAuthErrorCode,
   type PublicAuthErrorCode,
 } from "../shared/errors.js";
-import type { AuthRepository } from "../shared/contracts.js";
+import type { AuthRepository, Mailer, RateLimiter } from "../shared/contracts.js";
 import type { AuthServerOptions } from "../shared/config.js";
 import { uuidSchema, type Session, type User } from "../shared/types.js";
 import { createAuthorizationRequestContext, type AuthorizationRequestContext, type AuthorizationRequirement, type AuthorizationSubject } from "./authorization.js";
@@ -111,9 +111,23 @@ type RequestMeta = {
   readonly url: URL;
   readonly headers: Headers;
   readonly requestId: string;
+  readonly apiKey: HeaderValue;
+  readonly authorization: HeaderValue;
+  readonly contentLength: HeaderValue;
+  readonly contentType: HeaderValue;
+  readonly contentEncoding: HeaderValue;
+  readonly accessControlRequestMethod: HeaderValue;
+  readonly accessControlRequestHeaders: HeaderValue;
   readonly origin: string | null;
   readonly browserMarked: boolean;
 };
+
+type HeaderValue =
+  | { readonly state: "absent" }
+  | { readonly state: "valid"; readonly value: string }
+  | { readonly state: "invalid" };
+
+type FetchMetadataState = "absent" | "present" | "invalid";
 
 type SafeResult =
   | { readonly ok: true; readonly data: unknown }
@@ -160,6 +174,38 @@ function captureIteratorNext(): Function {
 
 function invoke<T>(method: Function, receiver: unknown, args: readonly unknown[]): T {
   return reflectApply(method, receiver, args as unknown[]) as T;
+}
+
+function readHeaderValue(headers: object, name: string): HeaderValue {
+  let value: unknown;
+  try {
+    value = invoke<unknown>(headersGet, headers, [name]);
+  } catch {
+    return { state: "invalid" };
+  }
+  if (value === null) return { state: "absent" };
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.includes(",")
+    || value.includes("\r")
+    || value.includes("\n")
+  ) return { state: "invalid" };
+  return { state: "valid", value };
+}
+
+function readListHeaderValue(headers: object, name: string): HeaderValue {
+  let value: unknown;
+  try {
+    value = invoke<unknown>(headersGet, headers, [name]);
+  } catch {
+    return { state: "invalid" };
+  }
+  if (value === null) return { state: "absent" };
+  if (typeof value !== "string" || value.length === 0 || value.includes("\r") || value.includes("\n")) {
+    return { state: "invalid" };
+  }
+  return { state: "valid", value };
 }
 
 function ownDataProperty(value: object, key: PropertyKey): DataProperty {
@@ -296,6 +342,16 @@ export function captureAuthServerServices(value: AuthServerServices): AuthServer
   return objectFreeze(facade) as unknown as AuthServerServices;
 }
 
+/** Captures the configured mail-delivery callback before schema inspection. */
+export function captureAuthServerMailer(value: Mailer): Mailer {
+  return captureMethodGroup(value, "email", ["send"]) as unknown as Mailer;
+}
+
+/** Captures the configured rate-limit callback before schema inspection. */
+export function captureAuthServerRateLimiter(value: RateLimiter): RateLimiter {
+  return captureMethodGroup(value, "rateLimiter", ["consume"]) as unknown as RateLimiter;
+}
+
 /** Captures every repository callback used by the server and default services. */
 export function captureAuthServerRepository(value: AuthRepository): AuthRepository {
   if (value === null || (typeof value !== "object" && typeof value !== "function")) {
@@ -349,13 +405,7 @@ function validRequestId(value: unknown): value is string {
   return true;
 }
 
-function validHeaderValue(value: string | null): string | null {
-  if (value === null) return null;
-  if (value.includes(",") || value.includes("\r") || value.includes("\n")) return null;
-  return value;
-}
-
-function readFetchMetadata(headers: object): boolean | null {
+function readFetchMetadata(headers: object): FetchMetadataState {
   const fields: readonly [string, ReadonlySet<string>][] = [
     ["sec-fetch-site", FETCH_SITE_VALUES],
     ["sec-fetch-mode", FETCH_MODE_VALUES],
@@ -364,17 +414,13 @@ function readFetchMetadata(headers: object): boolean | null {
   ];
   let present = false;
   for (const [name, allowed] of fields) {
-    let value: string | null;
-    try {
-      value = invoke<string | null>(headersGet, headers, [name]);
-    } catch {
-      return null;
-    }
-    if (value === null) continue;
+    const header = readHeaderValue(headers, name);
+    if (header.state === "invalid") return "invalid";
+    if (header.state === "absent") continue;
     present = true;
-    if (value.length === 0 || value.trim() !== value || value.includes(",") || !allowed.has(value)) return null;
+    if (header.value.trim() !== header.value || !allowed.has(header.value)) return "invalid";
   }
-  return present;
+  return present ? "present" : "absent";
 }
 
 function nativePromiseValue(value: unknown): Promise<unknown> {
@@ -885,13 +931,69 @@ export class AuthServer {
       if (typeof method !== "string" || typeof urlValue !== "string" || headers === null || (typeof headers !== "object" && typeof headers !== "function")) return null;
       const url = new nativeURL(urlValue);
       if (url.hash !== "") return null;
-      const rawRequestId = validHeaderValue(invoke<string | null>(headersGet, headers, ["x-request-id"]));
-      const rawOrigin = validHeaderValue(invoke<string | null>(headersGet, headers, ["origin"]));
+      const requestIdHeader = readHeaderValue(headers, "x-request-id");
+      const originHeader = readHeaderValue(headers, "origin");
+      const apiKey = readHeaderValue(headers, "apikey");
+      const authorization = readHeaderValue(headers, "authorization");
+      const contentLength = readHeaderValue(headers, "content-length");
+      const contentType = readHeaderValue(headers, "content-type");
+      const contentEncoding = readHeaderValue(headers, "content-encoding");
+      const accessControlRequestMethod = readHeaderValue(headers, "access-control-request-method");
+      const accessControlRequestHeaders = readListHeaderValue(headers, "access-control-request-headers");
+      const strictHeaders: readonly HeaderValue[] = [
+        requestIdHeader,
+        originHeader,
+        apiKey,
+        authorization,
+        contentLength,
+        contentType,
+        contentEncoding,
+        accessControlRequestMethod,
+      ];
+      if (strictHeaders.some((header) => header.state === "invalid")) {
+        throw new RequestBoundaryError("invalid_request", 400);
+      }
+      if (accessControlRequestHeaders.state === "invalid") {
+        throw new RequestBoundaryError("invalid_request", 400);
+      }
+      if (contentEncoding.state === "valid" && contentEncoding.value !== "identity") {
+        throw new RequestBoundaryError("invalid_request", 400);
+      }
+      if (requestIdHeader.state === "valid" && !validRequestId(requestIdHeader.value)) {
+        throw new RequestBoundaryError("invalid_request", 400);
+      }
+      if (contentLength.state === "valid") {
+        if (!/^\d+$/u.test(contentLength.value)) throw new RequestBoundaryError("invalid_request", 400);
+        const declaredLength = Number(contentLength.value);
+        if (!Number.isSafeInteger(declaredLength)) throw new RequestBoundaryError("invalid_request", 400);
+        if (declaredLength > MAX_BODY_BYTES) throw new RequestBoundaryError("invalid_request", 413);
+      }
+      if (authorization.state === "valid" && !isValidBearer(authorization.value)) {
+        throw new RequestBoundaryError("invalid_request", 400);
+      }
       const browserMarked = readFetchMetadata(headers);
-      if (browserMarked === null) return null;
+      if (browserMarked === "invalid") throw new RequestBoundaryError("forbidden", 403);
+      const rawRequestId = requestIdHeader.state === "valid" ? requestIdHeader.value : null;
+      const rawOrigin = originHeader.state === "valid" ? originHeader.value : null;
       const requestId = validRequestId(rawRequestId) ? rawRequestId : randomUUID();
-      return { request, method, url, headers: headers as Headers, requestId, origin: rawOrigin, browserMarked };
-    } catch {
+      return {
+        request,
+        method,
+        url,
+        headers: headers as Headers,
+        requestId,
+        apiKey,
+        authorization,
+        contentLength,
+        contentType,
+        contentEncoding,
+        accessControlRequestMethod,
+        accessControlRequestHeaders,
+        origin: rawOrigin,
+        browserMarked: browserMarked === "present",
+      };
+    } catch (error) {
+      if (error instanceof RequestBoundaryError) throw error;
       return null;
     }
   }
@@ -905,13 +1007,21 @@ export class AuthServer {
 
   private preflight(meta: RequestMeta, routed: { readonly path: string } | null): Response {
     if (meta.origin === null || routed === null || routeContract(routed.path) === undefined) return this.errorResponse(meta, "invalid_request", 400);
-    const requestedMethod = validHeaderValue(invoke<string | null>(headersGet, meta.headers, ["access-control-request-method"]));
-    const requestedHeaders = validHeaderValue(invoke<string | null>(headersGet, meta.headers, ["access-control-request-headers"]));
+    const requestedMethod = meta.accessControlRequestMethod.state === "valid"
+      ? meta.accessControlRequestMethod.value
+      : null;
+    const requestedHeaders = meta.accessControlRequestHeaders.state === "valid"
+      ? meta.accessControlRequestHeaders.value
+      : null;
     if (requestedMethod === null || !["GET", "POST", "PUT", "DELETE"].includes(requestedMethod)) return this.errorResponse(meta, "invalid_request", 400);
     if (routeContract(routed.path, requestedMethod) === undefined) return this.errorResponse(meta, "invalid_request", 405);
     if (requestedHeaders !== null) {
-      for (const header of requestedHeaders.split(",").map((item) => item.trim().toLowerCase())) {
-        if (header === "" || !ALLOWED_REQUEST_HEADERS.has(header)) return this.errorResponse(meta, "forbidden", 403);
+      const headers = requestedHeaders.split(",").map((item) => item.trim().toLowerCase());
+      if (headers.some((header) => header === "" || !/^[!#$%&'*+.^_`|~0-9a-z-]+$/u.test(header))) {
+        return this.errorResponse(meta, "invalid_request", 400);
+      }
+      for (const header of new Set(headers)) {
+        if (!ALLOWED_REQUEST_HEADERS.has(header)) return this.errorResponse(meta, "forbidden", 403);
       }
     }
     const response = this.emptyResponse(meta, 204);
@@ -940,20 +1050,13 @@ export class AuthServer {
 
   private async parseRequestBody(meta: RequestMeta, contract: RouteContract, query: URLSearchParams): Promise<unknown> {
     if (contract.body === undefined) return undefined;
-    let contentEncoding: string | null;
-    try {
-      contentEncoding = invoke<string | null>(headersGet, meta.headers, ["content-encoding"]);
-    } catch {
-      throw new RequestBoundaryError("invalid_request", 400);
-    }
-    if (contentEncoding !== null && contentEncoding !== "identity") throw new RequestBoundaryError("invalid_request", 400);
-    const contentLength = validHeaderValue(invoke<string | null>(headersGet, meta.headers, ["content-length"]));
+    const contentLength = meta.contentLength.state === "valid" ? meta.contentLength.value : null;
     if (contentLength !== null) {
       if (!/^\d+$/u.test(contentLength)) throw new RequestBoundaryError("invalid_request", 400);
       const length = Number(contentLength);
       if (!Number.isSafeInteger(length) || length > MAX_BODY_BYTES) throw new RequestBoundaryError("invalid_request", 413);
     }
-    const contentType = validHeaderValue(invoke<string | null>(headersGet, meta.headers, ["content-type"]));
+    const contentType = meta.contentType.state === "valid" ? meta.contentType.value : null;
     if (!isJsonContentType(contentType)) {
       if (contract.path === "/logout" && contentType === null) {
         let requestBody: unknown;
@@ -1058,8 +1161,11 @@ export class AuthServer {
   ): Promise<RouteAuthContext | undefined> {
     if (contract?.security === "signed") return undefined;
     const now = new Date();
-    const rawApiKey = validHeaderValue(invoke<string | null>(headersGet, meta.headers, ["apikey"]));
-    if (rawApiKey === null || rawApiKey.trim() !== rawApiKey || rawApiKey.length < 8 || rawApiKey.length > 512) {
+    if (meta.apiKey.state !== "valid") {
+      throw new AuthApiError("unauthorized", 401, "API key is required", meta.requestId);
+    }
+    const rawApiKey = meta.apiKey.value;
+    if (rawApiKey.trim() !== rawApiKey || rawApiKey.length < 8 || rawApiKey.length > 512) {
       throw new AuthApiError("unauthorized", 401, "API key is required", meta.requestId);
     }
     const expectedHash = Uint8Array.from(createHmac("sha256", this.apiKeyHashKey).update(`apikey\0${rawApiKey}`, "utf8").digest());
@@ -1068,11 +1174,10 @@ export class AuthServer {
     if (key === null) throw new AuthApiError("unauthorized", 401, "Invalid API key", meta.requestId);
     if (key.kind === "secret" && (meta.origin !== null || meta.browserMarked)) throw new AuthApiError("forbidden", 403, "Secret API keys are not accepted from browser origins", meta.requestId);
 
-    const authorization = validHeaderValue(invoke<string | null>(headersGet, meta.headers, ["authorization"]));
     let bearer: string | null = null;
-    if (authorization !== null) {
-      if (!isValidBearer(authorization)) throw new AuthApiError("unauthorized", 401, "Invalid bearer authorization", meta.requestId);
-      bearer = authorization.slice("Bearer ".length);
+    if (meta.authorization.state === "valid") {
+      if (!isValidBearer(meta.authorization.value)) throw new AuthApiError("invalid_request", 400, "Invalid bearer authorization", meta.requestId);
+      bearer = meta.authorization.value.slice("Bearer ".length);
     }
     const requiresBearer = forceBearer || contract?.security === "user" || (contract?.path === "/authorize" && invoke<string | null>(searchParamsGet, query, ["flow"]) === "link_identity");
     if (requiresBearer && bearer === null) throw new AuthApiError("unauthorized", 401, "Authenticated session is required", meta.requestId);
