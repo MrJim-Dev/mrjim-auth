@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import type { AuthRepository, KeyProvider } from "../../src/shared/contracts.js";
+import type { AuthRepository, KeyProvider, OAuthStateRecord } from "../../src/shared/contracts.js";
 import { AuthApiError, AuthConfigurationError } from "../../src/shared/errors.js";
 import { migrate } from "../../src/postgres/migrate.js";
 import { createPostgresAdapter, type PostgresAdapter } from "../../src/postgres/adapter.js";
@@ -233,6 +233,62 @@ function hostileTransactionValueRepository(base: PostgresAdapter): AuthRepositor
       "adapter-controlled transaction value",
     ) as unknown as T,
   };
+}
+
+function projectedIdentityRepository(
+  base: PostgresAdapter,
+  project: (identities: AuthRepository["identities"]) => AuthRepository["identities"],
+): AuthRepository {
+  const wrap = (current: AuthRepository): AuthRepository => ({
+    ...current,
+    identities: project(current.identities),
+  });
+  return {
+    ...wrap(base),
+    transaction: (callback) => base.transaction((transaction) => callback(wrap(transaction))),
+  };
+}
+
+async function latestOAuthStateRecord(): Promise<OAuthStateRecord> {
+  if (disposable === undefined) throw new Error("PostgreSQL is not initialized");
+  const result = await disposable.pool.query<{
+    id: string;
+    state_hash: Buffer;
+    provider: string;
+    flow: OAuthStateRecord["flow"];
+    pkce_challenge: string;
+    encrypted_verifier: Buffer | null;
+    redirect: string;
+    linking_user_id: string | null;
+    expires_at: Date;
+    consumed_at: Date | null;
+  }>(
+    "SELECT id::text, state_hash, provider, flow, pkce_challenge, encrypted_verifier, redirect_target AS redirect, linking_user_id::text, expires_at, consumed_at FROM auth.oauth_states ORDER BY created_at DESC, ctid DESC LIMIT 1",
+  );
+  const row = result.rows[0];
+  if (row === undefined) throw new Error("OAuth state was not persisted");
+  return {
+    id: uuidSchema.parse(row.id),
+    state_hash: Uint8Array.from(row.state_hash),
+    provider: row.provider,
+    flow: row.flow,
+    pkce_challenge: row.pkce_challenge,
+    encrypted_verifier: row.encrypted_verifier === null ? null : Uint8Array.from(row.encrypted_verifier),
+    redirect: row.redirect,
+    linking_user_id: row.linking_user_id === null ? null : uuidSchema.parse(row.linking_user_id),
+    expires_at: row.expires_at,
+    consumed_at: row.consumed_at,
+  };
+}
+
+async function databaseMutationSnapshot(): Promise<Record<string, string>> {
+  if (disposable === undefined) throw new Error("PostgreSQL is not initialized");
+  const result = await disposable.pool.query<Record<string, string>>(
+    "SELECT (SELECT count(*)::text FROM auth.users) AS users, (SELECT count(*)::text FROM auth.identities) AS identities, (SELECT count(*)::text FROM auth.sessions) AS sessions, (SELECT count(*)::text FROM auth.one_time_tokens) AS one_time_tokens, (SELECT count(*)::text FROM auth.audit_log) AS audit_log, (SELECT count(*)::text FROM auth.oauth_states WHERE consumed_at IS NOT NULL) AS consumed_states",
+  );
+  const row = result.rows[0];
+  if (row === undefined) throw new Error("Database snapshot failed");
+  return row;
 }
 
 describe("Task 7 OAuth and identity safety", () => {
@@ -773,6 +829,227 @@ describe("Task 7 OAuth and identity safety", () => {
     });
   });
 
+  it("rejects an OAuth-state projection bound to a different digest before provider or database work", async () => {
+    let projectedState: OAuthStateRecord | null = null;
+    let providerCalls = 0;
+    const base = requireRepository();
+    const projectedRepository: AuthRepository = {
+      ...base,
+      oauthStates: {
+        ...base.oauthStates,
+        consume: async () => projectedState,
+      },
+    };
+    const service = createOAuthService({
+      repository: projectedRepository,
+      provider: deterministicProvider({
+        exchange: async () => {
+          providerCalls += 1;
+          return profile({ subject: "wrong-state-digest-subject", email: null });
+        },
+      }),
+    });
+    const authorized = unwrap(await service.authorize({ provider: "google", redirectTo: CALLBACK }));
+    const stored = await latestOAuthStateRecord();
+    const wrongDigest = Uint8Array.from(stored.state_hash);
+    wrongDigest[0] = (wrongDigest[0] ?? 0) ^ 0xff;
+    projectedState = { ...stored, state_hash: wrongDigest };
+    const before = await databaseMutationSnapshot();
+
+    expect(await service.callback({
+      provider: "google",
+      code: "provider-code",
+      state: authorized.state,
+      redirectTo: CALLBACK,
+    })).toMatchObject({ data: null, error: { code: "internal_error", status: 500 } });
+    expect(providerCalls).toBe(0);
+    expect(await databaseMutationSnapshot()).toEqual(before);
+  });
+
+  it("uses one OAuth-state snapshot when a getter changes after validation", async () => {
+    let projectedState: OAuthStateRecord | null = null;
+    let providerCalls = 0;
+    let encryptedVerifierReads = 0;
+    const base = requireRepository();
+    const projectedRepository: AuthRepository = {
+      ...base,
+      oauthStates: {
+        ...base.oauthStates,
+        consume: async () => projectedState,
+      },
+    };
+    const service = createOAuthService({
+      repository: projectedRepository,
+      provider: deterministicProvider({
+        exchange: async () => {
+          providerCalls += 1;
+          return profile({ subject: "changing-state-getter-subject", email: null });
+        },
+      }),
+    });
+    const authorized = unwrap(await service.authorize({ provider: "google", redirectTo: CALLBACK }));
+    const stored = await latestOAuthStateRecord();
+    const changing = { ...stored, pkce_challenge: "A".repeat(43) };
+    Object.defineProperty(changing, "encrypted_verifier", {
+      enumerable: true,
+      get: () => {
+        encryptedVerifierReads += 1;
+        if (encryptedVerifierReads === 1) return stored.encrypted_verifier;
+        throw new AuthApiError("conflict", 409, "adapter-controlled state getter");
+      },
+    });
+    projectedState = changing;
+    const before = await databaseMutationSnapshot();
+
+    expect(await service.callback({
+      provider: "google",
+      code: "provider-code",
+      state: authorized.state,
+      redirectTo: CALLBACK,
+    })).toMatchObject({ data: null, error: { code: "oauth_state_invalid", status: 400 } });
+    expect(encryptedVerifierReads).toBe(1);
+    expect(providerCalls).toBe(0);
+    expect(await databaseMutationSnapshot()).toEqual(before);
+  });
+
+  it("rejects a found identity whose provider subject does not match the lookup without a session", async () => {
+    let projectedIdentity: Identity | null = null;
+    const base = requireRepository();
+    const projectedRepository = projectedIdentityRepository(base, (identities) => ({
+      ...identities,
+      findByProviderSubject: async (providerName, providerSubject, options) =>
+        projectedIdentity ?? identities.findByProviderSubject(providerName, providerSubject, options),
+    }));
+    const service = createOAuthService({ repository: projectedRepository });
+    const owner = unwrap(await service.signInFromProfile(profile({
+      subject: "projected-find-owner",
+      email: "projected-find-owner@example.com",
+    })));
+    projectedIdentity = (await base.identities.listByUserId(owner.user.id))[0] ?? null;
+    const beforeSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
+
+    expect(await service.signInFromProfile(profile({
+      subject: "projected-find-requested",
+      email: null,
+    }))).toMatchObject({ data: null, error: { code: "internal_error", status: 500 } });
+    const afterSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
+    expect(afterSessions?.rows[0]?.count).toBe(beforeSessions?.rows[0]?.count);
+  });
+
+  it("rolls back a created identity projected for a different user", async () => {
+    const base = requireRepository();
+    const otherUser = await base.users.create({ email: "projected-create-other@example.com" });
+    const projectedRepository = projectedIdentityRepository(base, (identities) => ({
+      ...identities,
+      createIfAvailable: async (input, options) => {
+        const created = await identities.createIfAvailable(input, options);
+        return created === null ? null : { ...created, user_id: otherUser.id };
+      },
+    }));
+    const service = createOAuthService({ repository: projectedRepository });
+    const email = "projected-create-owner@example.com";
+    const subject = "projected-create-subject";
+    const beforeSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
+
+    expect(await service.signInFromProfile(profile({ subject, email }))).toMatchObject({
+      data: null,
+      error: { code: "internal_error", status: 500 },
+    });
+    expect((await disposable?.pool.query("SELECT id FROM auth.users WHERE email_normalized = $1", [email]))?.rows).toHaveLength(0);
+    expect((await disposable?.pool.query("SELECT id FROM auth.identities WHERE provider_subject = $1", [subject]))?.rows).toHaveLength(0);
+    const afterSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
+    expect(afterSessions?.rows[0]?.count).toBe(beforeSessions?.rows[0]?.count);
+  });
+
+  it("rolls back callback exchange when the identity list projects another owner", async () => {
+    let projectedList: readonly Identity[] | null = null;
+    const base = requireRepository();
+    const projectedRepository = projectedIdentityRepository(base, (identities) => ({
+      ...identities,
+      listByUserId: async (userId, options) => projectedList ?? identities.listByUserId(userId, options),
+    }));
+    const service = createOAuthService({
+      repository: projectedRepository,
+      provider: deterministicProvider({
+        exchange: async () => profile({ subject: "projected-exchange-subject", email: null }),
+      }),
+    });
+    const authorized = unwrap(await service.authorize({ provider: "google", redirectTo: CALLBACK }));
+    const callback = unwrap(await service.callback({ provider: "google", code: "provider-code", state: authorized.state }));
+    const identity = await base.identities.findByProviderSubject("google", "projected-exchange-subject");
+    if (identity === null) throw new Error("callback identity was not persisted");
+    const otherUser = await base.users.create({ email: "projected-exchange-other@example.com" });
+    projectedList = [{ ...identity, user_id: otherUser.id }];
+    const beforeSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
+
+    expect(await service.exchangeCode({
+      code: callback.code,
+      codeVerifier: authorized.codeVerifier,
+      redirectTo: CALLBACK,
+    })).toMatchObject({ data: null, error: { code: "internal_error", status: 500 } });
+    const afterSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
+    expect(afterSessions?.rows[0]?.count).toBe(beforeSessions?.rows[0]?.count);
+    projectedList = null;
+    expect((await service.exchangeCode({
+      code: callback.code,
+      codeVerifier: authorized.codeVerifier,
+      redirectTo: CALLBACK,
+    })).data).not.toBeNull();
+  });
+
+  it("fails closed when a listed identity claim subject differs from its provider subject", async () => {
+    let projectedList: readonly Identity[] | null = null;
+    const base = requireRepository();
+    const projectedRepository = projectedIdentityRepository(base, (identities) => ({
+      ...identities,
+      listByUserId: async (userId, options) => projectedList ?? identities.listByUserId(userId, options),
+    }));
+    const service = createOAuthService({ repository: projectedRepository });
+    const signedIn = unwrap(await service.signInFromProfile(profile({
+      subject: "projected-list-subject",
+      email: "projected-list@example.com",
+    })));
+    const identity = (await base.identities.listByUserId(signedIn.user.id))[0];
+    if (identity === undefined) throw new Error("listed identity was not persisted");
+    projectedList = [{
+      ...identity,
+      identity_data: sanitizeIdentityData({ ...identity.identity_data, sub: "different-list-subject" }),
+    }];
+
+    expect(await service.listIdentities({ session: signedIn.session })).toMatchObject({
+      data: null,
+      error: { code: "internal_error", status: 500 },
+    });
+  });
+
+  it("refuses unlink when the identity list projects an identity owned by another user", async () => {
+    let projectedList: readonly Identity[] | null = null;
+    const base = requireRepository();
+    const projectedRepository = projectedIdentityRepository(base, (identities) => ({
+      ...identities,
+      listByUserId: async (userId, options) => projectedList ?? identities.listByUserId(userId, options),
+    }));
+    const service = createOAuthService({ repository: projectedRepository });
+    const owner = unwrap(await service.signInFromProfile(profile({
+      subject: "projected-unlink-owner",
+      email: "projected-unlink-owner@example.com",
+    })));
+    const other = unwrap(await service.signInFromProfile(profile({
+      subject: "projected-unlink-other",
+      email: "projected-unlink-other@example.com",
+    })));
+    const ownerIdentity = (await base.identities.listByUserId(owner.user.id))[0];
+    const otherIdentity = (await base.identities.listByUserId(other.user.id))[0];
+    if (ownerIdentity === undefined || otherIdentity === undefined) throw new Error("unlink identities were not persisted");
+    projectedList = [otherIdentity, ownerIdentity];
+
+    expect(await service.unlinkIdentity({ session: owner.session }, otherIdentity.id)).toMatchObject({
+      data: null,
+      error: { code: "internal_error", status: 500 },
+    });
+    expect(await base.identities.findByProviderSubject(otherIdentity.provider, otherIdentity.provider_subject)).not.toBeNull();
+  });
+
   it("assigns configured default roles to OAuth-created users and rolls back missing-role creation", async () => {
     const role = await requireRepository().roles.create({
       key: roleKeySchema.parse("oauth_member"),
@@ -820,6 +1097,8 @@ describe("Task 7 OAuth and identity safety", () => {
       ["one byte", Uint8Array.of(1)],
       ["31 bytes", new Uint8Array(31)],
       ["one decoded byte", "YQ"],
+      ["whitespace", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8 "],
+      ["noncanonical trailing bits", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh9"],
     ] as const) {
       expect(() => new OAuthService({ ...base, tokenHashKey: key, encryptionKey: ENCRYPTION_KEY }), label).toThrow(AuthConfigurationError);
       expect(() => new OAuthService({ ...base, tokenHashKey: TOKEN_HASH_KEY, encryptionKey: key }), label).toThrow(AuthConfigurationError);

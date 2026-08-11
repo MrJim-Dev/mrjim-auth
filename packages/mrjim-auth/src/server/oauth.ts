@@ -418,56 +418,152 @@ function safeProfile(provider: OAuthProvider, profile: OAuthProviderProfile): OA
   };
 }
 
-function safeRepositoryIdentity(value: unknown): Identity {
+type OAuthStateBinding = {
+  readonly stateHash: Uint8Array;
+  readonly provider: string;
+  readonly flow: OAuthFlow;
+  readonly redirect: string;
+};
+
+function copyAdapterDate(value: unknown, nullable: false): Date;
+function copyAdapterDate(value: unknown, nullable: true): Date | null;
+function copyAdapterDate(value: unknown, nullable: boolean): Date | null {
+  if (value === null && nullable) return null;
+  if (!(value instanceof Date)) throw new TypeError("invalid OAuth state adapter value");
+  const time = value.getTime();
+  if (!Number.isFinite(time)) throw new TypeError("invalid OAuth state adapter value");
+  return new Date(time);
+}
+
+function safeOAuthStateRecord(value: unknown, expected: OAuthStateBinding): OAuthStateRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("invalid OAuth state adapter value");
+  }
+  const candidate = value as Record<string, unknown>;
+  const idValue = candidate.id;
+  const stateHashValue = candidate.state_hash;
+  const providerValue = candidate.provider;
+  const flowValue = candidate.flow;
+  const pkceChallengeValue = candidate.pkce_challenge;
+  const encryptedVerifierValue = candidate.encrypted_verifier;
+  const redirectValue = candidate.redirect;
+  const linkingUserIdValue = candidate.linking_user_id;
+  const expiresAtValue = candidate.expires_at;
+  const consumedAtValue = candidate.consumed_at;
+
+  const id = uuidSchema.safeParse(idValue);
+  if (!id.success || !(stateHashValue instanceof Uint8Array)) {
+    throw new TypeError("invalid OAuth state adapter value");
+  }
+  let provider: string;
+  try {
+    provider = normalizeProvider(providerValue);
+  } catch {
+    throw new TypeError("invalid OAuth state adapter value");
+  }
+  if (
+    provider !== expected.provider
+    || flowValue !== expected.flow
+    || !OAUTH_FLOW_VALUES.includes(flowValue as OAuthFlow)
+    || redirectValue !== expected.redirect
+    || typeof pkceChallengeValue !== "string"
+    || !(encryptedVerifierValue instanceof Uint8Array)
+  ) throw new TypeError("invalid OAuth state adapter value");
+  const stateHash = Uint8Array.from(stateHashValue);
+  if (!constantTimeEqual(stateHash, expected.stateHash)) {
+    throw new TypeError("invalid OAuth state adapter value");
+  }
+  const linkingUserId = linkingUserIdValue === null
+    ? null
+    : uuidSchema.safeParse(linkingUserIdValue);
+  if (linkingUserId !== null && !linkingUserId.success) {
+    throw new TypeError("invalid OAuth state adapter value");
+  }
+  return Object.freeze({
+    id: id.data,
+    state_hash: stateHash,
+    provider,
+    flow: flowValue as OAuthFlow,
+    pkce_challenge: pkceChallengeValue,
+    encrypted_verifier: Uint8Array.from(encryptedVerifierValue),
+    redirect: redirectValue as string,
+    linking_user_id: linkingUserId === null ? null : linkingUserId.data,
+    expires_at: copyAdapterDate(expiresAtValue, false),
+    consumed_at: copyAdapterDate(consumedAtValue, true),
+  });
+}
+
+type IdentityBinding = {
+  readonly provider?: string;
+  readonly subject?: string;
+  readonly userId?: UUID;
+};
+
+function safeRepositoryIdentity(value: unknown, expected: IdentityBinding = {}): Identity {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("invalid identity adapter value");
   }
   const candidate = value as Record<string, unknown>;
-  const id = uuidSchema.safeParse(candidate.id);
-  const userId = uuidSchema.safeParse(candidate.user_id);
+  const idValue = candidate.id;
+  const userIdValue = candidate.user_id;
+  const providerValue = candidate.provider;
+  const providerSubjectValue = candidate.provider_subject;
+  const emailValue = candidate.email;
+  const identityDataValue = candidate.identity_data;
+  const createdAtValue = candidate.created_at;
+  const updatedAtValue = candidate.updated_at;
+  const id = uuidSchema.safeParse(idValue);
+  const userId = uuidSchema.safeParse(userIdValue);
   if (!id.success || !userId.success) throw new TypeError("invalid identity adapter value");
   let provider: string;
   try {
-    provider = normalizeProvider(candidate.provider);
+    provider = normalizeProvider(providerValue);
   } catch {
     throw new TypeError("invalid identity adapter value");
   }
   if (
-    typeof candidate.provider_subject !== "string"
-    || candidate.provider_subject.trim() === ""
-    || candidate.provider_subject.length > PROVIDER_SUBJECT_MAX_LENGTH
-    || (candidate.email !== null && typeof candidate.email !== "string")
-    || typeof candidate.created_at !== "string"
-    || !Number.isFinite(Date.parse(candidate.created_at))
-    || typeof candidate.updated_at !== "string"
-    || !Number.isFinite(Date.parse(candidate.updated_at))
-    || typeof candidate.identity_data !== "object"
-    || candidate.identity_data === null
-    || Array.isArray(candidate.identity_data)
+    typeof providerSubjectValue !== "string"
+    || providerSubjectValue.trim() === ""
+    || providerSubjectValue.length > PROVIDER_SUBJECT_MAX_LENGTH
+    || (emailValue !== null && typeof emailValue !== "string")
+    || typeof createdAtValue !== "string"
+    || !Number.isFinite(Date.parse(createdAtValue))
+    || typeof updatedAtValue !== "string"
+    || !Number.isFinite(Date.parse(updatedAtValue))
+    || typeof identityDataValue !== "object"
+    || identityDataValue === null
+    || Array.isArray(identityDataValue)
   ) throw new TypeError("invalid identity adapter value");
   let email: string | null;
   try {
-    email = candidate.email === null
+    email = emailValue === null
       ? null
-      : normalizeAndValidateEmail(candidate.email).display;
+      : normalizeAndValidateEmail(emailValue).display;
   } catch {
     throw new TypeError("invalid identity adapter value");
   }
+  const identityData = sanitizeIdentityData(identityDataValue);
+  if (
+    identityData.sub !== providerSubjectValue
+    || (expected.provider !== undefined && provider !== expected.provider)
+    || (expected.subject !== undefined && providerSubjectValue !== expected.subject)
+    || (expected.userId !== undefined && userId.data !== expected.userId)
+  ) throw new TypeError("invalid identity adapter value");
   return Object.freeze({
     id: id.data,
     user_id: userId.data,
     provider,
-    provider_subject: candidate.provider_subject,
+    provider_subject: providerSubjectValue,
     email,
-    identity_data: sanitizeIdentityData(candidate.identity_data),
-    created_at: candidate.created_at,
-    updated_at: candidate.updated_at,
+    identity_data: identityData,
+    created_at: createdAtValue,
+    updated_at: updatedAtValue,
   });
 }
 
-function safeRepositoryIdentities(value: unknown): readonly Identity[] {
+function safeRepositoryIdentities(value: unknown, expectedUserId: UUID): readonly Identity[] {
   if (!Array.isArray(value)) throw new TypeError("invalid identity-list adapter value");
-  return Object.freeze(value.map(safeRepositoryIdentity));
+  return Object.freeze(value.map((identity) => safeRepositoryIdentity(identity, { userId: expectedUserId })));
 }
 
 function redirectWithCode(redirect: string, code: string): string {
@@ -655,16 +751,12 @@ export class OAuthService {
               redirect: candidate,
             });
             if (value === null) return null;
-            if (
-              value.provider !== providerName
-              || value.flow !== flow
-              || value.redirect !== candidate
-              || typeof value.pkce_challenge !== "string"
-              || !(value.state_hash instanceof Uint8Array)
-              || !(value.encrypted_verifier instanceof Uint8Array)
-              || !(value.expires_at instanceof Date)
-            ) throw new TypeError("invalid OAuth state adapter value");
-            return value;
+            return safeOAuthStateRecord(value, {
+              stateHash,
+              provider: providerName,
+              flow,
+              redirect: candidate,
+            });
           });
           if (consumed !== null) {
             redirect = candidate;
@@ -784,6 +876,7 @@ export class OAuthService {
         if (user === null || isBanned(user, now)) trustedFailure(unauthorized());
         const identities = safeRepositoryIdentities(
           await transaction.identities.listByUserId(user.id, { now }),
+          user.id,
         );
         const identityId = typeof consumed.metadata?.target_id === "string"
           ? uuidSchema.safeParse(consumed.metadata.target_id).data
@@ -903,6 +996,7 @@ export class OAuthService {
         const currentUser = user;
         const identities = safeRepositoryIdentities(
           await transaction.identities.listByUserId(currentUser.id, { now }),
+          currentUser.id,
         );
         const identity = identities.find((candidate) => candidate.id === identityId);
         if (identity === undefined) trustedFailure(new AuthApiError("not_found", 404, "Identity not found"));
@@ -933,6 +1027,7 @@ export class OAuthService {
     try {
       return authSuccess(await adapterCall(async () => safeRepositoryIdentities(
         await this.repository.identities.listByUserId(authorized.data.user_id),
+        authorized.data.user_id,
       )));
     } catch (error) {
       return mapUnexpected(error);
@@ -985,7 +1080,10 @@ export class OAuthService {
     now: Date,
   ): Promise<ProfileResolution> {
     const foundIdentity = await transaction.identities.findByProviderSubject(profile.provider, profile.subject, { now });
-    const existingIdentity = foundIdentity === null ? null : safeRepositoryIdentity(foundIdentity);
+    const existingIdentity = foundIdentity === null ? null : safeRepositoryIdentity(foundIdentity, {
+      provider: profile.provider,
+      subject: profile.subject,
+    });
     if (existingIdentity !== null) {
       if (flow === "link_identity" && existingIdentity.user_id !== linkingUserId) {
         trustedFailure(new AuthApiError("identity_already_linked", 409, "This login identity is already linked"));
@@ -1053,7 +1151,11 @@ export class OAuthService {
     if (createdIdentity === null) {
       trustedFailure(new AuthApiError("identity_already_linked", 409, "This login identity is already linked"));
     }
-    const identity = safeRepositoryIdentity(createdIdentity);
+    const identity = safeRepositoryIdentity(createdIdentity, {
+      provider: profile.provider,
+      subject: profile.subject,
+      userId: user.id,
+    });
     if (emailAutoLinked) {
       await transaction.operations.appendAudit({
         actor_user_id: user.id,

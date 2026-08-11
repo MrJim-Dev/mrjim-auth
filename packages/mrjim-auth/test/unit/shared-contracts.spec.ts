@@ -768,6 +768,17 @@ describe("validated configuration", () => {
       const thirtyTwoBytes = validServerOptions();
       thirtyTwoBytes.secrets[field] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
       expect(authServerOptionsSchema.safeParse(thirtyTwoBytes).success, `${field} 32 bytes`).toBe(true);
+
+      const whitespace = validServerOptions();
+      whitespace.secrets[field] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8 ";
+      expect(authServerOptionsSchema.safeParse(whitespace).success, `${field} whitespace`).toBe(false);
+
+      const noncanonicalTrailingBits = validServerOptions();
+      noncanonicalTrailingBits.secrets[field] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh9";
+      expect(
+        authServerOptionsSchema.safeParse(noncanonicalTrailingBits).success,
+        `${field} noncanonical trailing bits`,
+      ).toBe(false);
     }
   });
 

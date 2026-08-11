@@ -149,11 +149,14 @@ const opaqueSecretSchema = z.custom<string | Uint8Array>(
 );
 
 function decodedBase64urlLength(value: string): number | null {
-  const encoded = value.trim();
+  if (value !== value.trim()) return null;
+  const encoded = value;
   if (encoded === "" || !/^[A-Za-z0-9_-]+$/.test(encoded) || encoded.length % 4 === 1) return null;
   try {
     const standard = encoded.replace(/-/g, "+").replace(/_/g, "/");
-    return atob(standard.padEnd(Math.ceil(standard.length / 4) * 4, "=")).length;
+    const decoded = atob(standard.padEnd(Math.ceil(standard.length / 4) * 4, "="));
+    const canonical = btoa(decoded).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    return canonical === encoded ? decoded.length : null;
   } catch {
     return null;
   }
