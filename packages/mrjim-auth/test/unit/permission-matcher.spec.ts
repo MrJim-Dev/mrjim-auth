@@ -597,6 +597,136 @@ describe("authorization permission matching", () => {
     }
   });
 
+  it("returns copied frozen standard arrays with normal public collection behavior", async () => {
+    const service = serviceFor(() => [permission("invoice.read"), permission("invoice.write")]);
+    const first = await service.getPermissions(USER_ID);
+    const second = await service.getPermissions(USER_ID);
+
+    expect(Array.isArray(first)).toBe(true);
+    expect(Object.getPrototypeOf(first)).toBe(Array.prototype);
+    expect([...first]).toEqual(["invoice.read", "invoice.write"]);
+    const iterated: string[] = [];
+    for (const key of first) iterated.push(key);
+    expect(iterated).toEqual(["invoice.read", "invoice.write"]);
+    const iterator = first[Symbol.iterator]();
+    expect(iterator.next()).toEqual({ value: "invoice.read", done: false });
+    expect(first.map((key) => key.toUpperCase())).toEqual(["INVOICE.READ", "INVOICE.WRITE"]);
+    expect(first.includes("invoice.write")).toBe(true);
+    expect(first).toEqual(["invoice.read", "invoice.write"]);
+    expect(first).not.toBe(second);
+    expect(Object.isFrozen(first)).toBe(true);
+
+    const thenDescriptor = Object.getOwnPropertyDescriptor(first, "then");
+    expect(thenDescriptor?.value).toBeUndefined();
+    expect(thenDescriptor?.writable).toBe(false);
+    expect(thenDescriptor?.enumerable).toBe(false);
+    expect(thenDescriptor?.configurable).toBe(false);
+    expect(Reflect.set(first as object, "0", "forged")).toBe(false);
+    expect(first[0]).toBe("invoice.read");
+
+    const context = createAuthorizationRequestContext(subject());
+    expect(context).not.toBeNull();
+    if (context !== null) {
+      const contextResult = await service.getPermissions(USER_ID, undefined, context);
+      expect(Object.getPrototypeOf(contextResult)).toBe(Array.prototype);
+      expect([...contextResult]).toEqual(["invoice.read", "invoice.write"]);
+      expect(Object.isFrozen(contextResult)).toBe(true);
+    }
+  });
+
+  it("returns standard empty arrays and shields the async boundary from then pollution", async () => {
+    const emptyService = serviceFor(() => []);
+    const invalidScope = { type: "Tenant", id: "tenant_1" } as unknown as AuthorizationScope;
+    const emptyResults = [
+      await emptyService.getPermissions(USER_ID),
+      await emptyService.getPermissions("not-a-uuid" as UUID),
+      await emptyService.getPermissions(USER_ID, invalidScope),
+      await emptyService.getPermissions(USER_ID, undefined, {} as never),
+    ];
+    for (const result of emptyResults) {
+      expect(Array.isArray(result)).toBe(true);
+      expect(Object.getPrototypeOf(result)).toBe(Array.prototype);
+      expect([...result]).toEqual([]);
+      expect(result.map((key) => key)).toEqual([]);
+      expect(result.includes("invoice.read")).toBe(false);
+      expect(Object.isFrozen(result)).toBe(true);
+      expect(Object.getOwnPropertyDescriptor(result, "then")?.value).toBeUndefined();
+      expect(Reflect.set(result as object, "0", "forged")).toBe(false);
+    }
+
+    const shieldedRows = [permission("invoice.read")];
+    Object.setPrototypeOf(shieldedRows, null);
+    const nonEmptyService = serviceFor(() => shieldedRows);
+    const shieldedEmptyRows: Permission[] = [];
+    Object.setPrototypeOf(shieldedEmptyRows, null);
+    const pollutedEmptyService = serviceFor(() => shieldedEmptyRows);
+    const scalarUnderPollution = async (
+      target: object,
+      expected: readonly string[],
+    ): Promise<string> => {
+      const original = Object.getOwnPropertyDescriptor(target, "then");
+      Object.defineProperty(target, "then", {
+        configurable: true,
+        enumerable: false,
+        value(resolve: (value: unknown) => void) {
+          resolve("polluted");
+        },
+        writable: true,
+      });
+      try {
+        const resultPromise = nonEmptyService.getPermissions(USER_ID);
+        return await resultPromise.then((result) => {
+          if (!Array.isArray(result) || Object.getPrototypeOf(result) !== Array.prototype) return "bad";
+          const spread = [...result];
+          const loop: string[] = [];
+          for (const key of result) loop.push(key);
+          const mapped = result.map((key) => key);
+          const iteratorResult = result[Symbol.iterator]().next();
+          const matches =
+            spread.length === expected.length &&
+            loop.length === expected.length &&
+            mapped.length === expected.length &&
+            iteratorResult.value === expected[0] &&
+            result.includes(expected[0] ?? "");
+          return matches ? "ok" : "bad";
+        });
+      } finally {
+        if (original === undefined) Reflect.deleteProperty(target, "then");
+        else Object.defineProperty(target, "then", original);
+      }
+    };
+
+    expect(await scalarUnderPollution(Object.prototype, ["invoice.read"])).toBe("ok");
+    expect(await scalarUnderPollution(Array.prototype, ["invoice.read"])).toBe("ok");
+
+    const emptyScalarUnderPollution = async (target: object): Promise<string> => {
+      const original = Object.getOwnPropertyDescriptor(target, "then");
+      Object.defineProperty(target, "then", {
+        configurable: true,
+        enumerable: false,
+        value(resolve: (value: unknown) => void) {
+          resolve("polluted");
+        },
+        writable: true,
+      });
+      try {
+        const resultPromise = pollutedEmptyService.getPermissions(USER_ID);
+        return await resultPromise.then((result) => {
+          if (!Array.isArray(result) || Object.getPrototypeOf(result) !== Array.prototype) return "bad";
+          return result.length === 0 && [...result].length === 0 && result.includes("invoice.read") === false
+            ? "ok"
+            : "bad";
+        });
+      } finally {
+        if (original === undefined) Reflect.deleteProperty(target, "then");
+        else Object.defineProperty(target, "then", original);
+      }
+    };
+
+    expect(await emptyScalarUnderPollution(Object.prototype)).toBe("ok");
+    expect(await emptyScalarUnderPollution(Array.prototype)).toBe("ok");
+  });
+
   it("uses explicit request-local contexts and does not reuse stale or cross-user grants", async () => {
     let revoked = false;
     let reads = 0;

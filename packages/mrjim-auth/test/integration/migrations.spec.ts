@@ -1565,6 +1565,84 @@ describe("Task 3 PostgreSQL migrations", () => {
               }
             }
 
+            const publicArrayMarker = (value, expected) => {
+              if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return "bad";
+              const spread = [...value];
+              const loop = [];
+              for (const key of value) loop.push(key);
+              const mapped = value.map((key) => key);
+              const iteratorResult = value[Symbol.iterator]().next();
+              const included = expected.length === 0
+                ? value.includes("invoice.read") === false
+                : value.includes(expected[0]);
+              return spread.length === expected.length &&
+                loop.length === expected.length &&
+                mapped.length === expected.length &&
+                iteratorResult.value === expected[0] &&
+                included
+                ? "ok"
+                : "bad";
+            };
+            const shieldedPublicRows = [permission];
+            Object.setPrototypeOf(shieldedPublicRows, null);
+            const shieldedEmptyPublicRows = [];
+            Object.setPrototypeOf(shieldedEmptyPublicRows, null);
+            const publicService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: () => shieldedPublicRows } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            const emptyPublicService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: () => shieldedEmptyPublicRows } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            const publicResult = await publicService.getPermissions(user.user_id);
+            const publicResultCopy = await publicService.getPermissions(user.user_id);
+            if (
+              publicArrayMarker(publicResult, ["invoice.read"]) !== "ok" ||
+              publicResult === publicResultCopy ||
+              !Object.isFrozen(publicResult) ||
+              Object.getOwnPropertyDescriptor(publicResult, "then")?.value !== undefined ||
+              Object.getOwnPropertyDescriptor(publicResult, "then")?.enumerable !== false ||
+              Reflect.set(publicResult, "0", "forged")
+            ) throw new Error("packed public permission array contract failed");
+            const emptyPublicResult = await emptyPublicService.getPermissions(user.user_id);
+            const invalidPublicResult = await emptyPublicService.getPermissions("not-a-uuid");
+            if (
+              publicArrayMarker(emptyPublicResult, []) !== "ok" ||
+              publicArrayMarker(invalidPublicResult, []) !== "ok" ||
+              !Object.isFrozen(emptyPublicResult) ||
+              Reflect.set(emptyPublicResult, "0", "forged")
+            ) throw new Error("packed empty public permission array contract failed");
+
+            const scalarUnderThenPollution = async (target, service, expected) => {
+              const original = Object.getOwnPropertyDescriptor(target, "then");
+              Object.defineProperty(target, "then", {
+                configurable: true,
+                enumerable: false,
+                value(resolve) { resolve("polluted"); },
+                writable: true,
+              });
+              try {
+                const resultPromise = service.getPermissions(user.user_id);
+                return await resultPromise.then((result) => publicArrayMarker(result, expected));
+              } finally {
+                if (original === undefined) Reflect.deleteProperty(target, "then");
+                else Object.defineProperty(target, "then", original);
+              }
+            };
+            if (await scalarUnderThenPollution(Object.prototype, publicService, ["invoice.read"]) !== "ok") {
+              throw new Error("packed Object.prototype.then public array boundary failed");
+            }
+            if (await scalarUnderThenPollution(Array.prototype, publicService, ["invoice.read"]) !== "ok") {
+              throw new Error("packed Array.prototype.then public array boundary failed");
+            }
+            if (await scalarUnderThenPollution(Object.prototype, emptyPublicService, []) !== "ok") {
+              throw new Error("packed Object.prototype.then empty array boundary failed");
+            }
+            if (await scalarUnderThenPollution(Array.prototype, emptyPublicService, []) !== "ok") {
+              throw new Error("packed Array.prototype.then empty array boundary failed");
+            }
+
             const scopedOnlyService = new server.AuthorizationService({
               repository: { authorization: { effectivePermissions: async (_userId, scope) => scope?.type === "tenant" && scope.id === "tenant_1" ? [permission] : [] } },
               clock: () => new Date("2026-08-11T00:00:00.000Z"),

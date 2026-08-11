@@ -234,6 +234,22 @@ function newNullPrototypeArray<T>(): T[] {
   return values;
 }
 
+function publicPermissionArray(keys: readonly string[]): readonly string[] {
+  const values: string[] = [];
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (key === undefined) continue;
+    appendValue(values, key);
+  }
+  objectDefineProperty(values, "then", {
+    configurable: false,
+    enumerable: false,
+    value: undefined,
+    writable: false,
+  });
+  return objectFreeze(values);
+}
+
 function sortKeys(values: string[]): void {
   invoke<void>(arraySort, values, [compareKeys]);
 }
@@ -1016,10 +1032,10 @@ export class AuthorizationService {
   ): Promise<readonly string[]> {
     const validatedUserId = safeUserId(userId);
     const normalized = normalizedScope(scope);
-    if (validatedUserId === null || normalized === null) return newNullPrototypeArray<string>();
+    if (validatedUserId === null || normalized === null) return publicPermissionArray([]);
 
     const requestContext = this.contextForUser(context, validatedUserId);
-    if (context !== undefined && requestContext === null) return newNullPrototypeArray<string>();
+    if (context !== undefined && requestContext === null) return publicPermissionArray([]);
     if (requestContext !== null) {
       const resolved = await contextPermissions(
         requestContext,
@@ -1027,9 +1043,9 @@ export class AuthorizationService {
         normalized,
         () => this.resolvePermissions(validatedUserId, normalized),
       );
-      return resolved.keys;
+      return publicPermissionArray(resolved.keys);
     }
-    return (await this.resolvePermissions(validatedUserId, normalized)).keys;
+    return publicPermissionArray((await this.resolvePermissions(validatedUserId, normalized)).keys);
   }
 
   /**

@@ -217,29 +217,25 @@ expiry check; byte/checksum assertions preserve `0001–0004` unchanged. No
 callback code is kept in process memory or represented as a self-contained
 reusable token.
 
-Task 8 Fix Pass 5 is implemented pending fresh independent review.
-`AuthorizationService` now authenticates request contexts only through
-module-private `WeakMap` ownership, isolates each context cache by service
-instance, and inspects adapter returns before promise assimilation. Only
-synchronous actual arrays or an exact captured native Promise boundary are
-accepted; thenables, polluted `then` properties, subclasses, custom species,
-and own constructor hooks fail closed. The route captures native `Response`
-and `JSON.stringify`, and every response body/data/error and permission array
-is rebuilt from safe own/null-prototype snapshots. The Fix Pass 5 RED was
-3 failed/56 passed; the identical focused GREEN is 59/59. The separate
-bounded source isolation is 36/36 and the packed consumer boundary exits 0 in
-0.88s. The full suite is 17 files and 234/234 tests. The repository/shared
-group is 36/36, migration/state is 24/24, and the export/browser group is
-15/15. The packed consumer covers installation, assets/CLI, direct
-root/server/browser imports, all Fix Pass 5 adversarial checks, and a
-deterministic 100,000-row built-package result. The focused 100,000-row and
-10,000-requirement checks pass with 577ms and 26ms test-body measurements on
-this Node 26 run. Frozen install, build, typecheck, lint, docs check, diff
-check, and protected hashes pass. No migration, manifest, lockfile,
-dependency, direct-user-permission model, paid service, or runtime-network
-dependency changed. Corrupted-cycle read termination remains unclaimed
-beyond the recursive `UNION` CTE and write-time cycle guard. Fresh independent
-review remains pending.
+Task 8 post-pass controller resolution is implemented pending fresh
+independent review. The public `AuthorizationService.getPermissions()`
+boundary now copies internal null-prototype keys into a fresh frozen standard
+Array with normal iteration, spread, `map`, and `includes` behavior. A
+non-enumerable immutable own `then: undefined` shields the array from
+`Object.prototype.then` and `Array.prototype.then` assimilation before the
+async return completes. Internal authorization and route snapshots remain
+null-prototype. The resolution RED was 3 failed/58 passed; the identical
+focused GREEN is 61/61. The full suite is 17 files and 236/236 tests. The
+repository/shared group is 36/36, migration/state is 24/24, and the
+export/browser group is 15/15. The packed consumer covers installation,
+assets/CLI, direct root/server/browser imports, the public-array contract, and
+both pollution cases. The focused 100,000-row and 10,000-requirement checks
+pass with 371ms and 12ms test-body measurements. Frozen install, build,
+typecheck, lint, docs check, diff check, and protected hashes pass. No
+migration, manifest, lockfile, dependency, direct-user-permission model, paid
+service, or runtime-network dependency changed. Corrupted-cycle read
+termination remains unclaimed beyond the recursive `UNION` CTE and write-time
+cycle guard. Fresh independent review remains pending.
 
 Task 8 Fix Pass 1 was implemented pending fresh independent review. `AuthorizationService`
 consumes the existing PostgreSQL authorization repository, whose recursive CTE
@@ -317,7 +313,7 @@ database, external network, or paid SaaS service is required.
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
-| 8. Dynamic authorization | Complete — Fix Pass 5 implemented; independent review pending | 59/59 focused, 234/234 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, separate bounded source/packed checks, frozen install, build, typecheck, lint, docs, diff, and protected-hash gates; evidence in Task 8 report |
+| 8. Dynamic authorization | Complete — post-pass controller resolution implemented; independent review pending | 61/61 focused, 236/236 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, bounded packed public-contract checks, frozen install, build, typecheck, lint, docs, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Pending | Not run |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
@@ -351,7 +347,7 @@ needed for review or operation.
 
 ## Remaining work
 
-Task 8 Fix Pass 5 implementation is complete pending independent review.
+Task 8 post-pass controller resolution is complete pending independent review.
 Tasks 9-14 remain, with independent review after each task; then complete the
 whole-branch review and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement
