@@ -217,6 +217,23 @@ expiry check; byte/checksum assertions preserve `0001–0004` unchanged. No
 callback code is kept in process memory or represented as a self-contained
 reusable token.
 
+Task 8 implementation is complete pending independent review. `AuthorizationService` consumes
+the existing PostgreSQL authorization repository, whose recursive CTE expands
+active assigned roles and inherited roles with `UNION` cycle termination and
+deterministic permission-key ordering. Direct grants mean only direct
+`role_permissions` rows on assigned roles; no direct user-permission table or
+grant was added. Exact, resource-wildcard, and global-wildcard matching is
+canonical lowercase and ranked exact > resource wildcard > global wildcard;
+role rank never grants access. Global assignments apply to a requested scope,
+while scoped assignments require the exact type/id pair and are filtered at
+the supplied operation time. The server guard caches only by request-subject
+identity in a weak request-local map, and returns a redacted
+`insufficient_permission` 403 with a bounded request ID. The user-permission
+route validates optional scope query pairs and returns only sorted permission
+keys under `{ data, error }`. Focused RED/GREEN evidence and the complete
+verification matrix are in the Task 8 report. No migration or dependency was
+added.
+
 ## Required dependency policy
 
 - Required runtime, build, test, documentation, and release dependencies must be free/open-source.
@@ -271,7 +288,7 @@ database, external network, or paid SaaS service is required.
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
-| 8. Dynamic authorization | Pending | Not run |
+| 8. Dynamic authorization | Complete — independent review pending | 10/10 focused, 208/208 full, migration/export/package gates passed; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Pending | Not run |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |

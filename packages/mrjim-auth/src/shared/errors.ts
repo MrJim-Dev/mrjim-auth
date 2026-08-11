@@ -4,6 +4,7 @@ export const AUTH_ERROR_CODES = {
   invalid_credentials: "invalid_credentials",
   unauthorized: "unauthorized",
   forbidden: "forbidden",
+  insufficient_permission: "insufficient_permission",
   not_found: "not_found",
   conflict: "conflict",
   invalid_token: "invalid_token",

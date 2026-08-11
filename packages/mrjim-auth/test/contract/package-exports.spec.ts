@@ -205,6 +205,7 @@ describe("package export boundaries", () => {
     const server = await import("mrjim-auth/server");
     expect(Object.keys(server).sort()).toEqual([
       "ARGON2ID_PASSWORD_POLICY",
+      "AuthorizationService",
       "ES256_ALGORITHM",
       "EmailService",
       "GenericOidcProvider",
@@ -220,8 +221,14 @@ describe("package export boundaries", () => {
       "authorizeRoute",
       "callbackRoute",
       "createOAuthRoutes",
+      "createPermissionRoutes",
       "exchangeRoute",
+      "normalizePermissionKey",
+      "permissionMatchRank",
+      "permissionMatches",
+      "permissionsRoute",
       "providersRoute",
+      "subjectUserId",
     ]);
   });
 

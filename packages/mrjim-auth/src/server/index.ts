@@ -83,3 +83,17 @@ export {
   exchangeRoute,
   providersRoute,
 } from "./routes/oauth.js";
+export {
+  AuthorizationService,
+  normalizePermissionKey,
+  permissionMatchRank,
+  permissionMatches,
+  subjectUserId,
+  type AuthorizationRequirement,
+  type AuthorizationServiceOptions,
+  type AuthorizationSubject,
+} from "./authorization.js";
+export {
+  createPermissionRoutes,
+  permissionsRoute,
+} from "./routes/permissions.js";
