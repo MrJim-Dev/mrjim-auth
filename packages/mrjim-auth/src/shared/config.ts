@@ -141,11 +141,30 @@ const keyMaterialSchema = z.custom<KeyMaterial>(
   "key material must be non-empty",
 );
 
-const secretMaterialSchema = z.custom<string | Uint8Array>(
+const opaqueSecretSchema = z.custom<string | Uint8Array>(
   (value) =>
     (typeof value === "string" && value.trim().length > 0) ||
     (value instanceof Uint8Array && value.byteLength > 0),
-  "secret key material must be non-empty",
+  "opaque secret material must be non-empty",
+);
+
+function decodedBase64urlLength(value: string): number | null {
+  const encoded = value.trim();
+  if (encoded === "" || !/^[A-Za-z0-9_-]+$/.test(encoded) || encoded.length % 4 === 1) return null;
+  try {
+    const standard = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    return atob(standard.padEnd(Math.ceil(standard.length / 4) * 4, "=")).length;
+  } catch {
+    return null;
+  }
+}
+
+/** Unpadded base64url strings decode to at least 32 random bytes; byte arrays are measured directly. */
+const secretKeyMaterialSchema = z.custom<string | Uint8Array>(
+  (value) => value instanceof Uint8Array
+    ? value.byteLength >= 32
+    : typeof value === "string" && (decodedBase64urlLength(value) ?? 0) >= 32,
+  "secret key material must contain at least 32 decoded bytes (unpadded base64url or Uint8Array)",
 );
 
 const keyMapSchema = z
@@ -161,8 +180,8 @@ const keyMapSchema = z
 
 const requiredRepositoryMethods = {
   root: ["transaction"],
-  users: ["findById", "findByIdForUpdate", "findByNormalizedEmail", "create", "update", "softDelete"],
-  identities: ["findByProviderSubject", "listByUserId", "create", "deleteById"],
+  users: ["findById", "findByIdForUpdate", "findByNormalizedEmail", "findByNormalizedEmailForUpdate", "create", "createIfAvailable", "update", "softDelete"],
+  identities: ["findByProviderSubject", "listByUserId", "create", "createIfAvailable", "deleteById"],
   passwordCredentials: ["findByUserId", "upsert", "deleteByUserId"],
   sessions: [
     "create",
@@ -244,11 +263,16 @@ const rateLimiterSchema = z.custom<RateLimiter>(
 
 const oauthClientSchema = z.object({
   clientId: nonEmptyStringSchema,
-  clientSecret: secretMaterialSchema,
+  clientSecret: opaqueSecretSchema,
 });
 
 const oidcClientSchema = oauthClientSchema.extend({
-  issuer: httpHttpsUrlSchema,
+  issuer: httpHttpsUrlSchema.superRefine((value, context) => {
+    const parsed = parseUrlSafely(value);
+    if (parsed !== null && parsed.protocol !== "https:") {
+      context.addIssue({ code: "custom", message: "OIDC issuer must use HTTPS" });
+    }
+  }),
   scopes: z.array(nonEmptyStringSchema).min(1).optional(),
 });
 
@@ -293,8 +317,8 @@ export const authServerOptionsSchema = z
       keys: keyMapSchema,
     }),
     secrets: z.object({
-      tokenHashKey: secretMaterialSchema,
-      encryptionKey: secretMaterialSchema,
+      tokenHashKey: secretKeyMaterialSchema,
+      encryptionKey: secretKeyMaterialSchema,
     }),
     email: mailerSchema,
     rateLimiter: rateLimiterSchema.optional(),

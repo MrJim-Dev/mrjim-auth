@@ -183,6 +183,10 @@ const auth = createAuthServer({
 ~~~
 
 Configuration validation is synchronous and fail-closed. The server must refuse startup when signing keys, token hashing keys, encryption keys required by configured features, or redirect rules are invalid.
+`AUTH_TOKEN_HASH_KEY` and `AUTH_ENCRYPTION_KEY` string values are canonical,
+unpadded base64url encodings of at least 32 bytes of random material. Direct
+server APIs may instead receive a `Uint8Array` containing at least 32 bytes;
+short keys are rejected before any OAuth operation.
 
 ## 7. Client options
 

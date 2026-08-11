@@ -1,138 +1,338 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const openidMocks = vi.hoisted(() => ({
-  claims: {
-    iss: "https://accounts.google.com",
-    sub: "google-subject",
-    aud: "google-client",
-    email: "alice@example.com",
-    email_verified: true,
-    name: "Alice",
-  } as Record<string, unknown>,
-  checks: undefined as Record<string, unknown> | undefined,
-  discovery: vi.fn(async () => ({})),
-  authorizationCodeGrant: vi.fn(async (_configuration: unknown, _url: URL, checks: Record<string, unknown>) => {
-    openidMocks.checks = checks;
-    return { claims: () => openidMocks.claims };
-  }),
-  buildAuthorizationUrl: vi.fn((_configuration: unknown, parameters: Record<string, string>) => {
-    const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-    for (const [key, value] of Object.entries(parameters)) url.searchParams.set(key, value);
-    return url;
-  }),
-  clientSecretPost: vi.fn(() => "client-auth"),
-}));
-
-vi.mock("openid-client", () => ({
-  authorizationCodeGrant: openidMocks.authorizationCodeGrant,
-  buildAuthorizationUrl: openidMocks.buildAuthorizationUrl,
-  calculatePKCECodeChallenge: vi.fn(async () => "calculated-challenge"),
-  ClientSecretPost: openidMocks.clientSecretPost,
-  discovery: openidMocks.discovery,
-  randomNonce: vi.fn(() => "provider-nonce-value"),
-}));
-
+import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { createServer, request as httpsRequest, type Server } from "node:https";
+import type { AddressInfo } from "node:net";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import type { CustomFetch } from "openid-client";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   GoogleOAuthProvider,
   OAuthProviderError,
   OidcOAuthProvider,
+  providerCodeChallenge,
 } from "../../src/server/oauth-providers.js";
 
-const exchangeInput = {
-  code: "provider-code",
-  state: "state-value",
-  redirectUri: "https://project.example.com/auth/callback",
-  codeVerifier: "a".repeat(43),
-  nonce: "nonce-value",
-} as const;
+const TLS_KEY = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgt3zy1YONNbO3EPT2
+IwFnt6ok2cWzPxVye6Qn0LtzrHOhRANCAAT78colovI9PzE09ECF447pLL3RF/Ii
+TVfiBAVwt/uohf7pZzOtLYuK4FOvUEZvbbRenLLXzu8XwHIXc1Y3RL0L
+-----END PRIVATE KEY-----`;
 
-describe("OAuth provider adapters", () => {
-  beforeEach(() => {
-    openidMocks.claims = {
-      iss: "https://accounts.google.com",
-      sub: "google-subject",
-      aud: "google-client",
+const TLS_CERT = `-----BEGIN CERTIFICATE-----
+MIIBmTCCAT+gAwIBAgIUF0aI8wkIJdcKvUUxbaR2eNN3/ZowCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDgxMTAyNDM1NVoXDTM2MDgwODAy
+NDM1NVowFDESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0CAQYIKoZIzj0D
+AQcDQgAE+/HKJaLyPT8xNPRAheOO6Sy90RfyIk1X4gQFcLf7qIX+6WczrS2LiuBT
+r1BGb220Xpyy187vF8ByF3NWN0S9C6NvMG0wHQYDVR0OBBYEFFXotiSJO+2xTa6R
+9/yokmi7ZvpkMB8GA1UdIwQYMBaAFFXotiSJO+2xTa6R9/yokmi7ZvpkMA8GA1Ud
+EwEB/wQFMAMBAf8wGgYDVR0RBBMwEYIJbG9jYWxob3N0hwR/AAABMAoGCCqGSM49
+BAMCA0gAMEUCIFvExd9bRvWtAm4XJ0sjtbLhdOH2D9hxF9pl1iiJFMUUAiEA77vJ
+rgMqPDqZHld0TD+AhGndG7NhXp5ZZZAM5u7zgUU=
+-----END CERTIFICATE-----`;
+
+const CLIENT_ID = "local-oidc-client";
+const CLIENT_SECRET = "local-oidc-secret";
+const CALLBACK = "https://project.example.com/auth/callback";
+const ALT_CALLBACK = "https://project.example.com/auth/alternate";
+const VERIFIER = "a".repeat(43);
+
+type TokenScenario = {
+  readonly issuer?: string;
+  readonly audience?: string | readonly string[];
+  readonly nonce?: string;
+  readonly subject?: string | null;
+  readonly signingKey?: CryptoKey;
+};
+
+type AuthorizationGrant = {
+  readonly challenge: string;
+  readonly redirect: string;
+  readonly nonce: string;
+  readonly scenario: TokenScenario;
+};
+
+function localHttpsFetch(url: string, options: Parameters<CustomFetch>[1]): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const request = httpsRequest(url, {
+      method: options.method,
+      headers: options.headers,
+      rejectUnauthorized: false,
+      signal: options.signal,
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.once("error", reject);
+      response.once("end", () => {
+        const headers = new Headers();
+        for (let index = 0; index < response.rawHeaders.length; index += 2) {
+          const name = response.rawHeaders[index];
+          const value = response.rawHeaders[index + 1];
+          if (name !== undefined && value !== undefined) headers.append(name, value);
+        }
+        resolve(new Response(Uint8Array.from(Buffer.concat(chunks)), {
+          status: response.statusCode ?? 500,
+          headers,
+        }));
+      });
+    });
+    request.once("error", reject);
+    if (options.body === undefined) {
+      request.end();
+    } else if (options.body instanceof URLSearchParams) {
+      request.end(options.body.toString());
+    } else if (typeof options.body === "string" || options.body instanceof Uint8Array) {
+      request.end(options.body);
+    } else {
+      request.destroy(new TypeError("unsupported local fixture request body"));
+    }
+  });
+}
+
+class LocalHttpsOidcFixture {
+  readonly requests: string[] = [];
+  issuer = "";
+  private server: Server | undefined;
+  private signingKey: CryptoKey | undefined;
+  private publicJwk: Record<string, unknown> | undefined;
+  private sequence = 0;
+  private readonly grants = new Map<string, AuthorizationGrant>();
+
+  async start(): Promise<void> {
+    const pair = await generateKeyPair("ES256", { extractable: true });
+    this.signingKey = pair.privateKey;
+    this.publicJwk = {
+      ...await exportJWK(pair.publicKey),
+      alg: "ES256",
+      kid: "local-signing-key",
+      use: "sig",
+    };
+    this.server = createServer({ key: TLS_KEY, cert: TLS_CERT }, (request, response) => {
+      void this.handle(request, response);
+    });
+    this.server.listen(0, "127.0.0.1");
+    await once(this.server, "listening");
+    const address = this.server.address() as AddressInfo;
+    this.issuer = `https://127.0.0.1:${address.port}`;
+  }
+
+  async stop(): Promise<void> {
+    if (this.server === undefined) return;
+    this.server.close();
+    await once(this.server, "close");
+  }
+
+  issue(grant: Omit<AuthorizationGrant, "scenario"> & { readonly scenario?: TokenScenario }): string {
+    this.sequence += 1;
+    const code = `fixture-code-${this.sequence}`;
+    this.grants.set(code, { ...grant, scenario: grant.scenario ?? {} });
+    return code;
+  }
+
+  private json(response: Parameters<NonNullable<Parameters<typeof createServer>[1]>>[1], status: number, value: unknown): void {
+    response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+    response.end(JSON.stringify(value));
+  }
+
+  private async handle(
+    request: Parameters<NonNullable<Parameters<typeof createServer>[1]>>[0],
+    response: Parameters<NonNullable<Parameters<typeof createServer>[1]>>[1],
+  ): Promise<void> {
+    const path = new URL(request.url ?? "/", this.issuer || "https://127.0.0.1").pathname;
+    this.requests.push(path);
+    if (request.method === "GET" && path === "/.well-known/openid-configuration") {
+      this.json(response, 200, {
+        issuer: this.issuer,
+        authorization_endpoint: `${this.issuer}/authorize`,
+        token_endpoint: `${this.issuer}/token`,
+        jwks_uri: `${this.issuer}/jwks`,
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code"],
+        subject_types_supported: ["public"],
+        id_token_signing_alg_values_supported: ["ES256"],
+        token_endpoint_auth_methods_supported: ["client_secret_post"],
+        code_challenge_methods_supported: ["S256"],
+        scopes_supported: ["openid", "email", "profile"],
+      });
+      return;
+    }
+    if (request.method === "GET" && path === "/jwks") {
+      this.json(response, 200, { keys: [this.publicJwk] });
+      return;
+    }
+    if (request.method !== "POST" || path !== "/token") {
+      this.json(response, 404, { error: "not_found" });
+      return;
+    }
+    const body: Buffer[] = [];
+    for await (const chunk of request) body.push(Buffer.from(chunk));
+    const parameters = new URLSearchParams(Buffer.concat(body).toString("utf8"));
+    const code = parameters.get("code") ?? "";
+    const grant = this.grants.get(code);
+    const verifier = parameters.get("code_verifier") ?? "";
+    const challenge = createHash("sha256").update(verifier, "utf8").digest("base64url");
+    if (
+      grant === undefined
+      || parameters.get("grant_type") !== "authorization_code"
+      || parameters.get("client_id") !== CLIENT_ID
+      || parameters.get("client_secret") !== CLIENT_SECRET
+      || parameters.get("redirect_uri") !== grant.redirect
+      || challenge !== grant.challenge
+    ) {
+      this.json(response, 400, { error: "invalid_grant" });
+      return;
+    }
+    this.grants.delete(code);
+    const signingKey = grant.scenario.signingKey ?? this.signingKey;
+    if (signingKey === undefined) throw new Error("fixture signing key is missing");
+    const tokenAudience = grant.scenario.audience;
+    let token = new SignJWT({
       email: "alice@example.com",
       email_verified: true,
       name: "Alice",
-    };
-    openidMocks.checks = undefined;
-    openidMocks.discovery.mockClear();
-    openidMocks.authorizationCodeGrant.mockClear();
-    openidMocks.buildAuthorizationUrl.mockClear();
-    openidMocks.clientSecretPost.mockClear();
+      nonce: grant.scenario.nonce ?? grant.nonce,
+    })
+      .setProtectedHeader({ alg: "ES256", kid: "local-signing-key" })
+      .setIssuer(grant.scenario.issuer ?? this.issuer)
+      .setAudience(tokenAudience === undefined || typeof tokenAudience === "string"
+        ? tokenAudience ?? CLIENT_ID
+        : [...tokenAudience])
+      .setIssuedAt()
+      .setExpirationTime("5m");
+    if (grant.scenario.subject !== null) token = token.setSubject(grant.scenario.subject ?? "local-subject");
+    const idToken = await token.sign(signingKey);
+    this.json(response, 200, {
+      access_token: "fixture-access-token",
+      token_type: "Bearer",
+      expires_in: 300,
+      id_token: idToken,
+    });
+  }
+}
+
+const fixture = new LocalHttpsOidcFixture();
+
+function provider(): OidcOAuthProvider {
+  return new OidcOAuthProvider({
+    name: "local-oidc",
+    clientId: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
+    issuer: fixture.issuer,
+    customFetch: localHttpsFetch,
+  } as ConstructorParameters<typeof OidcOAuthProvider>[0] & { readonly customFetch: CustomFetch });
+}
+
+async function flow(currentProvider = provider()): Promise<{
+  readonly provider: OidcOAuthProvider;
+  readonly challenge: string;
+  readonly nonce: string;
+  readonly state: string;
+}> {
+  const state = "returned-state";
+  const nonce = "fixture-nonce-value";
+  const challenge = await providerCodeChallenge(VERIFIER);
+  const url = await currentProvider.authorizationUrl({
+    clientId: CLIENT_ID,
+    redirectUri: CALLBACK,
+    state,
+    nonce,
+    scopes: currentProvider.scopes,
+    codeChallenge: challenge,
+    codeChallengeMethod: "S256",
+  });
+  expect(new URL(url).searchParams.get("code_challenge_method")).toBe("S256");
+  return { provider: currentProvider, challenge, nonce, state };
+}
+
+function exchangeInput(value: {
+  readonly code: string;
+  readonly state: string;
+  readonly nonce: string;
+  readonly verifier?: string;
+  readonly redirect?: string;
+  readonly expectedState?: string;
+}) {
+  return {
+    code: value.code,
+    state: value.state,
+    expectedState: value.expectedState ?? value.state,
+    redirectUri: value.redirect ?? CALLBACK,
+    codeVerifier: value.verifier ?? VERIFIER,
+    nonce: value.nonce,
+  } as Parameters<OidcOAuthProvider["exchange"]>[0] & { readonly expectedState: string };
+}
+
+describe("OAuth provider adapters with a local HTTPS OIDC server", () => {
+  beforeAll(async () => fixture.start());
+  afterAll(async () => fixture.stop());
+
+  it("rejects non-HTTPS issuers at construction and keeps Google scopes fixed", () => {
+    expect(() => new OidcOAuthProvider({
+      name: "insecure",
+      clientId: CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
+      issuer: "http://127.0.0.1:4444",
+    })).toThrow(/HTTPS/i);
+    const google = new GoogleOAuthProvider({ clientId: "google-client", clientSecret: "google-secret" });
+    expect(google.scopes).toEqual(["openid", "email", "profile"]);
   });
 
-  it("builds Google authorization with the required scopes and validates nonce/PKCE checks", async () => {
-    const provider = new GoogleOAuthProvider({ clientId: "google-client", clientSecret: "google-secret" });
-    const url = await provider.authorizationUrl({
-      clientId: provider.clientId,
-      redirectUri: exchangeInput.redirectUri,
-      state: exchangeInput.state,
-      nonce: exchangeInput.nonce,
-      scopes: provider.scopes,
-      codeChallenge: "challenge-value",
-      codeChallengeMethod: "S256",
-    });
-
-    expect(provider.scopes).toEqual(["openid", "email", "profile"]);
-    expect(url).toContain("code_challenge_method=S256");
-    expect(url).toContain("scope=openid+email+profile");
-    expect(openidMocks.discovery).toHaveBeenCalledWith(
-      new URL("https://accounts.google.com"),
-      "google-client",
-      { client_secret: "google-secret" },
-      "client-auth",
-    );
-
-    const profile = await provider.exchange(exchangeInput);
+  it("performs discovery, authorization, token exchange, JWKS signature validation, and one-use code handling", async () => {
+    const current = await flow();
+    const code = fixture.issue({ challenge: current.challenge, redirect: CALLBACK, nonce: current.nonce });
+    const profile = await current.provider.exchange(exchangeInput({ code, state: current.state, nonce: current.nonce }));
     expect(profile).toMatchObject({
-      provider: "google",
-      subject: "google-subject",
-      issuer: "https://accounts.google.com",
+      provider: "local-oidc",
+      subject: "local-subject",
+      issuer: fixture.issuer,
       email: "alice@example.com",
       emailVerified: true,
     });
-    expect(openidMocks.checks).toEqual({
-      expectedState: "state-value",
-      expectedNonce: "nonce-value",
-      pkceCodeVerifier: "a".repeat(43),
-      idTokenExpected: true,
-    });
+    expect(fixture.requests).toEqual(expect.arrayContaining([
+      "/.well-known/openid-configuration",
+      "/token",
+      "/jwks",
+    ]));
+    await expect(current.provider.exchange(exchangeInput({ code, state: current.state, nonce: current.nonce })))
+      .rejects.toBeInstanceOf(OAuthProviderError);
   });
 
   it.each([
-    ["issuer", { iss: "https://evil.example.com" }],
-    ["audience", { aud: "other-client" }],
-    ["subject", { sub: "" }],
-  ])("rejects an invalid OIDC %s claim", async (_label, invalidClaim) => {
-    openidMocks.claims = { ...openidMocks.claims, ...invalidClaim };
-    const provider = new GoogleOAuthProvider({ clientId: "google-client", clientSecret: "google-secret" });
-
-    await expect(provider.exchange(exchangeInput)).rejects.toBeInstanceOf(OAuthProviderError);
+    ["state", { expectedState: "different-state" }],
+    ["PKCE", { verifier: "b".repeat(43) }],
+    ["redirect", { redirect: ALT_CALLBACK }],
+  ])("rejects a mismatched %s binding", async (_label, override) => {
+    const current = await flow();
+    const code = fixture.issue({ challenge: current.challenge, redirect: CALLBACK, nonce: current.nonce });
+    await expect(current.provider.exchange(exchangeInput({
+      code,
+      state: current.state,
+      nonce: current.nonce,
+      ...override,
+    }))).rejects.toBeInstanceOf(OAuthProviderError);
   });
 
-  it("uses discovery and the same issuer/audience/nonce/sub validation for generic OIDC", async () => {
-    openidMocks.claims = {
-      ...openidMocks.claims,
-      iss: "https://issuer.example.com/tenant",
-      sub: "oidc-subject",
-      aud: ["oidc-client", "other-audience"],
-    };
-    const provider = new OidcOAuthProvider({
-      name: "Acme-OIDC",
-      clientId: "oidc-client",
-      clientSecret: "oidc-secret",
-      issuer: "https://issuer.example.com/tenant",
-    });
+  it.each([
+    ["issuer", { issuer: "https://evil.example.com" }],
+    ["audience", { audience: "other-client" }],
+    ["nonce", { nonce: "wrong-nonce" }],
+    ["subject", { subject: null }],
+  ] as const)("rejects an invalid signed %s claim", async (_label, scenario) => {
+    const current = await flow();
+    const code = fixture.issue({ challenge: current.challenge, redirect: CALLBACK, nonce: current.nonce, scenario });
+    await expect(current.provider.exchange(exchangeInput({ code, state: current.state, nonce: current.nonce })))
+      .rejects.toBeInstanceOf(OAuthProviderError);
+  });
 
-    const profile = await provider.exchange({ ...exchangeInput, nonce: "generic-nonce" });
-    expect(profile).toMatchObject({
-      provider: "acme-oidc",
-      subject: "oidc-subject",
-      issuer: "https://issuer.example.com/tenant",
+  it("rejects an ID token signed by a key absent from discovered JWKS", async () => {
+    const rogue = await generateKeyPair("ES256");
+    const current = await flow();
+    const code = fixture.issue({
+      challenge: current.challenge,
+      redirect: CALLBACK,
+      nonce: current.nonce,
+      scenario: { signingKey: rogue.privateKey },
     });
-    expect(openidMocks.checks?.expectedNonce).toBe("generic-nonce");
-    expect(openidMocks.checks?.expectedState).toBe(exchangeInput.state);
+    await expect(current.provider.exchange(exchangeInput({ code, state: current.state, nonce: current.nonce })))
+      .rejects.toBeInstanceOf(OAuthProviderError);
   });
 });

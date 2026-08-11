@@ -139,8 +139,18 @@ export interface UserRepository {
     email: string,
     options?: RepositoryOperationOptions,
   ): Promise<User | null>;
+  /** Locks and re-reads an email match, including a soft-deleted account. */
+  findByNormalizedEmailForUpdate(
+    email: string,
+    options?: RepositoryOperationOptions,
+  ): Promise<User | null>;
   /** Creates a user and returns the safe public record. */
   create(input: CreateUserInput, options?: RepositoryOperationOptions): Promise<User>;
+  /** Creates a user, or returns null when a normalized login target conflicts. */
+  createIfAvailable(
+    input: CreateUserInput,
+    options?: RepositoryOperationOptions,
+  ): Promise<User | null>;
   /** Applies an authorized patch and returns the safe public record. */
   update(
     id: UUID,
@@ -174,6 +184,11 @@ export interface IdentityRepository {
     input: Omit<Identity, "id" | "created_at" | "updated_at">,
     options?: RepositoryOperationOptions,
   ): Promise<Identity>;
+  /** Creates an identity, or returns null when its provider subject is already owned. */
+  createIfAvailable(
+    input: Omit<Identity, "id" | "created_at" | "updated_at">,
+    options?: RepositoryOperationOptions,
+  ): Promise<Identity | null>;
   /** Removes one identity after the final-login-method policy is checked. */
   deleteById(id: UUID, options?: RepositoryOperationOptions): Promise<void>;
 }

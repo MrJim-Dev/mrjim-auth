@@ -113,6 +113,19 @@ function createUsersRepository(context: RepositoryContext): UserRepository {
       return row === undefined ? null : mapUserRow(row);
     },
 
+    async findByNormalizedEmailForUpdate(email) {
+      requireTransaction(context.inTransaction);
+      const normalized = normalizeEmail(email).normalized;
+      if (normalized === null) return null;
+      const row = await authDb(context)
+        .selectFrom("users")
+        .select(USER_COLUMNS)
+        .where("email_normalized", "=", normalized)
+        .forUpdate()
+        .executeTakeFirst();
+      return row === undefined ? null : mapUserRow(row);
+    },
+
     async create(input: CreateUserInput, options) {
       const email = normalizeEmail(input.email);
       const phone = normalizePhone(input.phone);
@@ -156,6 +169,41 @@ function createUsersRepository(context: RepositoryContext): UserRepository {
       } catch (error) {
         mapDuplicateNormalizedEmail(error);
       }
+    },
+
+    async createIfAvailable(input: CreateUserInput, options) {
+      const email = normalizeEmail(input.email);
+      const phone = normalizePhone(input.phone);
+      const confirmedAt = input.confirmed_at;
+      const emailConfirmedAt = input.email_confirmed_at !== undefined
+        ? input.email_confirmed_at
+        : confirmedAt !== undefined && email.display !== null ? confirmedAt : null;
+      const phoneConfirmedAt = input.phone_confirmed_at !== undefined
+        ? input.phone_confirmed_at
+        : confirmedAt !== undefined && email.display === null && phone.display !== null ? confirmedAt : null;
+      const now = operationNow(options);
+      const values: InsertObject<Database, "users"> = {
+        email: email.display,
+        email_normalized: email.normalized,
+        phone: phone.display,
+        phone_normalized: phone.normalized,
+        email_confirmed_at: emailConfirmedAt,
+        phone_confirmed_at: phoneConfirmedAt,
+        last_sign_in_at: null,
+        banned_until: null,
+        user_metadata: input.user_metadata ?? {},
+        app_metadata: input.app_metadata ?? {},
+        created_at: now,
+        updated_at: now,
+        deleted_at: null,
+      };
+      const row = await authDb(context)
+        .insertInto("users")
+        .values(values)
+        .onConflict((conflict) => conflict.doNothing())
+        .returning(USER_COLUMNS)
+        .executeTakeFirst();
+      return row === undefined ? null : mapUserRow(row);
     },
 
     async update(id: UUID, patch: UpdateUserInput, options) {
@@ -273,6 +321,33 @@ function createIdentityRepository(context: RepositoryContext): IdentityRepositor
         } catch (error) {
           mapDuplicateIdentity(error);
         }
+      });
+    },
+
+    async createIfAvailable(input, options) {
+      return withTransaction(context, async (transaction) => {
+        if (!(await lockActiveUser(transaction, input.user_id))) {
+          throw userNotFound(input.user_id);
+        }
+        const email = normalizeEmail(input.email);
+        const now = operationNow(options);
+        const values: InsertObject<Database, "identities"> = {
+          user_id: input.user_id,
+          provider: input.provider.trim().toLowerCase(),
+          provider_subject: input.provider_subject,
+          email: email.display,
+          email_normalized: email.normalized,
+          identity_data: safeIdentityDataSchema.parse(input.identity_data),
+          created_at: now,
+          updated_at: now,
+        };
+        const row = await authDb(transaction)
+          .insertInto("identities")
+          .values(values)
+          .onConflict((conflict) => conflict.columns(["provider", "provider_subject"]).doNothing())
+          .returning(IDENTITY_COLUMNS)
+          .executeTakeFirst();
+        return row === undefined ? null : mapIdentity(row);
       });
     },
 

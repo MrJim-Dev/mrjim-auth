@@ -20,6 +20,7 @@ import {
 import {
   sanitizeIdentityData,
   sanitizeRedactedMetadata,
+  roleKeySchema,
   type Identity,
   type Session,
   type User,
@@ -28,13 +29,14 @@ import {
 } from "../shared/types.js";
 import { normalizeAndValidateEmail } from "./email.js";
 import {
+  adapterCall,
   adapterTransaction,
+  isAdapterBoundaryFailure,
   trustedFailure,
   type TrustedServiceError,
 } from "./adapter-boundary.js";
 import {
   generateProviderNonce,
-  OAuthProviderError,
   type OAuthProvider,
   type OAuthProviderProfile,
 } from "./oauth-providers.js";
@@ -47,6 +49,41 @@ const OAUTH_CALLBACK_PURPOSE = "oauth_callback" as const;
 const OAUTH_FLOW_VALUES = ["sign_in", "link_identity"] as const;
 const CALLBACK_CODE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const PROVIDER_SUBJECT_MAX_LENGTH = 512;
+
+const oauthTransactionValues = new WeakMap<object, unknown>();
+const transactionValueSet = Function.prototype.call.bind(WeakMap.prototype.set) as <K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+  value: V,
+) => WeakMap<K, V>;
+const transactionValueHas = Function.prototype.call.bind(WeakMap.prototype.has) as <K extends object>(
+  map: WeakMap<K, unknown>,
+  key: K,
+) => boolean;
+const transactionValueGet = Function.prototype.call.bind(WeakMap.prototype.get) as <K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+) => V | undefined;
+const transactionValueDelete = Function.prototype.call.bind(WeakMap.prototype.delete) as <K extends object>(
+  map: WeakMap<K, unknown>,
+  key: K,
+) => boolean;
+const createTransactionMarker = Object.create;
+const freezeTransactionMarker = Object.freeze;
+
+function trustedTransactionValue<T>(value: T): object {
+  const marker = createTransactionMarker(null) as object;
+  transactionValueSet(oauthTransactionValues, marker, value);
+  return freezeTransactionMarker(marker);
+}
+
+function takeTrustedTransactionValue<T>(candidate: unknown): { readonly found: true; readonly value: T } | { readonly found: false } {
+  if (candidate === null || (typeof candidate !== "object" && typeof candidate !== "function")) return { found: false };
+  if (!transactionValueHas(oauthTransactionValues, candidate)) return { found: false };
+  const value = transactionValueGet(oauthTransactionValues, candidate) as T;
+  transactionValueDelete(oauthTransactionValues, candidate);
+  return { found: true, value };
+}
 
 /** OAuth flow mode persisted with signed state. */
 export type OAuthFlow = "sign_in" | "link_identity";
@@ -129,6 +166,8 @@ export interface OAuthServiceOptions {
   readonly allowedRedirects: readonly string[];
   readonly defaultRedirect?: string;
   readonly allowVerifiedEmailAutoLink?: boolean;
+  /** Role keys assigned atomically whenever OAuth creates a user. */
+  readonly defaultRoleKeys?: readonly string[];
   /** Maximum age of a session allowed to begin authenticated linking. */
   readonly freshSessionMaxAgeSeconds?: number;
   readonly clock?: () => Date;
@@ -137,6 +176,7 @@ export interface OAuthServiceOptions {
 type EncryptedStatePayload = {
   readonly verifier: string;
   readonly nonce: string;
+  readonly linkingSessionId: UUID | null;
 };
 
 type ProfileResolution = {
@@ -153,8 +193,19 @@ function validNow(clock: () => Date): Date {
 }
 
 function validKey(value: string | Uint8Array, label: string): Buffer {
-  const bytes = typeof value === "string" ? Buffer.from(value, "utf8") : Buffer.from(value);
-  if (bytes.byteLength === 0) throw new AuthConfigurationError(`${label} must be non-empty`);
+  let bytes: Buffer;
+  if (typeof value === "string") {
+    if (value !== value.trim() || !/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) {
+      throw new AuthConfigurationError(`${label} must be unpadded base64url key material`);
+    }
+    bytes = Buffer.from(value, "base64url");
+    if (bytes.toString("base64url") !== value) {
+      throw new AuthConfigurationError(`${label} must be canonical unpadded base64url key material`);
+    }
+  } else {
+    bytes = Buffer.from(value);
+  }
+  if (bytes.byteLength < 32) throw new AuthConfigurationError(`${label} must contain at least 32 decoded bytes`);
   return bytes;
 }
 
@@ -253,14 +304,21 @@ function decryptState(value: Uint8Array | null, key: Buffer): EncryptedStatePayl
       decipher.update(bytes.subarray(28)),
       decipher.final(),
     ]).toString("utf8"));
+    if (typeof parsed !== "object" || parsed === null) throw new Error("invalid state payload");
+    const candidate = parsed as Record<string, unknown>;
     if (
-      typeof parsed !== "object" || parsed === null
-      || typeof (parsed as { verifier?: unknown }).verifier !== "string"
-      || typeof (parsed as { nonce?: unknown }).nonce !== "string"
-      || !isCodeVerifier((parsed as { verifier: unknown }).verifier)
-      || (parsed as { nonce: string }).nonce.length < 16
+      typeof candidate.verifier !== "string"
+      || typeof candidate.nonce !== "string"
+      || !("linkingSessionId" in candidate)
+      || (candidate.linkingSessionId !== null && !uuidSchema.safeParse(candidate.linkingSessionId).success)
+      || !isCodeVerifier(candidate.verifier)
+      || candidate.nonce.length < 16
     ) throw new Error("invalid state payload");
-    return parsed as EncryptedStatePayload;
+    return {
+      verifier: candidate.verifier,
+      nonce: candidate.nonce,
+      linkingSessionId: candidate.linkingSessionId as UUID | null,
+    };
   } catch (error) {
     if (error instanceof AuthApiError) throw error;
     throw new AuthApiError("oauth_state_invalid", 400, "Invalid OAuth state");
@@ -284,8 +342,8 @@ function unauthorized(): AuthApiError {
 }
 
 function mapUnexpected(error: unknown): AuthResult<never> {
+  if (isAdapterBoundaryFailure(error)) return authFailure(internalError());
   if (error instanceof AuthApiError) return authFailure(error);
-  if (error instanceof OAuthProviderError) return authFailure(providerFailure());
   if (error instanceof AuthConfigurationError || error instanceof AuthProgrammingError) throw error;
   return authFailure(internalError());
 }
@@ -298,27 +356,21 @@ function trustedAuthError(error: { readonly code: AuthApiError["code"]; readonly
   trustedFailure(new AuthApiError(error.code, error.status, error.message, error.request_id));
 }
 
-function repositoryCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null) return undefined;
-  const value = (error as { readonly code?: unknown }).code;
-  return typeof value === "string" ? value : undefined;
-}
-
-function mapIdentityMutationError(error: unknown): AuthApiError | null {
-  switch (repositoryCode(error)) {
-    case "identity_exists":
-      return new AuthApiError("identity_already_linked", 409, "This login identity is already linked");
-    case "email_exists":
-      return new AuthApiError("conflict", 409, "A user with this email already exists");
-    case "not_found":
-      return new AuthApiError("invalid_request", 400, "Invalid OAuth identity");
-    default:
-      return null;
-  }
-}
-
 function isBanned(user: User, now: Date): boolean {
   return user.banned_until !== null && new Date(user.banned_until).getTime() > now.getTime();
+}
+
+function isDeleted(user: User): boolean {
+  return user.deleted_at !== null;
+}
+
+async function providerCall<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await adapterCall(operation);
+  } catch (error) {
+    if (isAdapterBoundaryFailure(error)) throw providerFailure();
+    throw error;
+  }
 }
 
 function safeProfile(provider: OAuthProvider, profile: OAuthProviderProfile): OAuthProviderProfile {
@@ -366,6 +418,58 @@ function safeProfile(provider: OAuthProvider, profile: OAuthProviderProfile): OA
   };
 }
 
+function safeRepositoryIdentity(value: unknown): Identity {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("invalid identity adapter value");
+  }
+  const candidate = value as Record<string, unknown>;
+  const id = uuidSchema.safeParse(candidate.id);
+  const userId = uuidSchema.safeParse(candidate.user_id);
+  if (!id.success || !userId.success) throw new TypeError("invalid identity adapter value");
+  let provider: string;
+  try {
+    provider = normalizeProvider(candidate.provider);
+  } catch {
+    throw new TypeError("invalid identity adapter value");
+  }
+  if (
+    typeof candidate.provider_subject !== "string"
+    || candidate.provider_subject.trim() === ""
+    || candidate.provider_subject.length > PROVIDER_SUBJECT_MAX_LENGTH
+    || (candidate.email !== null && typeof candidate.email !== "string")
+    || typeof candidate.created_at !== "string"
+    || !Number.isFinite(Date.parse(candidate.created_at))
+    || typeof candidate.updated_at !== "string"
+    || !Number.isFinite(Date.parse(candidate.updated_at))
+    || typeof candidate.identity_data !== "object"
+    || candidate.identity_data === null
+    || Array.isArray(candidate.identity_data)
+  ) throw new TypeError("invalid identity adapter value");
+  let email: string | null;
+  try {
+    email = candidate.email === null
+      ? null
+      : normalizeAndValidateEmail(candidate.email).display;
+  } catch {
+    throw new TypeError("invalid identity adapter value");
+  }
+  return Object.freeze({
+    id: id.data,
+    user_id: userId.data,
+    provider,
+    provider_subject: candidate.provider_subject,
+    email,
+    identity_data: sanitizeIdentityData(candidate.identity_data),
+    created_at: candidate.created_at,
+    updated_at: candidate.updated_at,
+  });
+}
+
+function safeRepositoryIdentities(value: unknown): readonly Identity[] {
+  if (!Array.isArray(value)) throw new TypeError("invalid identity-list adapter value");
+  return Object.freeze(value.map(safeRepositoryIdentity));
+}
+
 function redirectWithCode(redirect: string, code: string): string {
   const url = new URL(redirect);
   url.searchParams.set("code", code);
@@ -388,6 +492,7 @@ export class OAuthService {
   private readonly allowedRedirects: readonly string[];
   private readonly defaultRedirect: string;
   private readonly allowVerifiedEmailAutoLink: boolean;
+  private readonly defaultRoleKeys: readonly string[];
   private readonly freshSessionMaxAgeSeconds: number;
   private readonly clock: () => Date;
 
@@ -420,6 +525,10 @@ export class OAuthService {
     if (!allowed.includes(defaultRedirect)) throw new AuthConfigurationError("OAuth default redirect must be exactly allowlisted");
     const freshAge = options.freshSessionMaxAgeSeconds ?? 5 * 60;
     if (!Number.isSafeInteger(freshAge) || freshAge <= 0 || freshAge > 15 * 60) throw new AuthConfigurationError("OAuth fresh-session age is invalid");
+    const defaultRoleKeys = [...(options.defaultRoleKeys ?? [])];
+    if (!defaultRoleKeys.every((key) => roleKeySchema.safeParse(key).success)) {
+      throw new AuthConfigurationError("OAuth default role keys are invalid");
+    }
     this.repository = options.repository;
     this.sessions = options.sessions;
     this.providers = providers;
@@ -428,6 +537,7 @@ export class OAuthService {
     this.allowedRedirects = Object.freeze([...allowed]);
     this.defaultRedirect = defaultRedirect;
     this.allowVerifiedEmailAutoLink = options.allowVerifiedEmailAutoLink === true;
+    this.defaultRoleKeys = Object.freeze([...new Set(defaultRoleKeys)]);
     this.freshSessionMaxAgeSeconds = freshAge;
     this.clock = options.clock ?? (() => new Date());
     validNow(this.clock);
@@ -460,12 +570,12 @@ export class OAuthService {
       const redirect = this.resolveRedirect(input.redirectTo);
       const flow = input.flow ?? "sign_in";
       if (!OAUTH_FLOW_VALUES.includes(flow)) return authFailure(new AuthApiError("invalid_request", 400, "Invalid OAuth flow"));
-      let linkingUserId: UUID | null = null;
+      let linkingSubject: AuthenticatedSession | null = null;
       if (flow === "link_identity") {
         if (input.subject === undefined) return authFailure(unauthorized());
-        const authorized = await this.authorizeFreshSubject(input.subject);
+        const authorized = await this.authorizeSubject(input.subject);
         if (authorized.error !== null || authorized.data === null) return authFailure(authorized.error ?? unauthorized());
-        linkingUserId = authorized.data.user_id;
+        linkingSubject = authorized.data;
       }
       const now = validNow(this.clock);
       const codeVerifier = randomOpaque();
@@ -473,26 +583,39 @@ export class OAuthService {
       const state = randomOpaque();
       const nonce = generateProviderNonce();
       const expiresAt = new Date(now.getTime() + OAUTH_STATE_TTL_SECONDS * 1000);
-      const url = await provider.authorizationUrl({
-        clientId: provider.clientId,
-        redirectUri: redirect,
-        state,
-        nonce,
-        scopes: provider.scopes,
-        codeChallenge,
-        codeChallengeMethod: "S256",
+      const url = await providerCall(async () => {
+        const value = await provider.authorizationUrl({
+          clientId: provider.clientId,
+          redirectUri: redirect,
+          state,
+          nonce,
+          scopes: provider.scopes,
+          codeChallenge,
+          codeChallengeMethod: "S256",
+        });
+        if (typeof value !== "string" || value.trim() === "") throw new TypeError("invalid provider authorization URL");
+        return value;
       });
-      if (typeof url !== "string" || url.trim() === "") throw new AuthConfigurationError("OAuth provider returned an empty authorization URL");
-      await this.repository.oauthStates.create({
-        state_hash: hmac(this.tokenHashKey, "oauth_state", stateBinding(state, providerName, flow, redirect)),
-        provider: providerName,
-        flow,
-        pkce_challenge: codeChallenge,
-        encrypted_verifier: encryptState({ verifier: codeVerifier, nonce }, this.encryptionKey),
-        redirect,
-        linking_user_id: linkingUserId,
-        expires_at: expiresAt,
-      }, { now });
+      await this.runTransaction(async (transaction) => {
+        if (flow === "link_identity") {
+          if (linkingSubject === null) trustedFailure(unauthorized());
+          await this.requireFreshLinkingSession(transaction, linkingSubject.session_id, linkingSubject.user_id, now);
+        }
+        await transaction.oauthStates.create({
+          state_hash: hmac(this.tokenHashKey, "oauth_state", stateBinding(state, providerName, flow, redirect)),
+          provider: providerName,
+          flow,
+          pkce_challenge: codeChallenge,
+          encrypted_verifier: encryptState({
+            verifier: codeVerifier,
+            nonce,
+            linkingSessionId: linkingSubject?.session_id ?? null,
+          }, this.encryptionKey),
+          redirect,
+          linking_user_id: linkingSubject?.user_id ?? null,
+          expires_at: expiresAt,
+        }, { now });
+      });
       return authSuccess({
         provider: providerName,
         url,
@@ -513,39 +636,76 @@ export class OAuthService {
       const provider = this.providers.get(providerName);
       if (provider === undefined) return authFailure(new AuthApiError("not_found", 404, "OAuth provider is not enabled"));
       if (input.codeChallengeMethod !== undefined && input.codeChallengeMethod !== "S256") return authFailure(oauthStateInvalid());
-      const redirect = this.resolveRedirect(input.redirectTo);
+      const redirectCandidates = input.redirectTo === undefined || input.redirectTo === null
+        ? this.allowedRedirects
+        : [this.resolveRedirect(input.redirectTo)];
       if (typeof input.state !== "string" || input.state.length < 43 || input.state.length > 128) return authFailure(oauthStateInvalid());
       if (typeof input.code !== "string" || input.code.trim() === "" || input.code.length > 2048) return authFailure(providerFailure());
       const now = validNow(this.clock);
       let consumed: OAuthStateRecord | null = null;
-      for (const flow of OAUTH_FLOW_VALUES) {
-        const stateHash = hmac(this.tokenHashKey, "oauth_state", stateBinding(input.state, providerName, flow, redirect));
-        consumed = await this.repository.oauthStates.consume(stateHash, now, {
-          now,
-          provider: providerName,
-          flow,
-          redirect,
-        });
+      let redirect: string | null = null;
+      for (const candidate of redirectCandidates) {
+        for (const flow of OAUTH_FLOW_VALUES) {
+          const stateHash = hmac(this.tokenHashKey, "oauth_state", stateBinding(input.state, providerName, flow, candidate));
+          consumed = await adapterCall(async () => {
+            const value = await this.repository.oauthStates.consume(stateHash, now, {
+              now,
+              provider: providerName,
+              flow,
+              redirect: candidate,
+            });
+            if (value === null) return null;
+            if (
+              value.provider !== providerName
+              || value.flow !== flow
+              || value.redirect !== candidate
+              || typeof value.pkce_challenge !== "string"
+              || !(value.state_hash instanceof Uint8Array)
+              || !(value.encrypted_verifier instanceof Uint8Array)
+              || !(value.expires_at instanceof Date)
+            ) throw new TypeError("invalid OAuth state adapter value");
+            return value;
+          });
+          if (consumed !== null) {
+            redirect = candidate;
+            break;
+          }
+        }
         if (consumed !== null) break;
       }
-      if (consumed === null) return authFailure(oauthStateInvalid());
+      if (consumed === null || redirect === null) return authFailure(oauthStateInvalid());
       const payload = decryptState(consumed.encrypted_verifier ?? null, this.encryptionKey);
       if (pkceChallenge(payload.verifier) !== consumed.pkce_challenge) return authFailure(oauthStateInvalid());
-      let profile: OAuthProviderProfile;
-      try {
-        profile = safeProfile(provider, await provider.exchange({
+      if (
+        (consumed.flow === "link_identity" && (
+          payload.linkingSessionId === null
+          || consumed.linking_user_id === null
+          || consumed.linking_user_id === undefined
+        ))
+        || (consumed.flow === "sign_in" && payload.linkingSessionId !== null)
+      ) return authFailure(oauthStateInvalid());
+      const profile = await providerCall(async () => safeProfile(provider, await provider.exchange({
           code: input.code,
           state: input.state,
+          expectedState: input.state,
           redirectUri: redirect,
           codeVerifier: payload.verifier,
           nonce: payload.nonce,
-        }));
-      } catch {
-        return authFailure(providerFailure());
-      }
+        })));
       const callbackCode = randomOpaque();
       const expiresAt = new Date(now.getTime() + OAUTH_CALLBACK_TTL_SECONDS * 1000);
-      await adapterTransaction(() => this.repository.transaction(async (transaction) => {
+      await this.runTransaction(async (transaction) => {
+        if (consumed.flow === "link_identity") {
+          if (payload.linkingSessionId === null || consumed.linking_user_id === null || consumed.linking_user_id === undefined) {
+            trustedFailure(oauthStateInvalid());
+          }
+          await this.requireFreshLinkingSession(
+            transaction,
+            payload.linkingSessionId,
+            consumed.linking_user_id,
+            now,
+          );
+        }
         const identity = await this.resolveProfile(transaction, profile, consumed.flow, consumed.linking_user_id ?? null, now);
         const callbackMetadata = sanitizeRedactedMetadata({
           event: "oauth.callback",
@@ -574,6 +734,7 @@ export class OAuthService {
         if (consumed.flow === "link_identity") {
           await transaction.operations.appendAudit({
             actor_user_id: identity.user.id,
+            actor_session_id: payload.linkingSessionId,
             action: "identity.linked",
             target_type: "identity",
             target_id: identity.identity.id,
@@ -588,7 +749,7 @@ export class OAuthService {
           }, { now });
         }
         return identity;
-      }), rethrowTrusted);
+      });
       return authSuccess({
         code: callbackCode,
         redirect,
@@ -596,8 +757,6 @@ export class OAuthService {
         expiresAt: expiresAt.toISOString(),
       });
     } catch (error) {
-      const mapped = mapIdentityMutationError(error);
-      if (mapped !== null) return authFailure(mapped);
       return mapUnexpected(error);
     }
   }
@@ -610,7 +769,7 @@ export class OAuthService {
       const verifier = validVerifier(input.codeVerifier);
       const now = validNow(this.clock);
       const challenge = pkceChallenge(verifier);
-      const result = await adapterTransaction(() => this.repository.transaction(async (transaction) => {
+      const result = await this.runTransaction(async (transaction) => {
         const consumed = await transaction.oneTimeTokens.consumeBound(
           hmac(this.tokenHashKey, OAUTH_CALLBACK_PURPOSE, code),
           OAUTH_CALLBACK_PURPOSE,
@@ -623,7 +782,9 @@ export class OAuthService {
         if (consumed === null || consumedUserId === null || consumedUserId === undefined) trustedFailure(new AuthApiError("invalid_token", 401, "Invalid OAuth code"));
         const user = await transaction.users.findByIdForUpdate(consumedUserId, { now });
         if (user === null || isBanned(user, now)) trustedFailure(unauthorized());
-        const identities = await transaction.identities.listByUserId(user.id, { now });
+        const identities = safeRepositoryIdentities(
+          await transaction.identities.listByUserId(user.id, { now }),
+        );
         const identityId = typeof consumed.metadata?.target_id === "string"
           ? uuidSchema.safeParse(consumed.metadata.target_id).data
           : undefined;
@@ -648,7 +809,7 @@ export class OAuthService {
           occurred_at: now,
         }, { now });
         return { user: signedInUser, identity, session: session.data };
-      }), rethrowTrusted);
+      });
       return authSuccess(result);
     } catch (error) {
       return mapUnexpected(error);
@@ -663,9 +824,9 @@ export class OAuthService {
       );
       const provider = this.providers.get(providerName);
       if (provider === undefined) return authFailure(new AuthApiError("not_found", 404, "OAuth provider is not enabled"));
-      const safe = safeProfile(provider, profile);
+      const safe = await providerCall(async () => safeProfile(provider, profile));
       const now = validNow(this.clock);
-      const result = await adapterTransaction(() => this.repository.transaction(async (transaction) => {
+      const result = await this.runTransaction(async (transaction) => {
         const identity = await this.resolveProfile(transaction, safe, "sign_in", null, now);
         const signedInUser = await transaction.users.update(identity.user.id, { last_sign_in_at: now }, { now });
         await transaction.operations.appendAudit({
@@ -680,50 +841,54 @@ export class OAuthService {
         const session = await this.sessions.create(signedInUser, context ?? {}, transaction);
         if (session.error !== null || session.data === null) trustedAuthError(session.error ?? internalError());
         return { user: signedInUser, identity: identity.identity, session: session.data };
-      }), rethrowTrusted);
+      });
       return authSuccess(result);
     } catch (error) {
-      const mapped = mapIdentityMutationError(error);
-      return mapped === null ? mapUnexpected(error) : authFailure(mapped);
+      return mapUnexpected(error);
     }
   }
 
   /** Starts authenticated linking or directly links a deterministic test/provider profile. */
   async linkIdentity(subject: OAuthSubject, input: OAuthProviderProfile | { readonly provider: string; readonly redirectTo?: string | null }): Promise<AuthResult<OAuthAuthorizeResult | OAuthLinkResult>> {
-    const authorized = await this.authorizeFreshSubject(subject);
-    if (authorized.error !== null || authorized.data === null) return authFailure(authorized.error ?? unauthorized());
-    if ("subject" in input) {
-      try {
-        const provider = this.providers.get(parsePublicProvider(input.provider));
-        if (provider === undefined) return authFailure(new AuthApiError("not_found", 404, "OAuth provider is not enabled"));
-        const safe = safeProfile(provider, input);
-        const now = validNow(this.clock);
-        const result = await adapterTransaction(() => this.repository.transaction(async (transaction) => {
-          const identity = await this.resolveProfile(transaction, safe, "link_identity", authorized.data.user_id, now);
-          await transaction.operations.appendAudit({
-            actor_user_id: authorized.data.user_id,
-            actor_session_id: authorized.data.session_id,
-            action: "identity.linked",
-            target_type: "identity",
-            target_id: identity.identity.id,
-            metadata: sanitizeRedactedMetadata({ event: "identity.linked", provider: safe.provider, operation: "link_identity" }),
-            outcome: "success",
-            occurred_at: now,
-          }, { now });
-          return { user: identity.user, identity: identity.identity };
-        }), rethrowTrusted);
-        return authSuccess(result);
-      } catch (error) {
-        const mapped = mapIdentityMutationError(error);
-        return mapped === null ? mapUnexpected(error) : authFailure(mapped);
-      }
+    if (!("subject" in input)) {
+      return this.authorize({
+        provider: input.provider,
+        ...(input.redirectTo === undefined ? {} : { redirectTo: input.redirectTo }),
+        flow: "link_identity",
+        subject,
+      });
     }
-    return this.authorize({
-      provider: input.provider,
-      ...(input.redirectTo === undefined ? {} : { redirectTo: input.redirectTo }),
-      flow: "link_identity",
-      subject,
-    });
+    const authorized = await this.authorizeSubject(subject);
+    if (authorized.error !== null || authorized.data === null) return authFailure(authorized.error ?? unauthorized());
+    try {
+      const provider = this.providers.get(parsePublicProvider(input.provider));
+      if (provider === undefined) return authFailure(new AuthApiError("not_found", 404, "OAuth provider is not enabled"));
+      const safe = await providerCall(async () => safeProfile(provider, input));
+      const now = validNow(this.clock);
+      const result = await this.runTransaction(async (transaction) => {
+        await this.requireFreshLinkingSession(
+          transaction,
+          authorized.data.session_id,
+          authorized.data.user_id,
+          now,
+        );
+        const identity = await this.resolveProfile(transaction, safe, "link_identity", authorized.data.user_id, now);
+        await transaction.operations.appendAudit({
+          actor_user_id: authorized.data.user_id,
+          actor_session_id: authorized.data.session_id,
+          action: "identity.linked",
+          target_type: "identity",
+          target_id: identity.identity.id,
+          metadata: sanitizeRedactedMetadata({ event: "identity.linked", provider: safe.provider, operation: "link_identity" }),
+          outcome: "success",
+          occurred_at: now,
+        }, { now });
+        return { user: identity.user, identity: identity.identity };
+      });
+      return authSuccess(result);
+    } catch (error) {
+      return mapUnexpected(error);
+    }
   }
 
   /** Unlinks an identity only if a password or another identity remains usable. */
@@ -732,11 +897,13 @@ export class OAuthService {
     if (authorized.error !== null || authorized.data === null) return authFailure(authorized.error ?? unauthorized());
     const now = validNow(this.clock);
     try {
-      await adapterTransaction(() => this.repository.transaction(async (transaction) => {
+      await this.runTransaction(async (transaction) => {
         const user = await transaction.users.findByIdForUpdate(authorized.data.user_id, { now });
         if (user === null) trustedFailure(unauthorized());
         const currentUser = user;
-        const identities = await transaction.identities.listByUserId(currentUser.id, { now });
+        const identities = safeRepositoryIdentities(
+          await transaction.identities.listByUserId(currentUser.id, { now }),
+        );
         const identity = identities.find((candidate) => candidate.id === identityId);
         if (identity === undefined) trustedFailure(new AuthApiError("not_found", 404, "Identity not found"));
         const password = await transaction.passwordCredentials.findByUserId(currentUser.id, { now });
@@ -752,7 +919,7 @@ export class OAuthService {
           outcome: "success",
           occurred_at: now,
         }, { now });
-      }), rethrowTrusted);
+      });
       return authSuccess(null);
     } catch (error) {
       return mapUnexpected(error);
@@ -764,10 +931,23 @@ export class OAuthService {
     const authorized = await this.sessions.authorizeSession(subject.session);
     if (authorized.error !== null || authorized.data === null) return authFailure(authorized.error ?? unauthorized());
     try {
-      return authSuccess(await this.repository.identities.listByUserId(authorized.data.user_id));
+      return authSuccess(await adapterCall(async () => safeRepositoryIdentities(
+        await this.repository.identities.listByUserId(authorized.data.user_id),
+      )));
     } catch (error) {
       return mapUnexpected(error);
     }
+  }
+
+  private async runTransaction<T>(operation: (transaction: AuthRepository) => Promise<T>): Promise<T> {
+    const candidate = await adapterTransaction(
+      () => this.repository.transaction(async (transaction) =>
+        trustedTransactionValue(await operation(transaction))),
+      rethrowTrusted,
+    );
+    const trusted = takeTrustedTransactionValue<T>(candidate);
+    if (!trusted.found) throw internalError();
+    return trusted.value;
   }
 
   private resolveRedirect(value: string | null | undefined): string {
@@ -776,17 +956,25 @@ export class OAuthService {
     return candidate;
   }
 
-  private async authorizeFreshSubject(subject: OAuthSubject): Promise<AuthResult<AuthenticatedSession>> {
-    const authorized = await this.sessions.authorizeSession(subject.session);
-    if (authorized.error !== null || authorized.data === null) return authFailure(authorized.error ?? unauthorized());
-    const now = validNow(this.clock);
-    const fresh = await this.repository.transaction(async (transaction) => {
-      const durable = await transaction.sessions.findByIdForUpdate(authorized.data.session_id, { now });
-      if (durable === null || durable.user_id !== authorized.data.user_id) return false;
-      return now.getTime() >= durable.created_at.getTime()
-        && now.getTime() - durable.created_at.getTime() <= this.freshSessionMaxAgeSeconds * 1000;
-    });
-    return fresh ? authorized : authFailure(unauthorized());
+  private async authorizeSubject(subject: OAuthSubject): Promise<AuthResult<AuthenticatedSession>> {
+    return this.sessions.authorizeSession(subject.session);
+  }
+
+  private async requireFreshLinkingSession(
+    transaction: AuthRepository,
+    sessionId: UUID,
+    userId: UUID,
+    now: Date,
+  ): Promise<void> {
+    const durable = await transaction.sessions.findByIdForUpdate(sessionId, { now });
+    if (
+      durable === null
+      || durable.user_id !== userId
+      || durable.revoked_at !== null
+      || durable.expires_at <= now
+      || now.getTime() < durable.created_at.getTime()
+      || now.getTime() - durable.created_at.getTime() > this.freshSessionMaxAgeSeconds * 1000
+    ) trustedFailure(unauthorized());
   }
 
   private async resolveProfile(
@@ -796,7 +984,8 @@ export class OAuthService {
     linkingUserId: UUID | null,
     now: Date,
   ): Promise<ProfileResolution> {
-    const existingIdentity = await transaction.identities.findByProviderSubject(profile.provider, profile.subject, { now });
+    const foundIdentity = await transaction.identities.findByProviderSubject(profile.provider, profile.subject, { now });
+    const existingIdentity = foundIdentity === null ? null : safeRepositoryIdentity(foundIdentity);
     if (existingIdentity !== null) {
       if (flow === "link_identity" && existingIdentity.user_id !== linkingUserId) {
         trustedFailure(new AuthApiError("identity_already_linked", 409, "This login identity is already linked"));
@@ -816,41 +1005,55 @@ export class OAuthService {
       user = await transaction.users.findByIdForUpdate(linkingUserId, { now });
       if (user === null || isBanned(user, now)) trustedFailure(unauthorized());
     } else if (profile.email !== null) {
-      user = await transaction.users.findByNormalizedEmail(profile.email, { now });
-      if (user !== null && !(this.allowVerifiedEmailAutoLink && profile.emailVerified)) {
-        trustedFailure(new AuthApiError("conflict", 409, "A user with this email already exists"));
+      user = await transaction.users.findByNormalizedEmailForUpdate(profile.email, { now });
+      if (user !== null) {
+        if (isDeleted(user) || isBanned(user, now)) trustedFailure(unauthorized());
+        if (!(this.allowVerifiedEmailAutoLink && profile.emailVerified)) {
+          trustedFailure(new AuthApiError("conflict", 409, "A user with this email already exists"));
+        }
       }
       emailAutoLinked = user !== null;
     }
     if (user === null) {
-      try {
-        user = await transaction.users.create({
-          email: profile.email,
-          email_confirmed_at: profile.emailVerified ? now : null,
-          confirmed_at: profile.emailVerified ? now : null,
-          user_metadata: {},
-          app_metadata: {},
-        }, { now });
-      } catch (error) {
-        const mapped = mapIdentityMutationError(error);
-        if (mapped !== null) trustedFailure(mapped);
-        throw error;
+      const created = await transaction.users.createIfAvailable({
+        email: profile.email,
+        email_confirmed_at: profile.emailVerified ? now : null,
+        confirmed_at: profile.emailVerified ? now : null,
+        user_metadata: {},
+        app_metadata: {},
+      }, { now });
+      user = created;
+      if (user === null && profile.email !== null) {
+        const matched = await transaction.users.findByNormalizedEmailForUpdate(profile.email, { now });
+        if (matched !== null && (isDeleted(matched) || isBanned(matched, now))) trustedFailure(unauthorized());
+        if (matched !== null && this.allowVerifiedEmailAutoLink && profile.emailVerified) {
+          user = matched;
+          emailAutoLinked = true;
+        } else {
+          trustedFailure(new AuthApiError("conflict", 409, "A user with this email already exists"));
+        }
+      }
+      if (user === null) trustedFailure(new AuthApiError("conflict", 409, "OAuth account could not be created"));
+      if (created !== null) {
+        const roles = await transaction.roles.list({ now });
+        for (const key of this.defaultRoleKeys) {
+          const role = roles.find((candidate) => candidate.key === key);
+          if (role === undefined) trustedFailure(new AuthConfigurationError("configured default role is missing"));
+          await transaction.authorization.assignRole({ user_id: user.id, role_id: role.id }, { now });
+        }
       }
     }
-    let identity: Identity;
-    try {
-      identity = await transaction.identities.create({
-        user_id: user.id,
-        provider: profile.provider,
-        provider_subject: profile.subject,
-        email: profile.email,
-        identity_data: profile.claims,
-      }, { now });
-    } catch (error) {
-      const mapped = mapIdentityMutationError(error);
-      if (mapped !== null) trustedFailure(mapped);
-      throw error;
+    const createdIdentity = await transaction.identities.createIfAvailable({
+      user_id: user.id,
+      provider: profile.provider,
+      provider_subject: profile.subject,
+      email: profile.email,
+      identity_data: profile.claims,
+    }, { now });
+    if (createdIdentity === null) {
+      trustedFailure(new AuthApiError("identity_already_linked", 409, "This login identity is already linked"));
     }
+    const identity = safeRepositoryIdentity(createdIdentity);
     if (emailAutoLinked) {
       await transaction.operations.appendAudit({
         actor_user_id: user.id,

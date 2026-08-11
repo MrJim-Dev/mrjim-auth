@@ -132,6 +132,30 @@ retry. Provider-subject sign-in, fresh-session signed linking, collision
 rejection, verified-email-only opt-in auto-linking, safe identity projection,
 redacted audit events, and final-login-method unlink protection are included.
 
+Task 7 Fix Pass 1 closes the independent review findings. Fresh-session status
+and state creation now share a lock-scoped transaction; the originating session
+UUID is durably persisted inside the existing encrypted state payload and is
+revalidated under lock during callback and direct linking. Verified-email
+matches are locked including soft-deleted rows, with banned/deleted rejection
+before identity or callback-code writes. Every OAuth provider/repository call
+uses the hardened adapter boundary, and private transaction results plus
+conflict-returning PostgreSQL inserts prevent arbitrary thrown or returned
+adapter values from selecting public errors. Returned identities are validated
+and copied into safe projections before they can reach service results. OAuth
+user creation now resolves and assigns configured default roles atomically and
+rolls back when a role is missing. State-only callbacks recover default or
+alternate exact redirects; the route requires only provider `code` and
+`state`.
+
+OIDC issuer configuration and provider construction require HTTPS. A local
+self-hosted HTTPS fixture now verifies real discovery, token exchange, PKCE,
+redirect/state/nonce binding, issuer/audience/sub claims, ID-token signatures,
+and JWKS without external network access. OAuth HMAC/encryption material must
+contain at least 32 decoded bytes, using canonical unpadded base64url strings or
+direct `Uint8Array` values. Fix Pass 1 passed 51 focused tests, five selected
+PostgreSQL race tests, 45 provider/export/migration tests, and the full 188-test
+suite. Independent re-review is pending; approval is not claimed.
+
 The forward-only `0005_oauth_callback` migration is required because the
 immutable `0001–0004` `one_time_tokens_purpose_check` cannot accept the new
 durable callback purpose. It adds only the new purpose and its `<= 60 seconds`
@@ -177,8 +201,10 @@ dependency (MIT; project `panva/openid-client`) for discovery and validated
 authorization-code exchange. Its exact-pinned `oauth4webapi@3.8.6` transitive
 dependency is also MIT-licensed and project-owned by `panva/oauth4webapi`.
 Tests inject deterministic provider adapters and use disposable local
-PostgreSQL; no live Google, hosted OIDC, paid mail, Redis, Docker, remote
-database, or paid SaaS service is required.
+PostgreSQL. Fix Pass 1 additionally uses a local Node.js HTTPS OIDC server with
+the existing pinned `jose` dependency to exercise discovery and JWKS/signature
+validation. No live Google, hosted OIDC, paid mail, Redis, Docker, remote
+database, external network, or paid SaaS service is required.
 
 ## Task progress
 
@@ -190,7 +216,7 @@ database, or paid SaaS service is required.
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
-| 7. OAuth and identities | Complete — implementation handoff | Focused RED/GREEN, provider verifier, migration, package-boundary, full-suite, build, typecheck, lint, docs, frozen-install, and diff evidence recorded in Task 7 report |
+| 7. OAuth and identities | Fix Pass 1 complete — re-review pending | Pass-1 RED/GREEN, session/user races, local HTTPS OIDC protocol, provider/export/migration, 188-test full suite, package, and gate evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Pending | Not run |
 | 9. HTTP and OpenAPI | Pending | Not run |
 | 10. Browser client | Pending | Not run |
@@ -219,13 +245,13 @@ review run, then passed within seven seconds when rerun with a bounded
 30-second timeout. The controller's plain `pnpm test` run passed 156/156. A
 per-test timeout should be considered during Task 14 release hardening.
 
-Task 7 blockers: none. The independent reviewer is intentionally left to the
-main controller after this implementer handoff; no paid or hosted service is
-needed for the remaining review.
+Task 7 Fix Pass 1 blockers: none. Independent re-review is intentionally left
+to the controller after this handoff; the status does not claim approval. No
+paid or hosted service is needed for review or operation.
 
 ## Remaining work
 
-Implement Tasks 7-14
+Implement Tasks 8-14
 with independent review after each task and complete the whole-branch review
 and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement

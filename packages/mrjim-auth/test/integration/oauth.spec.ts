@@ -6,9 +6,10 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import type { AuthRepository, KeyProvider } from "../../src/shared/contracts.js";
+import { AuthApiError, AuthConfigurationError } from "../../src/shared/errors.js";
 import { migrate } from "../../src/postgres/migrate.js";
 import { createPostgresAdapter, type PostgresAdapter } from "../../src/postgres/adapter.js";
-import { sanitizeIdentityData, uuidSchema, type Identity, type User } from "../../src/shared/types.js";
+import { roleKeySchema, sanitizeIdentityData, uuidSchema, type Identity, type User, type UUID } from "../../src/shared/types.js";
 import { SessionService } from "../../src/server/sessions.js";
 import { TokenService } from "../../src/server/tokens.js";
 import {
@@ -17,13 +18,14 @@ import {
   type OAuthProvider,
   type OAuthProviderProfile,
 } from "../../src/server/oauth-providers.js";
-import { OAuthService } from "../../src/server/oauth.js";
+import { OAuthService, type OAuthServiceOptions } from "../../src/server/oauth.js";
 import { callbackRoute, providersRoute } from "../../src/server/routes/oauth.js";
 
 const NOW = new Date("2026-08-11T06:00:00.000Z");
 const CALLBACK = "https://project.example.com/auth/callback";
 const ALT_CALLBACK = "https://project.example.com/auth/alternate";
 const TOKEN_HASH_KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
+const ENCRYPTION_KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 41);
 
 type DisposablePostgres = {
   readonly root: string;
@@ -144,6 +146,92 @@ function deterministicProvider(overrides: Partial<OAuthProvider> = {}): OAuthPro
       return profile();
     },
     ...overrides,
+  };
+}
+
+type TestOAuthServiceOptions = {
+  readonly repository?: AuthRepository;
+  readonly provider?: OAuthProvider;
+  readonly allowVerifiedEmailAutoLink?: boolean;
+  readonly defaultRoleKeys?: readonly string[];
+  readonly allowedRedirects?: readonly string[];
+};
+
+function createOAuthService(options: TestOAuthServiceOptions = {}): OAuthService {
+  const currentRepository = options.repository ?? requireRepository();
+  const { sessions } = createServices(currentRepository);
+  return new OAuthService({
+    repository: currentRepository,
+    sessions,
+    providers: [options.provider ?? deterministicProvider()],
+    tokenHashKey: TOKEN_HASH_KEY,
+    encryptionKey: ENCRYPTION_KEY,
+    allowedRedirects: options.allowedRedirects ?? [CALLBACK, ALT_CALLBACK],
+    allowVerifiedEmailAutoLink: options.allowVerifiedEmailAutoLink ?? false,
+    defaultRoleKeys: options.defaultRoleKeys ?? [],
+    clock: () => now,
+  } as OAuthServiceOptions & { readonly defaultRoleKeys: readonly string[] });
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let release: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, resolve: () => release?.() };
+}
+
+async function latestSessionId(userId: UUID): Promise<UUID> {
+  const row = await disposable?.pool.query<{ id: string }>(
+    "SELECT id::text FROM auth.sessions WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
+    [userId],
+  );
+  return uuidSchema.parse(row?.rows[0]?.id);
+}
+
+function hostileRepository(
+  base: PostgresAdapter,
+  operation: "state" | "identity" | "identity_value",
+): AuthRepository {
+  const fail = async (): Promise<never> => {
+    if (operation === "state") throw new AuthApiError("conflict", 409, "adapter-controlled OAuth error");
+    throw { code: "identity_exists", message: "adapter-controlled identity error" };
+  };
+  const wrap = (transaction: AuthRepository): AuthRepository => ({
+    ...transaction,
+    oauthStates: operation === "state"
+      ? { ...transaction.oauthStates, create: fail }
+      : transaction.oauthStates,
+    identities: operation === "identity"
+      ? {
+          ...transaction.identities,
+          create: fail,
+          createIfAvailable: fail,
+        } as AuthRepository["identities"]
+      : operation === "identity_value"
+        ? {
+            ...transaction.identities,
+            createIfAvailable: async () => new AuthApiError(
+              "conflict",
+              409,
+              "adapter-controlled identity value",
+            ) as unknown as Identity,
+          }
+      : transaction.identities,
+  });
+  return {
+    ...base,
+    oauthStates: operation === "state" ? { ...base.oauthStates, create: fail } : base.oauthStates,
+    transaction: (callback) => base.transaction((transaction) => callback(wrap(transaction))),
+  };
+}
+
+function hostileTransactionValueRepository(base: PostgresAdapter): AuthRepository {
+  return {
+    ...base,
+    transaction: async <T>(): Promise<T> => new AuthApiError(
+      "conflict",
+      409,
+      "adapter-controlled transaction value",
+    ) as unknown as T,
   };
 }
 
@@ -425,5 +513,321 @@ describe("Task 7 OAuth and identity safety", () => {
       clock: () => now,
     });
     expect((await healthyService.exchangeCode({ code: callback.code, codeVerifier: authorized.codeVerifier, redirectTo: CALLBACK })).data).not.toBeNull();
+  });
+
+  it("resolves default and alternate persisted redirects from state without callback redirect_to", async () => {
+    const service = createOAuthService();
+    const defaultFlow = unwrap(await service.authorize({ provider: "google", redirectTo: CALLBACK }));
+    const defaultCallback = unwrap(await service.callback({
+      provider: "google",
+      code: "default-provider-code",
+      state: defaultFlow.state,
+    }));
+    expect(defaultCallback.redirect).toBe(CALLBACK);
+
+    const alternateFlow = unwrap(await service.authorize({ provider: "google", redirectTo: ALT_CALLBACK }));
+    expect(await service.callback({
+      provider: "google",
+      code: "alternate-provider-code",
+      state: alternateFlow.state,
+      redirectTo: CALLBACK,
+    })).toMatchObject({ data: null, error: { code: "oauth_state_invalid" } });
+
+    const response = await callbackRoute(
+      service,
+      "google",
+      new Request(`https://project.example.com/callback?code=alternate-provider-code&state=${encodeURIComponent(alternateFlow.state)}`),
+    );
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toMatch(/^https:\/\/project\.example\.com\/auth\/alternate\?code=/);
+  });
+
+  it("makes fresh-session validation and linking-state creation atomic against revocation", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const racingProvider = deterministicProvider({
+      authorizationUrl: async (input) => {
+        entered.resolve();
+        await release.promise;
+        return `https://provider.example/authorize?state=${input.state}&code_challenge=${input.codeChallenge}&code_challenge_method=S256`;
+      },
+    });
+    const service = createOAuthService({ provider: racingProvider });
+    const signedIn = unwrap(await service.signInFromProfile(profile({
+      subject: "state-race-owner",
+      email: "state-race-owner@example.com",
+    })));
+    const before = await disposable?.pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM auth.oauth_states WHERE linking_user_id = $1 AND consumed_at IS NULL",
+      [signedIn.user.id],
+    );
+    const attempt = service.authorize({
+      provider: "google",
+      redirectTo: CALLBACK,
+      flow: "link_identity",
+      subject: { session: signedIn.session },
+    });
+    await entered.promise;
+    await requireRepository().sessions.revokeSession(await latestSessionId(signedIn.user.id), { now });
+    release.resolve();
+    expect(await attempt).toMatchObject({ data: null, error: { code: "unauthorized" } });
+    const after = await disposable?.pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM auth.oauth_states WHERE linking_user_id = $1 AND consumed_at IS NULL",
+      [signedIn.user.id],
+    );
+    expect(after?.rows[0]?.count).toBe(before?.rows[0]?.count);
+  });
+
+  it("revalidates the persisted originating session during a revocation callback race", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const linkedSubject = "callback-race-linked-subject";
+    const service = createOAuthService({
+      provider: deterministicProvider({
+        exchange: async () => {
+          entered.resolve();
+          await release.promise;
+          return profile({ subject: linkedSubject, email: "callback-race-linked@example.com" });
+        },
+      }),
+    });
+    const signedIn = unwrap(await service.signInFromProfile(profile({
+      subject: "callback-race-owner",
+      email: "callback-race-owner@example.com",
+    })));
+    const authorization = unwrap(await service.authorize({
+      provider: "google",
+      redirectTo: CALLBACK,
+      flow: "link_identity",
+      subject: { session: signedIn.session },
+    }));
+    const attempt = service.callback({ provider: "google", code: "provider-code", state: authorization.state });
+    await entered.promise;
+    await requireRepository().sessions.revokeSession(await latestSessionId(signedIn.user.id), { now });
+    release.resolve();
+    expect(await attempt).toMatchObject({ data: null, error: { code: "unauthorized" } });
+    const state = await disposable?.pool.query<{ consumed_at: Date | null }>(
+      "SELECT consumed_at FROM auth.oauth_states WHERE linking_user_id = $1 ORDER BY created_at DESC LIMIT 1",
+      [signedIn.user.id],
+    );
+    expect(state?.rows[0]?.consumed_at).not.toBeNull();
+    expect((await disposable?.pool.query(
+      "SELECT id FROM auth.identities WHERE provider = 'google' AND provider_subject = $1",
+      [linkedSubject],
+    ))?.rows).toHaveLength(0);
+    expect((await disposable?.pool.query(
+      "SELECT id FROM auth.one_time_tokens WHERE user_id = $1 AND purpose = 'oauth_callback' AND consumed_at IS NULL",
+      [signedIn.user.id],
+    ))?.rows).toHaveLength(0);
+  });
+
+  it("rejects an expired originating session before callback identity or code writes", async () => {
+    const linkedSubject = "expired-link-subject";
+    const service = createOAuthService({
+      provider: deterministicProvider({
+        exchange: async () => profile({ subject: linkedSubject, email: "expired-link@example.com" }),
+      }),
+    });
+    const signedIn = unwrap(await service.signInFromProfile(profile({
+      subject: "expired-link-owner",
+      email: "expired-link-owner@example.com",
+    })));
+    const authorization = unwrap(await service.authorize({
+      provider: "google",
+      redirectTo: CALLBACK,
+      flow: "link_identity",
+      subject: { session: signedIn.session },
+    }));
+    await disposable?.pool.query(
+      "UPDATE auth.sessions SET expires_at = $2 WHERE id = $1",
+      [await latestSessionId(signedIn.user.id), new Date(NOW.getTime() + 1_000)],
+    );
+    now = new Date(NOW.getTime() + 2_000);
+    try {
+      expect(await service.callback({ provider: "google", code: "provider-code", state: authorization.state }))
+        .toMatchObject({ data: null, error: { code: "unauthorized" } });
+    } finally {
+      now = NOW;
+    }
+    expect((await disposable?.pool.query(
+      "SELECT id FROM auth.identities WHERE provider = 'google' AND provider_subject = $1",
+      [linkedSubject],
+    ))?.rows).toHaveLength(0);
+    expect((await disposable?.pool.query(
+      "SELECT id FROM auth.one_time_tokens WHERE user_id = $1 AND purpose = 'oauth_callback'",
+      [signedIn.user.id],
+    ))?.rows).toHaveLength(0);
+  });
+
+  it.each(["banned", "deleted"] as const)(
+    "rejects a committed %s verified-email account before callback mutation",
+    async (accountState) => {
+      const email = `${accountState}-callback-account@example.com`;
+      const user = await requireRepository().users.create({ email });
+      const service = createOAuthService({
+        allowVerifiedEmailAutoLink: true,
+        provider: deterministicProvider({
+          exchange: async () => profile({
+            subject: `${accountState}-callback-subject`,
+            email,
+            emailVerified: true,
+          }),
+        }),
+      });
+      const authorization = unwrap(await service.authorize({ provider: "google", redirectTo: CALLBACK }));
+      if (accountState === "banned") {
+        await requireRepository().users.update(user.id, { banned_until: new Date(NOW.getTime() + 60 * 60 * 1000) });
+      } else {
+        await requireRepository().users.softDelete(user.id, NOW);
+      }
+      expect(await service.callback({ provider: "google", code: "provider-code", state: authorization.state }))
+        .toMatchObject({ data: null, error: { code: "unauthorized" } });
+      expect((await disposable?.pool.query(
+        "SELECT id FROM auth.identities WHERE provider = 'google' AND provider_subject = $1",
+        [`${accountState}-callback-subject`],
+      ))?.rows).toHaveLength(0);
+      expect((await disposable?.pool.query(
+        "SELECT id FROM auth.one_time_tokens WHERE user_id = $1 AND purpose = 'oauth_callback'",
+        [user.id],
+      ))?.rows).toHaveLength(0);
+    },
+  );
+
+  it("fails closed when a ban commits while a verified-email provider exchange is in flight", async () => {
+    const email = "ban-callback-race@example.com";
+    const user = await requireRepository().users.create({ email });
+    const entered = deferred();
+    const release = deferred();
+    const providerSubject = "ban-callback-race-subject";
+    const service = createOAuthService({
+      allowVerifiedEmailAutoLink: true,
+      provider: deterministicProvider({
+        exchange: async () => {
+          entered.resolve();
+          await release.promise;
+          return profile({ subject: providerSubject, email, emailVerified: true });
+        },
+      }),
+    });
+    const authorization = unwrap(await service.authorize({ provider: "google", redirectTo: CALLBACK }));
+    const attempt = service.callback({ provider: "google", code: "provider-code", state: authorization.state });
+    await entered.promise;
+    await requireRepository().users.update(user.id, { banned_until: new Date(NOW.getTime() + 60 * 60 * 1000) });
+    release.resolve();
+    expect(await attempt).toMatchObject({ data: null, error: { code: "unauthorized" } });
+    expect((await disposable?.pool.query(
+      "SELECT id FROM auth.identities WHERE provider = 'google' AND provider_subject = $1",
+      [providerSubject],
+    ))?.rows).toHaveLength(0);
+  });
+
+  it("sanitizes hostile provider and repository errors and returned adapter values", async () => {
+    const throwingProvider = deterministicProvider({
+      authorizationUrl: async () => { throw new AuthApiError("conflict", 409, "provider-controlled error"); },
+    });
+    expect(await createOAuthService({ provider: throwingProvider }).authorize({ provider: "google", redirectTo: CALLBACK }))
+      .toMatchObject({ data: null, error: { code: "oauth_provider_error", status: 502 } });
+
+    const returnedErrorProvider = deterministicProvider({
+      authorizationUrl: async () => new AuthApiError("conflict", 409, "provider-controlled value") as unknown as string,
+    });
+    expect(await createOAuthService({ provider: returnedErrorProvider }).authorize({ provider: "google", redirectTo: CALLBACK }))
+      .toMatchObject({ data: null, error: { code: "oauth_provider_error", status: 502 } });
+
+    expect(await createOAuthService({
+      repository: hostileRepository(requireRepository(), "state"),
+    }).authorize({ provider: "google", redirectTo: CALLBACK })).toMatchObject({
+      data: null,
+      error: { code: "internal_error", status: 500 },
+    });
+
+    expect(await createOAuthService({
+      repository: hostileRepository(requireRepository(), "identity"),
+    }).signInFromProfile(profile({ subject: "hostile-identity-subject", email: null }))).toMatchObject({
+      data: null,
+      error: { code: "internal_error", status: 500 },
+    });
+
+    expect(await createOAuthService({
+      repository: hostileRepository(requireRepository(), "identity_value"),
+    }).signInFromProfile(profile({ subject: "hostile-identity-value", email: null }))).toMatchObject({
+      data: null,
+      error: { code: "internal_error", status: 500 },
+    });
+
+    expect(await createOAuthService({
+      repository: hostileTransactionValueRepository(requireRepository()),
+    }).authorize({ provider: "google", redirectTo: CALLBACK })).toMatchObject({
+      data: null,
+      error: { code: "internal_error", status: 500 },
+    });
+
+    const hostileProfile = { ...profile({ subject: "hostile-returned-profile", email: null }) };
+    Object.defineProperty(hostileProfile, "subject", {
+      enumerable: true,
+      get: () => { throw new AuthApiError("conflict", 409, "provider-controlled profile getter"); },
+    });
+    expect(await createOAuthService().signInFromProfile(hostileProfile)).toMatchObject({
+      data: null,
+      error: { code: "oauth_provider_error", status: 502 },
+    });
+  });
+
+  it("assigns configured default roles to OAuth-created users and rolls back missing-role creation", async () => {
+    const role = await requireRepository().roles.create({
+      key: roleKeySchema.parse("oauth_member"),
+      name: "OAuth Member",
+      rank: 2,
+    });
+    const service = createOAuthService({ defaultRoleKeys: [role.key] });
+    const created = unwrap(await service.signInFromProfile(profile({
+      subject: "oauth-default-role-subject",
+      email: "oauth-default-role@example.com",
+    })));
+    const assignments = await disposable?.pool.query<{ role_id: string }>(
+      "SELECT role_id::text FROM auth.user_roles WHERE user_id = $1",
+      [created.user.id],
+    );
+    expect(assignments?.rows).toEqual([{ role_id: role.id }]);
+
+    const missingEmail = "oauth-missing-role@example.com";
+    const missingSubject = "oauth-missing-role-subject";
+    const missingRoleService = createOAuthService({ defaultRoleKeys: ["missing_oauth_role"] });
+    await expect(missingRoleService.signInFromProfile(profile({
+      subject: missingSubject,
+      email: missingEmail,
+    }))).rejects.toBeInstanceOf(AuthConfigurationError);
+    expect((await disposable?.pool.query(
+      "SELECT id FROM auth.users WHERE email_normalized = $1",
+      [missingEmail],
+    ))?.rows).toHaveLength(0);
+    expect((await disposable?.pool.query(
+      "SELECT id FROM auth.identities WHERE provider_subject = $1",
+      [missingSubject],
+    ))?.rows).toHaveLength(0);
+  });
+
+  it("requires at least 32 decoded bytes for OAuth HMAC and encryption keys", () => {
+    const { sessions } = createServices();
+    const base = {
+      repository: requireRepository(),
+      sessions,
+      providers: [deterministicProvider()],
+      allowedRedirects: [CALLBACK],
+      clock: () => now,
+    } as const;
+    for (const [label, key] of [
+      ["one byte", Uint8Array.of(1)],
+      ["31 bytes", new Uint8Array(31)],
+      ["one decoded byte", "YQ"],
+    ] as const) {
+      expect(() => new OAuthService({ ...base, tokenHashKey: key, encryptionKey: ENCRYPTION_KEY }), label).toThrow(AuthConfigurationError);
+      expect(() => new OAuthService({ ...base, tokenHashKey: TOKEN_HASH_KEY, encryptionKey: key }), label).toThrow(AuthConfigurationError);
+    }
+    expect(() => new OAuthService({
+      ...base,
+      tokenHashKey: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      encryptionKey: "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    })).not.toThrow();
   });
 });

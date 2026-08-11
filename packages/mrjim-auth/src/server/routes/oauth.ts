@@ -63,10 +63,6 @@ export async function callbackRoute(service: OAuthService, provider: string, req
     provider,
     code: query(request, "code") ?? "",
     state: query(request, "state") ?? "",
-    ...(query(request, "redirect_to") === null ? {} : { redirectTo: query(request, "redirect_to") }),
-    ...(query(request, "code_challenge_method") === null
-      ? {}
-      : { codeChallengeMethod: query(request, "code_challenge_method") as "S256" | "plain" }),
   });
   if (callback.error !== null) return resultResponse(callback);
   return new Response(null, {

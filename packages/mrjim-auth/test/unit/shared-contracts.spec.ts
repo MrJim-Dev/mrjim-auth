@@ -69,7 +69,9 @@ const completeRepository = {
     findById: asyncMethod,
     findByIdForUpdate: asyncMethod,
     findByNormalizedEmail: asyncMethod,
+    findByNormalizedEmailForUpdate: asyncMethod,
     create: asyncMethod,
+    createIfAvailable: asyncMethod,
     update: asyncMethod,
     softDelete: asyncMethod,
   },
@@ -77,6 +79,7 @@ const completeRepository = {
     findByProviderSubject: asyncMethod,
     listByUserId: asyncMethod,
     create: asyncMethod,
+    createIfAvailable: asyncMethod,
     deleteById: asyncMethod,
   },
   passwordCredentials: {
@@ -144,8 +147,8 @@ const validServerOptions = (): TestServerOptions => ({
     keys: { active: "private-key-material" },
   },
   secrets: {
-    tokenHashKey: "token-hash-key-material",
-    encryptionKey: "encryption-key-material",
+    tokenHashKey: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    encryptionKey: "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
   },
   email: { send: async () => undefined },
   redirects: {
@@ -649,6 +652,19 @@ describe("repository and URL boundaries", () => {
     expect(() => authServerOptionsSchema.safeParse(malformedOidc)).not.toThrow();
     expect(authServerOptionsSchema.safeParse(malformedOidc).success).toBe(false);
 
+    const insecureOidc = validServerOptions();
+    insecureOidc.environment = "development";
+    Object.assign(insecureOidc, {
+      oauth: {
+        oidc: {
+          clientId: "oidc-client",
+          clientSecret: "oidc-secret",
+          issuer: "http://127.0.0.1:4444",
+        },
+      },
+    });
+    expect(authServerOptionsSchema.safeParse(insecureOidc).success).toBe(false);
+
     const identifierIssuer = validServerOptions();
     identifierIssuer.signingKeys.issuer = "auth-prod-issuer";
     expect(authServerOptionsSchema.safeParse(identifierIssuer).success).toBe(true);
@@ -739,6 +755,20 @@ describe("validated configuration", () => {
     const missingEncryptionKey = validServerOptions();
     missingEncryptionKey.secrets.encryptionKey = "";
     expect(authServerOptionsSchema.safeParse(missingEncryptionKey).success).toBe(false);
+
+    for (const field of ["tokenHashKey", "encryptionKey"] as const) {
+      const oneByte = validServerOptions();
+      oneByte.secrets[field] = "YQ";
+      expect(authServerOptionsSchema.safeParse(oneByte).success, `${field} one byte`).toBe(false);
+
+      const thirtyOneBytes = validServerOptions();
+      thirtyOneBytes.secrets[field] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHg";
+      expect(authServerOptionsSchema.safeParse(thirtyOneBytes).success, `${field} 31 bytes`).toBe(false);
+
+      const thirtyTwoBytes = validServerOptions();
+      thirtyTwoBytes.secrets[field] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+      expect(authServerOptionsSchema.safeParse(thirtyTwoBytes).success, `${field} 32 bytes`).toBe(true);
+    }
   });
 
   it("allows explicitly non-production HTTP development URLs", () => {

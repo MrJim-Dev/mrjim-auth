@@ -3,8 +3,11 @@ import {
   buildAuthorizationUrl,
   calculatePKCECodeChallenge,
   ClientSecretPost,
+  customFetch,
   discovery,
+  enableNonRepudiationChecks,
   randomNonce,
+  type CustomFetch,
   type Configuration,
 } from "openid-client";
 import { sanitizeIdentityData, type SafeIdentityData } from "../shared/types.js";
@@ -30,7 +33,10 @@ export interface OAuthProviderAuthorizationInput {
 /** Inputs supplied by OAuthService to a provider's code-exchange adapter. */
 export interface OAuthProviderExchangeInput {
   readonly code: string;
+  /** State returned by the provider callback. */
   readonly state: string;
+  /** Independently persisted state expectation. */
+  readonly expectedState: string;
   readonly redirectUri: string;
   readonly codeVerifier: string;
   readonly nonce: string;
@@ -80,6 +86,8 @@ interface OidcProviderOptions {
   readonly clientSecret: string;
   readonly issuer: string;
   readonly scopes?: readonly string[];
+  /** Optional project-owned fetch implementation, useful for private/self-hosted issuers. */
+  readonly customFetch?: CustomFetch;
 }
 
 function validString(value: unknown, label: string): string {
@@ -97,8 +105,8 @@ function asIssuer(value: unknown): string {
   } catch {
     throw new TypeError("OIDC issuer must be an absolute URL");
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new TypeError("OIDC issuer must use http or https");
+  if (parsed.protocol !== "https:") {
+    throw new TypeError("OIDC issuer must use HTTPS");
   }
   if (parsed.hash !== "" || parsed.search !== "") {
     throw new TypeError("OIDC issuer must not contain a query or fragment");
@@ -168,6 +176,7 @@ export class OidcOAuthProvider implements OAuthProvider {
   };
 
   private readonly clientSecret: string;
+  private readonly providerFetch: CustomFetch | undefined;
   private configurationPromise: Promise<Configuration> | undefined;
 
   constructor(options: OidcProviderOptions) {
@@ -175,6 +184,7 @@ export class OidcOAuthProvider implements OAuthProvider {
     this.clientId = validString(options.clientId, "OIDC client ID");
     this.clientSecret = validString(options.clientSecret, "OIDC client secret");
     this.issuer = asIssuer(options.issuer);
+    this.providerFetch = options.customFetch;
     this.scopes = Object.freeze([...(options.scopes ?? ["openid", "email", "profile"])]) as readonly string[];
     if (!this.scopes.includes("openid")) {
       throw new TypeError("OIDC scopes must include openid");
@@ -183,11 +193,15 @@ export class OidcOAuthProvider implements OAuthProvider {
 
   /** Performs issuer discovery lazily so construction is deterministic/offline. */
   protected async configuration(): Promise<Configuration> {
+    const discoveryOptions = this.providerFetch === undefined
+      ? { execute: [enableNonRepudiationChecks] }
+      : { execute: [enableNonRepudiationChecks], [customFetch]: this.providerFetch };
     this.configurationPromise ??= discovery(
       new URL(this.issuer),
       this.clientId,
       { client_secret: this.clientSecret },
       ClientSecretPost(this.clientSecret),
+      discoveryOptions,
     );
     return this.configurationPromise;
   }
@@ -223,7 +237,7 @@ export class OidcOAuthProvider implements OAuthProvider {
     responseUrl.searchParams.set("state", input.state);
     try {
       const tokens = await authorizationCodeGrant(config, responseUrl, {
-        expectedState: input.state,
+        expectedState: input.expectedState,
         expectedNonce: input.nonce,
         pkceCodeVerifier: input.codeVerifier,
         idTokenExpected: true,
