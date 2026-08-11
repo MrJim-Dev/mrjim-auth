@@ -120,6 +120,13 @@ sensitive identity bookkeeping captures the required JavaScript intrinsics at
 module initialization so a callback cannot change those decisions by
 temporarily replacing mutable prototype methods while it executes.
 
+Synchronous server construction accepts only descriptor-readable own data for
+SDK-owned configuration records and dense own-data arrays; accessors,
+thenables, inherited shadowing, sparse arrays, hostile proxies, and malformed
+byte material fail closed. OAuth provider, OAuth redirect, scope, and default
+role-key collections are bounded to 128 entries; broader SDK configuration
+snapshots are bounded to 100,000 own keys and 32 nesting levels.
+
 ## 6. Package initialization
 
 ### Browser or isomorphic client

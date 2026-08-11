@@ -3,8 +3,15 @@ import type { AuthRepository, KeyMaterial, KeyProvider } from "../shared/contrac
 import { authServerOptionsSchema, type AuthServerOptions } from "../shared/config.js";
 import { AuthConfigurationError } from "../shared/errors.js";
 import {
-  boundaryHasThen,
+  assertBoundaryObject,
+  boundaryIsArray,
   boundaryOwnDataProperty,
+  captureBoundaryBytes,
+  captureBoundaryDenseArray,
+  createBoundaryMap,
+  boundaryMapGetValue,
+  boundaryMapSetValue,
+  captureBoundaryStringArray,
 } from "./callback-boundary.js";
 import {
   AuthorizationService,
@@ -23,6 +30,7 @@ import {
   captureAuthServerMailer,
   captureAuthServerRateLimiter,
   captureAuthServerRepository,
+  captureAuthServerServiceOverrides,
   captureAuthServerServices,
   type AuthServerRuntimeOptions,
 } from "./auth-server.js";
@@ -57,15 +65,9 @@ const SERVER_OPTION_MEMBERS = [
 ] as const;
 
 function dataOptionMember(source: object, member: string): unknown {
-  let descriptor: PropertyDescriptor | undefined;
-  try {
-    descriptor = Object.getOwnPropertyDescriptor(source, member);
-  } catch {
-    throw new AuthConfigurationError(`auth server ${member} must be a data property`);
-  }
-  if (descriptor === undefined) return undefined;
-  if (!("value" in descriptor)) throw new AuthConfigurationError(`auth server ${member} must be a data property`);
-  return descriptor.value;
+  const property = boundaryOwnDataProperty(source, member);
+  if (!property.valid) throw new AuthConfigurationError(`auth server ${member} must be a data property`);
+  return property.present ? property.value : undefined;
 }
 
 const configObjectGetPrototypeOf = Object.getPrototypeOf;
@@ -74,16 +76,34 @@ const configObjectGetOwnPropertySymbols = Object.getOwnPropertySymbols;
 const configObjectDefineProperty = Object.defineProperty;
 const configObjectCreate = Object.create;
 const configObjectFreeze = Object.freeze;
-const configArrayIsArray = Array.isArray;
+const configObjectPrototype = Object.prototype;
+const configUint8Array = Uint8Array;
 const CONFIG_SNAPSHOT_MAX_DEPTH = 32;
 const CONFIG_SNAPSHOT_MAX_KEYS = 100_000;
 const configCryptoKeyConstructor = (globalThis as { readonly CryptoKey?: unknown }).CryptoKey;
 
-function isConfigPlainRecord(value: unknown): value is object {
-  if (value === null || typeof value !== "object" || configArrayIsArray(value)) return false;
+function configOwnPropertyNames(value: object, label: string): string[] {
   try {
+    return configObjectGetOwnPropertyNames(value);
+  } catch {
+    throw new AuthConfigurationError(`${label} must be a data record`);
+  }
+}
+
+function configOwnPropertySymbols(value: object, label: string): symbol[] {
+  try {
+    return configObjectGetOwnPropertySymbols(value);
+  } catch {
+    throw new AuthConfigurationError(`${label} must be a data record`);
+  }
+}
+
+function isConfigPlainRecord(value: unknown): value is object {
+  if (value === null || typeof value !== "object") return false;
+  try {
+    if (boundaryIsArray(value, "configuration value")) return false;
     const prototype = configObjectGetPrototypeOf(value);
-    return prototype === Object.prototype || prototype === null;
+    return prototype === configObjectPrototype || prototype === null;
   } catch {
     return false;
   }
@@ -91,26 +111,19 @@ function isConfigPlainRecord(value: unknown): value is object {
 
 function rejectDangerousConfigValue(value: unknown, label: string): void {
   if (typeof value === "function") throw new AuthConfigurationError(`${label} must not be executable`);
-  if (value !== null && typeof value === "object" && boundaryHasThen(value)) {
-    throw new AuthConfigurationError(`${label} must not be thenable`);
+  if (value !== null && typeof value === "object") {
+    assertBoundaryObject(value, label);
   }
 }
 
 function assertConfigRecord(value: unknown, label: string): asserts value is object {
   if (!isConfigPlainRecord(value)) throw new AuthConfigurationError(`${label} must be a plain data record`);
-  if (boundaryHasThen(value)) throw new AuthConfigurationError(`${label} must not be thenable`);
-  let names: string[];
-  try {
-    names = configObjectGetOwnPropertyNames(value);
-    if (configObjectGetOwnPropertySymbols(value).length > 0) {
-      throw new AuthConfigurationError(`${label} must not contain symbol properties`);
-    }
-  } catch (error) {
-    if (error instanceof AuthConfigurationError) throw error;
-    throw new AuthConfigurationError(`${label} must be a data record`);
-  }
+  const names = configOwnPropertyNames(value, label);
+  if (configOwnPropertySymbols(value, label).length > 0) throw new AuthConfigurationError(`${label} must not contain symbol properties`);
   if (names.length > CONFIG_SNAPSHOT_MAX_KEYS) throw new AuthConfigurationError(`${label} is too large`);
-  for (const name of names) {
+  for (let index = 0; index < names.length; index += 1) {
+    const name = names[index];
+    if (name === undefined) throw new AuthConfigurationError(`${label} is malformed`);
     const property = boundaryOwnDataProperty(value, name);
     if (!property.valid || !property.present) throw new AuthConfigurationError(`${label}.${name} must be a data property`);
     rejectDangerousConfigValue(property.value, `${label}.${name}`);
@@ -126,10 +139,7 @@ function configMember(value: object, key: string, label: string, required = true
 }
 
 function snapshotBytes(value: unknown, label: string): Uint8Array {
-  if (!(value instanceof Uint8Array) || boundaryHasThen(value)) {
-    throw new AuthConfigurationError(`${label} must be non-empty key material`);
-  }
-  const copy = Uint8Array.from(value);
+  const copy = captureBoundaryBytes(value, label, 1);
   if (copy.byteLength === 0) throw new AuthConfigurationError(`${label} must be non-empty key material`);
   return copy;
 }
@@ -147,30 +157,28 @@ function snapshotOwnedValue(value: unknown, label: string, depth = 0): unknown {
   if (depth > CONFIG_SNAPSHOT_MAX_DEPTH) throw new AuthConfigurationError(`${label} is too deeply nested`);
   if (value === null || (typeof value !== "object" && typeof value !== "function")) return value;
   if (typeof value === "function") throw new AuthConfigurationError(`${label} must not be executable`);
-  if (value instanceof Uint8Array) return snapshotBytes(value, label);
-  if (configArrayIsArray(value)) {
-    if (boundaryHasThen(value)) throw new AuthConfigurationError(`${label} must not be thenable`);
-    const lengthProperty = boundaryOwnDataProperty(value, "length");
-    if (!lengthProperty.valid || !lengthProperty.present || typeof lengthProperty.value !== "number" || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value > CONFIG_SNAPSHOT_MAX_KEYS) {
-      throw new AuthConfigurationError(`${label} must be a bounded dense array`);
-    }
-    const length = lengthProperty.value as number;
-    const names = configObjectGetOwnPropertyNames(value);
-    if (names.length !== length + 1 || names.some((name) => name !== "length" && (!/^\d+$/u.test(name) || Number(name) >= length))) {
-      throw new AuthConfigurationError(`${label} must be a bounded dense array`);
-    }
+  let isUint8Array = false;
+  try {
+    isUint8Array = value instanceof configUint8Array;
+  } catch {
+    throw new AuthConfigurationError(`${label} must be valid key material`);
+  }
+  if (isUint8Array) return snapshotBytes(value, label);
+  if (boundaryIsArray(value, label)) {
+    const values = captureBoundaryDenseArray(value, label, 0, CONFIG_SNAPSHOT_MAX_KEYS);
     const copy: unknown[] = [];
-    for (let index = 0; index < length; index += 1) {
-      const property = boundaryOwnDataProperty(value, String(index));
-      if (!property.valid || !property.present) throw new AuthConfigurationError(`${label} must be a dense array`);
-      copy.push(snapshotOwnedValue(property.value, `${label}[${index}]`, depth + 1));
+    for (let index = 0; index < values.length; index += 1) {
+      copy[index] = snapshotOwnedValue(values[index], `${label}[${index}]`, depth + 1);
     }
     return configObjectFreeze(copy);
   }
   if (isOpaqueKeyMaterial(value)) return value;
   assertConfigRecord(value, label);
   const copy = configObjectCreate(null) as Record<string, unknown>;
-  for (const name of configObjectGetOwnPropertyNames(value)) {
+  const names = configOwnPropertyNames(value, label);
+  for (let index = 0; index < names.length; index += 1) {
+    const name = names[index];
+    if (name === undefined) throw new AuthConfigurationError(`${label} is malformed`);
     const property = boundaryOwnDataProperty(value, name);
     if (!property.valid || !property.present) throw new AuthConfigurationError(`${label}.${name} must be a data property`);
     configObjectDefineProperty(copy, name, {
@@ -197,7 +205,10 @@ function snapshotKeyMaterial(value: unknown, label: string): KeyMaterial {
 function snapshotKeyMap(value: unknown, label: string): Readonly<Record<string, KeyMaterial>> {
   assertConfigRecord(value, label);
   const copy = configObjectCreate(null) as Record<string, KeyMaterial>;
-  for (const name of configObjectGetOwnPropertyNames(value)) {
+  const names = configOwnPropertyNames(value, label);
+  for (let index = 0; index < names.length; index += 1) {
+    const name = names[index];
+    if (name === undefined) throw new AuthConfigurationError(`${label} is malformed`);
     const property = boundaryOwnDataProperty(value, name);
     if (!property.valid || !property.present) throw new AuthConfigurationError(`${label}.${name} must be a data property`);
     configObjectDefineProperty(copy, name, {
@@ -207,16 +218,12 @@ function snapshotKeyMap(value: unknown, label: string): Readonly<Record<string, 
       value: snapshotKeyMaterial(property.value, `${label}.${name}`),
     });
   }
-  if (configObjectGetOwnPropertyNames(copy).length === 0) throw new AuthConfigurationError(`${label} must not be empty`);
+  if (names.length === 0) throw new AuthConfigurationError(`${label} must not be empty`);
   return configObjectFreeze(copy);
 }
 
 function snapshotStringArray(value: unknown, label: string): readonly string[] {
-  const snapshot = snapshotOwnedValue(value, label);
-  if (!configArrayIsArray(snapshot) || snapshot.some((entry) => typeof entry !== "string")) {
-    throw new AuthConfigurationError(`${label} must be a string array`);
-  }
-  return snapshot as readonly string[];
+  return captureBoundaryStringArray(value, label, 0, CONFIG_SNAPSHOT_MAX_KEYS);
 }
 
 function snapshotSecret(value: unknown, label: string): string | Uint8Array {
@@ -252,7 +259,10 @@ function snapshotRedirects(value: unknown): Record<string, unknown> {
 function snapshotAuthorization(value: unknown): Record<string, unknown> {
   assertConfigRecord(value, "authorization");
   const copy = configObjectCreate(null) as Record<string, unknown>;
-  for (const key of ["defaultRoleKeys", "protectedRoleKeys"] as const) {
+  const keys = ["defaultRoleKeys", "protectedRoleKeys"] as const;
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (key === undefined) throw new AuthConfigurationError("authorization configuration is malformed");
     const member = configMember(value, key, `authorization.${key}`, false);
     if (member !== undefined) configObjectDefineProperty(copy, key, { configurable: false, enumerable: true, writable: false, value: snapshotStringArray(member, `authorization.${key}`) });
   }
@@ -288,8 +298,11 @@ function snapshotOAuth(value: unknown): Record<string, unknown> {
 function captureConfiguredCallbacks(input: CreateAuthServerOptions): CreateAuthServerOptions {
   const source = asRecord(input);
   if (source === null) throw new AuthConfigurationError("auth server configuration must be an object");
-  const captured = Object.create(null) as Record<string, unknown>;
-  for (const member of SERVER_OPTION_MEMBERS) {
+  assertBoundaryObject(source, "auth server configuration");
+  const captured = configObjectCreate(null) as Record<string, unknown>;
+  for (let index = 0; index < SERVER_OPTION_MEMBERS.length; index += 1) {
+    const member = SERVER_OPTION_MEMBERS[index];
+    if (member === undefined) throw new AuthConfigurationError("auth server configuration is malformed");
     const value = dataOptionMember(source, member);
     if (value !== undefined) captured[member] = value;
   }
@@ -300,6 +313,8 @@ function captureConfiguredCallbacks(input: CreateAuthServerOptions): CreateAuthS
   if (authorization !== undefined) captured.authorization = snapshotAuthorization(authorization);
   const oauth = dataOptionMember(source, "oauth");
   if (oauth !== undefined) captured.oauth = snapshotOAuth(oauth);
+  const services = dataOptionMember(source, "services");
+  if (services !== undefined) captured.services = captureAuthServerServiceOverrides(services);
   captured.database = captureAuthServerRepository(dataOptionMember(source, "database") as AuthRepository);
   captured.email = captureAuthServerMailer(dataOptionMember(source, "email") as AuthServerOptions["email"]);
   const rateLimiter = dataOptionMember(source, "rateLimiter");
@@ -333,7 +348,15 @@ function secretString(value: string | Uint8Array): string {
 function keyProvider(options: AuthServerOptions): KeyProvider {
   const configured = options.signingKeys.keys;
   const activeKeyId = options.signingKeys.activeKeyId;
-  const verificationKeys = new Map<string, KeyMaterial>(Object.entries(configured));
+  const verificationKeys = createBoundaryMap<string, KeyMaterial>();
+  const names = configOwnPropertyNames(configured, "signingKeys.keys");
+  for (let index = 0; index < names.length; index += 1) {
+    const name = names[index];
+    if (name === undefined) throw new AuthConfigurationError("signingKeys.keys is malformed");
+    const property = boundaryOwnDataProperty(configured, name);
+    if (!property.valid || !property.present) throw new AuthConfigurationError(`signingKeys.keys.${name} is unavailable`);
+    boundaryMapSetValue(verificationKeys, name, property.value as KeyMaterial, "signingKeys.keys");
+  }
   return {
     getActiveKeyId: () => activeKeyId,
     getSigningKey: (keyId) => {
@@ -341,7 +364,18 @@ function keyProvider(options: AuthServerOptions): KeyProvider {
       if (material === undefined) throw new AuthConfigurationError(`signing key is not configured: ${keyId}`);
       return material;
     },
-    getVerificationKeys: () => new Map(verificationKeys),
+    getVerificationKeys: () => {
+      const copy = createBoundaryMap<string, KeyMaterial>();
+      const entries = configOwnPropertyNames(configured, "signingKeys.keys");
+      for (let index = 0; index < entries.length; index += 1) {
+        const name = entries[index];
+        if (name === undefined) throw new AuthConfigurationError("signingKeys.keys is malformed");
+        const material = boundaryMapGetValue(verificationKeys, name, "signingKeys.keys");
+        if (material === undefined) throw new AuthConfigurationError(`signing key is not configured: ${name}`);
+        boundaryMapSetValue(copy, name, material, "signingKeys.keys");
+      }
+      return copy;
+    },
   };
 }
 
@@ -350,19 +384,19 @@ function createProviders(options: AuthServerOptions): readonly OAuthProvider[] {
   if (configured === undefined) return [];
   const providers: OAuthProvider[] = [];
   if (configured.google !== undefined) {
-    providers.push(new GoogleOAuthProvider({
+    providers[providers.length] = new GoogleOAuthProvider({
       clientId: configured.google.clientId,
       clientSecret: secretString(configured.google.clientSecret),
-    }));
+    });
   }
   if (configured.oidc !== undefined) {
-    providers.push(new OidcOAuthProvider({
+    providers[providers.length] = new OidcOAuthProvider({
       name: "oidc",
       clientId: configured.oidc.clientId,
       clientSecret: secretString(configured.oidc.clientSecret),
       issuer: configured.oidc.issuer,
       ...(configured.oidc.scopes === undefined ? {} : { scopes: configured.oidc.scopes }),
-    }));
+    });
   }
   return providers;
 }
@@ -448,16 +482,13 @@ function mergeServices(defaults: AuthServerServices, overrides: AuthServerServic
   if (overrides !== undefined) {
     const source = asRecord(overrides);
     if (source === null) throw new AuthConfigurationError("auth server service composition is incomplete");
-    for (const member of ["users", "sessions", "tokens", "authorization", "oauth"] as const) {
-      let descriptor: PropertyDescriptor | undefined;
-      try {
-        descriptor = Object.getOwnPropertyDescriptor(source, member);
-      } catch {
-        throw new AuthConfigurationError("auth server service composition is incomplete");
-      }
-      if (descriptor === undefined) continue;
-      if (!("value" in descriptor)) throw new AuthConfigurationError(`auth server ${member} must be a data property`);
-      merged[member] = descriptor.value;
+    const members = ["users", "sessions", "tokens", "authorization", "oauth"] as const;
+    for (let index = 0; index < members.length; index += 1) {
+      const member = members[index];
+      if (member === undefined) throw new AuthConfigurationError("auth server service composition is incomplete");
+      const property = boundaryOwnDataProperty(source, member);
+      if (!property.valid) throw new AuthConfigurationError(`auth server ${member} must be a data property`);
+      if (property.present) merged[member] = property.value;
     }
   }
   return captureAuthServerServices(merged as unknown as AuthServerServices);
@@ -466,24 +497,22 @@ function mergeServices(defaults: AuthServerServices, overrides: AuthServerServic
 /** Creates a fully validated, framework-neutral server synchronously. */
 export function createAuthServer(input: CreateAuthServerOptions): AuthServer {
   const capturedInput = captureConfiguredCallbacks(input);
+  const capturedServicesProperty = boundaryOwnDataProperty(capturedInput as object, "services");
+  if (!capturedServicesProperty.valid) throw new AuthConfigurationError("auth server services must be a data property");
+  const rawServices = capturedServicesProperty.present
+    ? capturedServicesProperty.value as AuthServerServiceOverrides
+    : undefined;
   const parsed = authServerOptionsSchema.parse(capturedInput);
-  const raw = asRecord(input);
-  let rawServices: AuthServerServiceOverrides | undefined;
-  if (raw !== null) {
-    const descriptor = Object.getOwnPropertyDescriptor(raw, "services");
-    if (descriptor !== undefined) {
-      if (!("value" in descriptor)) throw new AuthConfigurationError("auth server services must be a data property");
-      rawServices = descriptor.value as AuthServerServiceOverrides | undefined;
-    }
-  }
   const baseUrl = parseAbsoluteUrl(parsed.baseUrl, "baseUrl");
   const issuer = parseAbsoluteUrl(parsed.signingKeys.issuer, "signingKeys.issuer");
   if (issuer.href !== baseUrl.href) throw new AuthConfigurationError("baseUrl must exactly match signingKeys.issuer");
   const siteUrl = parseAbsoluteUrl(parsed.siteUrl, "siteUrl");
   const basePath = normalizedBasePath(baseUrl);
   const baseOrigin = baseUrl.origin;
-  const allowedOrigins = Object.freeze([...new Set([baseOrigin, siteUrl.origin])]);
-  const allowedRedirects = Object.freeze([...parsed.redirects.allowed]);
+  const allowedOrigins = baseOrigin === siteUrl.origin
+    ? configObjectFreeze([baseOrigin])
+    : configObjectFreeze([baseOrigin, siteUrl.origin]);
+  const allowedRedirects = captureBoundaryStringArray(parsed.redirects.allowed, "auth server allowed redirects", 1, 100_000);
   const clock = () => new Date();
   const repository = captureAuthServerRepository(parsed.database);
   const defaults = createDefaultServices(parsed, repository, clock, allowedRedirects);
@@ -494,7 +523,7 @@ export function createAuthServer(input: CreateAuthServerOptions): AuthServer {
     services,
     apiKeyHashKey: typeof parsed.secrets.tokenHashKey === "string"
       ? new TextEncoder().encode(parsed.secrets.tokenHashKey)
-      : Uint8Array.from(parsed.secrets.tokenHashKey),
+      : captureBoundaryBytes(parsed.secrets.tokenHashKey, "API-key hash key", 32),
     baseOrigin,
     basePath,
     allowedOrigins,

@@ -16,9 +16,11 @@ import { handlePublicRoute } from "./routes/public.js";
 import { handleUserRoute } from "./routes/user.js";
 import {
   boundaryDataProperty,
-  assertBoundaryObject,
   boundaryHasThen,
+  boundaryIsArray,
+  assertBoundaryObject,
   boundaryOwnDataProperty,
+  captureBoundaryBytes,
   captureBoundaryMethodGroup,
   captureBoundaryRepository,
   captureBoundaryStringArray,
@@ -229,49 +231,56 @@ function ownDataProperty(value: object, key: PropertyKey): DataProperty {
   }
 }
 
-function hasThenProperty(value: object): boolean {
-  let current: object | null = value;
-  for (let depth = 0; current !== null && depth < 8; depth += 1) {
-    try {
-      if (objectGetOwnPropertyDescriptor(current, "then") !== undefined) return true;
-      current = objectGetPrototypeOf(current);
-    } catch {
-      return true;
-    }
-  }
-  return current !== null;
-}
-
-function requiredMember(value: object, label: string, member: string): unknown {
-  const property = boundaryDataProperty(value, member);
-  if (!property.valid || !property.present) throw new AuthConfigurationError(`${label}.${member} is unavailable`);
-  return property.value;
-}
-
 const USER_SERVICE_METHODS = ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resend", "updateUser"] as const;
 const SESSION_SERVICE_METHODS = ["refresh", "authorizeSession", "signOut"] as const;
 const TOKEN_SERVICE_METHODS = ["verifyAccessToken", "jwks"] as const;
 const AUTHORIZATION_SERVICE_METHODS = ["getPermissions", "authorize"] as const;
 const OAUTH_SERVICE_METHODS = ["listProviders", "authorize", "callback", "exchangeCode", "listIdentities", "unlinkIdentity"] as const;
+const AUTH_SERVER_SERVICE_MEMBERS = ["users", "sessions", "tokens", "authorization", "oauth"] as const;
+
+function capturedService(
+  member: typeof AUTH_SERVER_SERVICE_MEMBERS[number],
+  value: unknown,
+): unknown {
+  if (member === "users") return captureBoundaryMethodGroup(value, "user", USER_SERVICE_METHODS);
+  if (member === "sessions") return captureBoundaryMethodGroup(value, "session", SESSION_SERVICE_METHODS, ["revokeRefreshToken"]);
+  if (member === "tokens") return captureBoundaryMethodGroup(value, "token", TOKEN_SERVICE_METHODS);
+  if (member === "authorization") return captureBoundaryMethodGroup(value, "authorization", AUTHORIZATION_SERVICE_METHODS);
+  return captureBoundaryMethodGroup(value, "OAuth", OAUTH_SERVICE_METHODS);
+}
+
+/** Captures a partial service composition before schema/default access. */
+export function captureAuthServerServiceOverrides(value: unknown): Partial<AuthServerServices> {
+  assertBoundaryObject(value, "auth server service composition");
+  const source = value as object;
+  const facade = objectCreate(null) as Record<string, unknown>;
+  for (let index = 0; index < AUTH_SERVER_SERVICE_MEMBERS.length; index += 1) {
+    const member = AUTH_SERVER_SERVICE_MEMBERS[index];
+    if (member === undefined) throw new AuthConfigurationError("auth server service composition is incomplete");
+    const property = boundaryOwnDataProperty(source, member);
+    if (!property.valid) throw new AuthConfigurationError(`auth server ${member} must be a data property`);
+    if (!property.present || (member === "oauth" && property.value === undefined)) continue;
+    objectDefineProperty(facade, member, {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value: capturedService(member, property.value),
+    });
+  }
+  return objectFreeze(facade) as Partial<AuthServerServices>;
+}
 
 /** Captures all service callbacks without mutating the caller's composition. */
 export function captureAuthServerServices(value: AuthServerServices): AuthServerServices {
-  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
-    throw new AuthConfigurationError("auth server service composition is incomplete");
+  const captured = captureAuthServerServiceOverrides(value) as Record<string, unknown>;
+  const requiredMembers = ["users", "sessions", "tokens", "authorization"] as const;
+  for (let index = 0; index < requiredMembers.length; index += 1) {
+    const member = requiredMembers[index];
+    if (member === undefined) throw new AuthConfigurationError("auth server service composition is incomplete");
+    const property = boundaryOwnDataProperty(captured, member);
+    if (!property.valid || !property.present) throw new AuthConfigurationError(`auth server ${member} is unavailable`);
   }
-  const source = value as object;
-  if (hasThenProperty(source)) throw new AuthConfigurationError("auth server services must not be thenable");
-  const facade = objectCreate(null) as Record<string, unknown>;
-  objectDefineProperty(facade, "users", { configurable: false, enumerable: true, writable: false, value: captureBoundaryMethodGroup(requiredMember(source, "auth", "users"), "user", USER_SERVICE_METHODS) });
-  objectDefineProperty(facade, "sessions", { configurable: false, enumerable: true, writable: false, value: captureBoundaryMethodGroup(requiredMember(source, "auth", "sessions"), "session", SESSION_SERVICE_METHODS, ["revokeRefreshToken"]) });
-  objectDefineProperty(facade, "tokens", { configurable: false, enumerable: true, writable: false, value: captureBoundaryMethodGroup(requiredMember(source, "auth", "tokens"), "token", TOKEN_SERVICE_METHODS) });
-  objectDefineProperty(facade, "authorization", { configurable: false, enumerable: true, writable: false, value: captureBoundaryMethodGroup(requiredMember(source, "auth", "authorization"), "authorization", AUTHORIZATION_SERVICE_METHODS) });
-  const oauth = boundaryDataProperty(source, "oauth");
-  if (!oauth.valid) throw new AuthConfigurationError("OAuth service must be a data property");
-  if (oauth.present && oauth.value !== undefined) {
-    objectDefineProperty(facade, "oauth", { configurable: false, enumerable: true, writable: false, value: captureBoundaryMethodGroup(oauth.value, "OAuth", OAUTH_SERVICE_METHODS) });
-  }
-  return objectFreeze(facade) as unknown as AuthServerServices;
+  return captured as unknown as AuthServerServices;
 }
 
 /** Captures the configured mail-delivery callback before schema inspection. */
@@ -389,6 +398,12 @@ function cancelReader(reader: unknown): void {
 
 function hasThenValue(value: unknown): boolean {
   return value !== null && (typeof value === "object" || typeof value === "function") && hasThenProperty(value);
+}
+
+function hasThenProperty(value: unknown): boolean {
+  return value !== null && (typeof value === "object" || typeof value === "function")
+    ? boundaryHasThen(value as object)
+    : false;
 }
 
 async function invokeUntrusted<T>(operation: () => unknown): Promise<T> {
@@ -708,6 +723,43 @@ function isJsonContentType(value: string | null): boolean {
   return normalized === "application/json" || normalized === "application/json; charset=utf-8";
 }
 
+const runtimeStringTrim = Function.prototype.call.bind(String.prototype.trim) as (value: string) => string;
+
+function captureRuntimeOrigin(value: unknown, label: string): string {
+  if (value !== null && typeof value === "object") assertBoundaryObject(value, label);
+  if (typeof value !== "string" || runtimeStringTrim(value) !== value) {
+    throw new AuthConfigurationError(`${label} must be a canonical HTTP(S) origin`);
+  }
+  let parsed: URL;
+  try {
+    parsed = new nativeURL(value);
+  } catch {
+    throw new AuthConfigurationError(`${label} must be a canonical HTTP(S) origin`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new AuthConfigurationError(`${label} must be a canonical HTTP(S) origin`);
+  if (parsed.origin !== value || parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "" || parsed.username !== "" || parsed.password !== "") {
+    throw new AuthConfigurationError(`${label} must be a canonical HTTP(S) origin`);
+  }
+  return value;
+}
+
+function captureRuntimePath(value: unknown, label: string): string {
+  if (value !== null && typeof value === "object") assertBoundaryObject(value, label);
+  if (typeof value !== "string" || runtimeStringTrim(value) !== value || value.length < 2 || value[0] !== "/" || value[value.length - 1] === "/") {
+    throw new AuthConfigurationError(`${label} must be a canonical absolute path`);
+  }
+  let parsed: URL;
+  try {
+    parsed = new nativeURL(`https://runtime.invalid${value}`);
+  } catch {
+    throw new AuthConfigurationError(`${label} must be a canonical absolute path`);
+  }
+  if (parsed.pathname !== value || parsed.search !== "" || parsed.hash !== "") {
+    throw new AuthConfigurationError(`${label} must be a canonical absolute path`);
+  }
+  return value;
+}
+
 /** Internal construction inputs for the framework-neutral handler. */
 export interface AuthServerRuntimeOptions {
   readonly config: AuthServerOptions;
@@ -747,7 +799,7 @@ export class AuthServer {
     const basePath = requiredBoundaryOption(source, "basePath", "auth server base path");
     const allowedOrigins = requiredBoundaryOption(source, "allowedOrigins", "auth server allowed origins");
     const allowedRedirects = requiredBoundaryOption(source, "allowedRedirects", "auth server allowed redirects");
-    if (!(apiKeyHashKey instanceof nativeUint8Array) || boundaryHasThen(apiKeyHashKey)) throw new AuthConfigurationError("API-key hash key must be a byte array");
+    const capturedApiKeyHashKey = captureBoundaryBytes(apiKeyHashKey, "API-key hash key", 32);
     if (config === null || typeof config !== "object") throw new AuthConfigurationError("auth server config is incomplete");
     const configSource = config as object;
     assertBoundaryObject(configSource, "auth server config");
@@ -759,21 +811,25 @@ export class AuthServer {
     assertBoundaryObject(signingKeys, "auth server signing keys");
     const issuerProperty = boundaryOwnDataProperty(signingKeys, "issuer");
     const audienceProperty = boundaryOwnDataProperty(signingKeys, "audience");
-    if (!issuerProperty.valid || !issuerProperty.present || typeof issuerProperty.value !== "string" || !audienceProperty.valid || !audienceProperty.present || (typeof audienceProperty.value !== "string" && !Array.isArray(audienceProperty.value))) {
+    if (!issuerProperty.valid || !issuerProperty.present || typeof issuerProperty.value !== "string" || !audienceProperty.valid || !audienceProperty.present) {
       throw new AuthConfigurationError("auth server signing keys are incomplete");
     }
+    const audienceValue = audienceProperty.value;
+    const audienceIsArray = typeof audienceValue === "string"
+      ? false
+      : boundaryIsArray(audienceValue, "auth server token audience");
+    if (typeof audienceValue !== "string" && !audienceIsArray) throw new AuthConfigurationError("auth server signing keys are incomplete");
     this.tokenIssuer = issuerProperty.value;
-    this.tokenAudience = Array.isArray(audienceProperty.value)
-      ? [...captureBoundaryStringArray(audienceProperty.value, "auth server token audience", 1)]
-      : audienceProperty.value;
+    this.tokenAudience = audienceIsArray
+      ? captureBoundaryStringArray(audienceValue, "auth server token audience", 1, 128) as string[]
+      : audienceValue as string;
     this.repository = captureAuthServerRepository(repository as AuthRepository);
     this.services = captureAuthServerServices(services as AuthServerServices);
-    this.apiKeyHashKey = nativeUint8Array.from(apiKeyHashKey);
-    this.baseOrigin = baseOrigin as string;
-    this.basePath = basePath as string;
-    this.allowedOrigins = captureBoundaryStringArray(allowedOrigins, "auth server allowed origins");
-    this.allowedRedirects = captureBoundaryStringArray(allowedRedirects, "auth server allowed redirects");
-    if (this.apiKeyHashKey.byteLength < 32) throw new AuthConfigurationError("API-key hash key must contain at least 32 bytes");
+    this.apiKeyHashKey = capturedApiKeyHashKey;
+    this.baseOrigin = captureRuntimeOrigin(baseOrigin, "auth server base origin");
+    this.basePath = captureRuntimePath(basePath, "auth server base path");
+    this.allowedOrigins = captureBoundaryStringArray(allowedOrigins, "auth server allowed origins", 1, 128);
+    this.allowedRedirects = captureBoundaryStringArray(allowedRedirects, "auth server allowed redirects", 1, 100_000);
   }
 
   /** Handles one framework-neutral Web Request without hidden network work. */

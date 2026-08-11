@@ -117,6 +117,9 @@ export interface UserServiceOptions {
   readonly clock?: () => Date;
 }
 
+const lowerString = Function.prototype.call.bind(String.prototype.toLowerCase) as (value: string) => string;
+const freezeUserValue = Object.freeze as <T>(value: T) => Readonly<T>;
+
 export interface PublicAuthData {
   readonly user: User | null;
   readonly session: Session | null;
@@ -219,6 +222,9 @@ export class UserService {
     if (repositoryValue === null || typeof repositoryValue !== "object") {
       throw new AuthConfigurationError("user repository is required");
     }
+    assertBoundaryObject(passwordsValue, "password service");
+    assertBoundaryObject(emailValue, "email service");
+    assertBoundaryObject(oneTimeTokensValue, "one-time-token service");
     if (!(passwordsValue instanceof PasswordService)) {
       throw new AuthConfigurationError("password service is required");
     }
@@ -228,6 +234,7 @@ export class UserService {
     if (!(oneTimeTokensValue instanceof OneTimeTokenService)) {
       throw new AuthConfigurationError("one-time-token service is required");
     }
+    if (sessionsValue !== undefined) assertBoundaryObject(sessionsValue, "session service");
     const emailAllowedProperty = boundaryDataProperty(emailValue, "allowedRedirects");
     const emailDefaultProperty = boundaryDataProperty(emailValue, "defaultRedirect");
     if (!emailAllowedProperty.valid || !emailAllowedProperty.present || !emailDefaultProperty.valid || !emailDefaultProperty.present || typeof emailDefaultProperty.value !== "string") {
@@ -260,7 +267,14 @@ export class UserService {
     this.rateLimiter = rateLimiterValue === undefined
       ? undefined
       : captureBoundaryMethodGroup(rateLimiterValue, "rate limiter", ["consume"]) as unknown as RateLimiter;
-    this.defaultRoleKeys = [...captureBoundaryStringArray(defaultRoleKeysValue ?? [], "default role keys")].map((key) => key.toLowerCase());
+    const capturedRoleKeys = captureBoundaryStringArray(defaultRoleKeysValue ?? [], "default role keys");
+    const defaultRoleKeys: string[] = [];
+    for (let index = 0; index < capturedRoleKeys.length; index += 1) {
+      const key = capturedRoleKeys[index];
+      if (key === undefined) throw new AuthConfigurationError("default role keys are malformed");
+      defaultRoleKeys[index] = lowerString(key);
+    }
+    this.defaultRoleKeys = freezeUserValue(defaultRoleKeys);
     this.requireEmailConfirmation = (requireEmailConfirmationValue as boolean | undefined) ?? true;
     this.concealUserExistence = (concealUserExistenceValue as boolean | undefined) ?? true;
     this.onOperationalFailure = onOperationalFailureValue === undefined

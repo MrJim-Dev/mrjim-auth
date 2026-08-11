@@ -137,6 +137,13 @@ function safeEmail(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
+function containsString(values: readonly string[], candidate: string): boolean {
+  for (let index = 0; index < values.length; index += 1) {
+    if (values[index] === candidate) return true;
+  }
+  return false;
+}
+
 function profileFromClaims(
   provider: string,
   expectedIssuer: string,
@@ -216,7 +223,7 @@ export class OidcOAuthProvider implements OAuthProvider {
       ? undefined
       : captureBoundaryFunction(customFetchValue, "OIDC custom fetch") as CustomFetch;
     this.scopes = captureBoundaryStringArray(scopesValue ?? ["openid", "email", "profile"], "OIDC scopes", 1) as readonly string[];
-    if (!this.scopes.includes("openid")) {
+    if (!containsString(this.scopes, "openid")) {
       throw new TypeError("OIDC scopes must include openid");
     }
   }

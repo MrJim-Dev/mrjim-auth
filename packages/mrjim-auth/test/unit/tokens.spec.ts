@@ -427,6 +427,28 @@ describe("TokenService", () => {
     expect(oldCalls).toBe(1);
     expect(newCalls).toBe(0);
   });
+
+  it("requires dense own audience entries and isolates the captured collection", () => {
+    const sparse = new Array<string>(1);
+    expect(() => makeService(makeProvider(new Map([["active", generateEs256Key()]])), { audience: sparse })).toThrow(AuthConfigurationError);
+
+    const inherited = new Array<string>(1);
+    const inheritedPrototype = Object.create(Array.prototype) as Record<string, unknown>;
+    Object.defineProperty(inheritedPrototype, "0", { configurable: true, value: "inherited-audience" });
+    Object.setPrototypeOf(inherited, inheritedPrototype);
+    expect(() => makeService(makeProvider(new Map([["active", generateEs256Key()]])), { audience: inherited })).toThrow(AuthConfigurationError);
+
+    const oversized = Array.from({ length: 129 }, (_, index) => `audience-${index}`);
+    expect(() => makeService(makeProvider(new Map([["active", generateEs256Key()]])), { audience: oversized })).toThrow(AuthConfigurationError);
+
+    const originalSome = Array.prototype.some;
+    try {
+      Array.prototype.some = (() => { throw new Error("audience some sentinel"); }) as typeof Array.prototype.some;
+      expect(() => makeService(makeProvider(new Map([["active", generateEs256Key()]])), { audience: ["project"] })).not.toThrow();
+    } finally {
+      Array.prototype.some = originalSome;
+    }
+  });
 });
 
 async function importKeyForTest(value: string, kind: "private") {

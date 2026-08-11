@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { AuthConfigurationError } from "../../src/shared/errors.js";
 import { generateOpenApiDocument } from "../../src/server/openapi.js";
 
 const BASE_URL = "https://project.example.com/auth/v1";
@@ -29,6 +30,27 @@ function collectReferences(value: unknown, references: string[] = []): string[] 
 }
 
 describe("Task 9 deterministic OpenAPI contract", () => {
+  it("rejects an OpenAPI base-url accessor without invoking it", () => {
+    const options = Object.create(null) as Record<string, unknown>;
+    let getterCalls = 0;
+    Object.defineProperty(options, "baseUrl", {
+      configurable: true,
+      get: () => {
+        getterCalls += 1;
+        throw new Error("openapi base-url sentinel");
+      },
+    });
+    let thrown: unknown;
+    try {
+      generateOpenApiDocument(options as never);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(thrown)).not.toContain("openapi base-url sentinel");
+    expect(getterCalls).toBe(0);
+  });
+
   it("validates refs, path parameters, runtime statuses, configured server URL, and byte parity", () => {
     const configured = generateOpenApiDocument({ baseUrl: BASE_URL }) as any;
     const defaultDocument = generateOpenApiDocument() as any;

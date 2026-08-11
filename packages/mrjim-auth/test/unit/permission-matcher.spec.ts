@@ -406,11 +406,8 @@ describe("authorization permission matching", () => {
       writable: true,
     });
     try {
-      try {
-        await serviceFor(() => [valid]).authorize(subject(), { all: ["invoice.read"] });
-      } catch (error) {
-        pollutedThenRejected = (error as { readonly code?: unknown }).code === "insufficient_permission";
-      }
+      expect(() => serviceFor(() => [valid])).toThrow(AuthConfigurationError);
+      pollutedThenRejected = true;
     } finally {
       if (originalThen === undefined) Reflect.deleteProperty(Object.prototype, "then");
       else Object.defineProperty(Object.prototype, "then", originalThen);
@@ -1619,6 +1616,48 @@ describe("authorization permission matching", () => {
     });
     expect(() => new AuthorizationService({ repository, clock: thenableClock })).toThrow(AuthConfigurationError);
     expect(clockThenCalls).toBe(0);
+  });
+
+  it("captures prototype authorization adapters and rejects polluted thenability", async () => {
+    class AuthorizationAdapter {
+      calls = 0;
+
+      async effectivePermissions(): Promise<readonly Permission[]> {
+        this.calls += 1;
+        return [];
+      }
+    }
+    class RepositoryAdapter {
+      readonly authorization = new AuthorizationAdapter();
+    }
+
+    const repository = new RepositoryAdapter();
+    const service = new AuthorizationService({
+      repository: repository as unknown as AuthRepository,
+      clock: () => NOW,
+    });
+    repository.authorization.effectivePermissions = async () => {
+      throw new Error("swapped effectivePermissions");
+    };
+    await expect(service.getPermissions(USER_ID)).resolves.toEqual([]);
+    expect(repository.authorization.calls).toBe(1);
+
+    const originalThen = Object.getOwnPropertyDescriptor(Object.prototype, "then");
+    let thenCalls = 0;
+    try {
+      Object.defineProperty(Object.prototype, "then", {
+        configurable: true,
+        value: () => { thenCalls += 1; },
+      });
+      expect(() => new AuthorizationService({
+        repository: new RepositoryAdapter() as unknown as AuthRepository,
+        clock: () => NOW,
+      })).toThrow(AuthConfigurationError);
+    } finally {
+      if (originalThen === undefined) Reflect.deleteProperty(Object.prototype, "then");
+      else Object.defineProperty(Object.prototype, "then", originalThen);
+    }
+    expect(thenCalls).toBe(0);
   });
 
   it("uses captured Date operations and fresh operation-time snapshots", async () => {

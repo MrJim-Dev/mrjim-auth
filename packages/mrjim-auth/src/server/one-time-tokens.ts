@@ -16,6 +16,7 @@ import { EmailService, normalizeAndValidateEmail } from "./email.js";
 import {
   assertBoundaryObject,
   boundaryDataProperty,
+  captureBoundaryBytes,
   captureBoundaryClock,
   captureBoundaryMethodGroup,
   captureBoundaryRepository,
@@ -156,6 +157,13 @@ function rethrowTrusted(error: TrustedServiceError): never {
   throw error;
 }
 
+function hasRedirect(values: readonly string[], candidate: string): boolean {
+  for (let index = 0; index < values.length; index += 1) {
+    if (values[index] === candidate) return true;
+  }
+  return false;
+}
+
 /** Server-only purpose-bound token issuer/verifier with project-owned mail. */
 export class OneTimeTokenService {
   private readonly repository: AuthRepository;
@@ -177,6 +185,7 @@ export class OneTimeTokenService {
     const allowedRedirectsValue = optionalBoundaryOption(source, "allowedRedirects", "one-time-token redirects");
     const defaultRedirectValue = optionalBoundaryOption(source, "defaultRedirect", "one-time-token default redirect");
     const clockValue = optionalBoundaryOption(source, "clock", "one-time-token clock");
+    assertBoundaryObject(emailValue, "email redirect service");
     if (!(emailValue instanceof EmailService)) {
       throw new AuthConfigurationError("email redirect service is required");
     }
@@ -196,20 +205,24 @@ export class OneTimeTokenService {
     ) as unknown as EmailService;
     const tokenHashKey = typeof tokenHashKeyValue === "string"
       ? new TextEncoder().encode(tokenHashKeyValue)
-      : Uint8Array.from(tokenHashKeyValue as Uint8Array);
+      : captureBoundaryBytes(tokenHashKeyValue, "one-time-token hash key", 1);
     if (tokenHashKey.byteLength === 0) throw new AuthConfigurationError("one-time-token hash key is empty");
     this.repository = captureBoundaryRepository(repositoryValue);
     this.mailer = captureBoundaryMethodGroup(mailerValue, "one-time-token mailer", ["send"]) as unknown as Mailer;
     this.email = email;
     this.tokenHashKey = tokenHashKey;
     this.clock = captureBoundaryClock(clockValue, "one-time-token clock", () => new Date());
-    this.allowedRedirects = [...captureBoundaryStringArray(allowedRedirectsValue ?? emailAllowed, "one-time-token redirects", 1)];
+    this.allowedRedirects = captureBoundaryStringArray(allowedRedirectsValue ?? emailAllowed, "one-time-token redirects", 1);
     this.defaultRedirect = (defaultRedirectValue as string | undefined) ?? this.allowedRedirects[0] ?? (emailDefaultProperty.value as string);
-    if (this.allowedRedirects.length === 0 || !this.allowedRedirects.includes(this.defaultRedirect)) {
+    if (this.allowedRedirects.length === 0 || !hasRedirect(this.allowedRedirects, this.defaultRedirect)) {
       throw new AuthConfigurationError("one-time-token default redirect must be exactly allowlisted");
     }
     validNow(this.clock);
-    for (const redirect of this.allowedRedirects) this.email.resolveRedirect(redirect);
+    for (let index = 0; index < this.allowedRedirects.length; index += 1) {
+      const redirect = this.allowedRedirects[index];
+      if (redirect === undefined) throw new AuthConfigurationError("one-time-token redirects are malformed");
+      this.email.resolveRedirect(redirect);
+    }
     this.email.resolveRedirect(this.defaultRedirect);
   }
 
@@ -349,7 +362,7 @@ export class OneTimeTokenService {
   /** Validates an exact redirect before any account lookup or token work. */
   resolveRedirect(redirect: string | null | undefined): string {
     const candidate = redirect ?? this.defaultRedirect;
-    if (!this.allowedRedirects.includes(candidate)) {
+    if (!hasRedirect(this.allowedRedirects, candidate)) {
       throw new AuthApiError("redirect_not_allowed", 400, "Redirect URL is not allowed");
     }
     return this.email.resolveRedirect(candidate);

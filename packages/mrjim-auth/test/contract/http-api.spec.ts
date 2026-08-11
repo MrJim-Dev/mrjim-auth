@@ -1,6 +1,7 @@
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AuthConfigurationError } from "../../src/shared/errors.js";
+import { AuthServer } from "../../src/server/auth-server.js";
 
 const BASE_URL = "https://project.example.com/auth/v1";
 const SITE_URL = "https://project.example.com";
@@ -771,6 +772,153 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     });
     expect(() => serverModule.createAuthServer(callbackThenableOptions)).toThrow(AuthConfigurationError);
     expect(callbackThenCalls).toBe(0);
+  });
+
+  it("rejects top-level and service-composition thenables before schema access", () => {
+    const ownTopLevel = makeOptions([]) as any;
+    Object.defineProperty(ownTopLevel, "then", {
+      configurable: true,
+      value: () => { throw new Error("top-level then sentinel"); },
+    });
+    expect(() => serverModule.createAuthServer(ownTopLevel)).toThrow(AuthConfigurationError);
+
+    const accessorTopLevel = makeOptions([]) as any;
+    let topLevelGetterCalls = 0;
+    Object.defineProperty(accessorTopLevel, "then", {
+      configurable: true,
+      get: () => {
+        topLevelGetterCalls += 1;
+        throw new Error("top-level then getter sentinel");
+      },
+    });
+    let accessorThrown: unknown;
+    try {
+      serverModule.createAuthServer(accessorTopLevel);
+    } catch (error) {
+      accessorThrown = error;
+    }
+    expect(accessorThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(accessorThrown)).not.toContain("getter sentinel");
+    expect(topLevelGetterCalls).toBe(0);
+
+    const ownServices = makeOptions([]) as any;
+    Object.defineProperty(ownServices.services, "then", {
+      configurable: true,
+      value: () => { throw new Error("services then sentinel"); },
+    });
+    expect(() => serverModule.createAuthServer(ownServices)).toThrow(AuthConfigurationError);
+
+    const accessorServices = makeOptions([]) as any;
+    let servicesGetterCalls = 0;
+    Object.defineProperty(accessorServices.services, "then", {
+      configurable: true,
+      get: () => {
+        servicesGetterCalls += 1;
+        throw new Error("services then getter sentinel");
+      },
+    });
+    let servicesThrown: unknown;
+    try {
+      serverModule.createAuthServer(accessorServices);
+    } catch (error) {
+      servicesThrown = error;
+    }
+    expect(servicesThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(servicesThrown)).not.toContain("services then getter sentinel");
+    expect(servicesGetterCalls).toBe(0);
+
+    const originalThen = Object.getOwnPropertyDescriptor(Object.prototype, "then");
+    try {
+      Object.defineProperty(Object.prototype, "then", {
+        configurable: true,
+        value: () => { throw new Error("Object.prototype then sentinel"); },
+      });
+      expect(() => serverModule.createAuthServer(makeOptions([]))).toThrow(AuthConfigurationError);
+      const inheritedServices = makeOptions([]) as any;
+      Object.setPrototypeOf(inheritedServices.services, Object.prototype);
+      expect(() => serverModule.createAuthServer(inheritedServices)).toThrow(AuthConfigurationError);
+    } finally {
+      if (originalThen === undefined) Reflect.deleteProperty(Object.prototype, "then");
+      else Object.defineProperty(Object.prototype, "then", originalThen);
+    }
+  });
+
+  it("validates AuthServer runtime origin and path before assignment", () => {
+    const options = makeOptions([]) as any;
+    const runtime = (overrides: Record<string, unknown> = {}) => ({
+      config: options,
+      repository: options.database,
+      services: options.services,
+      apiKeyHashKey: TOKEN_HASH_KEY,
+      baseOrigin: "https://project.example.com",
+      basePath: "/auth/v1",
+      allowedOrigins: ["https://project.example.com"],
+      allowedRedirects: [CALLBACK],
+      ...overrides,
+    });
+
+    for (const value of [{}, 42, "not an origin", "https://project.example.com/"]) {
+      expect(() => new AuthServer(runtime({ baseOrigin: value }) as never)).toThrow(AuthConfigurationError);
+    }
+    for (const value of [{}, 42, "auth/v1", "/auth/v1/"]) {
+      expect(() => new AuthServer(runtime({ basePath: value }) as never)).toThrow(AuthConfigurationError);
+    }
+
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    expect(() => new AuthServer(runtime({ baseOrigin: revoked.proxy }) as never)).toThrow(AuthConfigurationError);
+
+    const thenable = Object.create(null);
+    Object.defineProperty(thenable, "then", { configurable: true, value: () => undefined });
+    expect(() => new AuthServer(runtime({ baseOrigin: thenable }) as never)).toThrow(AuthConfigurationError);
+
+    expect(() => new AuthServer(runtime() as never)).not.toThrow();
+  });
+
+  it("redacts hostile factory collections and survives polluted intrinsics", () => {
+    const revokedRedirects = Proxy.revocable([CALLBACK], {});
+    revokedRedirects.revoke();
+    const revokedOptions = makeOptions([]) as any;
+    revokedOptions.redirects.allowed = revokedRedirects.proxy;
+    let revokedThrown: unknown;
+    try {
+      serverModule.createAuthServer(revokedOptions);
+    } catch (error) {
+      revokedThrown = error;
+    }
+    expect(revokedThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(revokedThrown)).not.toContain("TypeError");
+
+    const ownKeysOptions = makeOptions([]) as any;
+    ownKeysOptions.redirects.allowed = new Proxy([CALLBACK], {
+      ownKeys: () => { throw new Error("factory ownKeys sentinel"); },
+    });
+    let ownKeysThrown: unknown;
+    try {
+      serverModule.createAuthServer(ownKeysOptions);
+    } catch (error) {
+      ownKeysThrown = error;
+    }
+    expect(ownKeysThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(ownKeysThrown)).not.toContain("factory ownKeys sentinel");
+
+    const originalSome = Array.prototype.some;
+    const originalPush = Array.prototype.push;
+    const originalEntries = Object.entries;
+    try {
+      Array.prototype.some = (() => { throw new Error("factory some sentinel"); }) as typeof Array.prototype.some;
+      expect(() => serverModule.createAuthServer(makeOptions([]))).not.toThrow();
+      Array.prototype.some = originalSome;
+      Array.prototype.push = (() => { throw new Error("factory push sentinel"); }) as typeof Array.prototype.push;
+      expect(() => serverModule.createAuthServer(makeOptions([]))).not.toThrow();
+      Array.prototype.push = originalPush;
+      Object.entries = (() => { throw new Error("factory entries sentinel"); }) as typeof Object.entries;
+      expect(() => serverModule.createAuthServer(makeOptions([]))).not.toThrow();
+    } finally {
+      Array.prototype.some = originalSome;
+      Array.prototype.push = originalPush;
+      Object.entries = originalEntries;
+    }
   });
 
   it("captures configured repository, mailer, and limiter callbacks before schema inspection", () => {

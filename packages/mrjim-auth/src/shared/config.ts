@@ -12,6 +12,29 @@ import type {
   SupportedStorage,
 } from "./types.js";
 
+// Configuration validation is also a construction boundary. Capture the
+// intrinsics used by its predicates before caller-controlled values can be
+// inspected so polluted collection prototypes cannot change validation or
+// leak their failures.
+const configArrayIsArray = Array.isArray;
+const configObjectKeys = Object.keys;
+const configObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const configObjectGetPrototypeOf = Object.getPrototypeOf;
+const configSetConstructor = Set;
+const configSetHas = Set.prototype.has;
+const configSetAdd = Set.prototype.add;
+const configReflectApply = Reflect.apply;
+const configUint8Array = Uint8Array;
+
+function configByteLength(value: unknown): number | null {
+  try {
+    if (!(value instanceof configUint8Array)) return null;
+    return typeof value.byteLength === "number" ? value.byteLength : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Runtime mode used to decide whether cleartext local URLs are acceptable.
  *
@@ -129,22 +152,23 @@ const keyMaterialSchema = z.custom<KeyMaterial>(
     if (typeof value === "string") {
       return value.trim().length > 0;
     }
-    if (value instanceof Uint8Array) {
-      return value.byteLength > 0;
+    const byteLength = configByteLength(value);
+    if (byteLength !== null) return byteLength > 0;
+    if (typeof value !== "object" || value === null) return false;
+    try {
+      return configObjectKeys(value).length > 0;
+    } catch {
+      return false;
     }
-    return (
-      typeof value === "object" &&
-      value !== null &&
-      Object.keys(value).length > 0
-    );
   },
   "key material must be non-empty",
 );
 
 const opaqueSecretSchema = z.custom<string | Uint8Array>(
-  (value) =>
-    (typeof value === "string" && value.trim().length > 0) ||
-    (value instanceof Uint8Array && value.byteLength > 0),
+  (value) => {
+    const byteLength = configByteLength(value);
+    return (typeof value === "string" && value.trim().length > 0) || (byteLength !== null && byteLength > 0);
+  },
   "opaque secret material must be non-empty",
 );
 
@@ -164,16 +188,19 @@ function decodedBase64urlLength(value: string): number | null {
 
 /** Unpadded base64url strings decode to at least 32 random bytes; byte arrays are measured directly. */
 const secretKeyMaterialSchema = z.custom<string | Uint8Array>(
-  (value) => value instanceof Uint8Array
-    ? value.byteLength >= 32
-    : typeof value === "string" && (decodedBase64urlLength(value) ?? 0) >= 32,
+  (value) => {
+    const byteLength = configByteLength(value);
+    return byteLength !== null
+      ? byteLength >= 32
+      : typeof value === "string" && (decodedBase64urlLength(value) ?? 0) >= 32;
+  },
   "secret key material must contain at least 32 decoded bytes (unpadded base64url or Uint8Array)",
 );
 
 const keyMapSchema = z
   .record(nonEmptyStringSchema, keyMaterialSchema)
   .superRefine((keys, context) => {
-    if (Object.keys(keys).length === 0) {
+    if (configObjectKeys(keys).length === 0) {
       context.addIssue({
         code: "custom",
         message: "at least one signing key is required",
@@ -210,7 +237,12 @@ const requiredRepositoryMethods = {
 } as const;
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (typeof value !== "object" || value === null) return false;
+  try {
+    return !configArrayIsArray(value);
+  } catch {
+    return false;
+  }
 }
 
 type DataPropertySnapshot =
@@ -220,13 +252,17 @@ type DataPropertySnapshot =
 
 function dataPropertySnapshot(value: object, key: PropertyKey): DataPropertySnapshot {
   let current: object | null = value;
-  const seen = new Set<object>();
+  const seen = new configSetConstructor<object>();
   for (let depth = 0; current !== null && depth < 32; depth += 1) {
-    if (seen.has(current)) return { valid: false, present: true };
-    seen.add(current);
+    try {
+      if (configReflectApply(configSetHas, seen, [current])) return { valid: false, present: true };
+      configReflectApply(configSetAdd, seen, [current]);
+    } catch {
+      return { valid: false, present: true };
+    }
     let descriptor: PropertyDescriptor | undefined;
     try {
-      descriptor = Object.getOwnPropertyDescriptor(current, key);
+      descriptor = configObjectGetOwnPropertyDescriptor(current, key);
     } catch {
       return { valid: false, present: false };
     }
@@ -235,7 +271,7 @@ function dataPropertySnapshot(value: object, key: PropertyKey): DataPropertySnap
       return { valid: true, present: true, value: descriptor.value };
     }
     try {
-      current = Object.getPrototypeOf(current);
+      current = configObjectGetPrototypeOf(current);
     } catch {
       return { valid: false, present: false };
     }
@@ -244,10 +280,14 @@ function dataPropertySnapshot(value: object, key: PropertyKey): DataPropertySnap
 }
 
 function hasMethods(value: unknown, methods: readonly string[]): boolean {
-  return isObjectRecord(value) && methods.every((method) => {
+  if (!isObjectRecord(value)) return false;
+  for (let index = 0; index < methods.length; index += 1) {
+    const method = methods[index];
+    if (method === undefined) return false;
     const property = dataPropertySnapshot(value, method);
-    return property.valid && property.present && typeof property.value === "function";
-  });
+    if (!property.valid || !property.present || typeof property.value !== "function") return false;
+  }
+  return true;
 }
 
 /**
@@ -261,12 +301,16 @@ export function isAuthRepository(value: unknown): value is AuthRepository {
     return false;
   }
 
-  return (Object.entries(requiredRepositoryMethods) as readonly [string, readonly string[]][])
-    .filter(([member]) => member !== "root")
-    .every(([member, methods]) => {
-      const property = dataPropertySnapshot(value, member);
-      return property.valid && property.present && hasMethods(property.value, methods);
-    });
+  const members = configObjectKeys(requiredRepositoryMethods) as Array<keyof typeof requiredRepositoryMethods>;
+  for (let index = 0; index < members.length; index += 1) {
+    const member = members[index];
+    if (member === undefined || member === "root") continue;
+    const property = dataPropertySnapshot(value, member);
+    if (!property.valid || !property.present || !hasMethods(property.value, requiredRepositoryMethods[member])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -386,18 +430,25 @@ export const authServerOptionsSchema = z
     const productionUrls: Array<{ path: PropertyKey[]; value: string }> = [
       { path: ["baseUrl"], value: options.baseUrl },
       { path: ["siteUrl"], value: options.siteUrl },
-      ...options.redirects.allowed.map((value, index) => ({
-        path: ["redirects", "allowed", index],
-        value,
-      })),
     ];
+    for (let index = 0; index < options.redirects.allowed.length; index += 1) {
+      const value = options.redirects.allowed[index];
+      if (value !== undefined) {
+        productionUrls[productionUrls.length] = {
+          path: ["redirects", "allowed", index],
+          value,
+        };
+      }
+    }
 
-    for (const { path, value } of productionUrls) {
-      const parsed = parseUrlSafely(value);
+    for (let index = 0; index < productionUrls.length; index += 1) {
+      const entry = productionUrls[index];
+      if (entry === undefined) continue;
+      const parsed = parseUrlSafely(entry.value);
       if (parsed !== null && parsed.protocol !== "https:") {
         context.addIssue({
           code: "custom",
-          path,
+          path: entry.path,
           message: "production URLs must use HTTPS",
         });
       }

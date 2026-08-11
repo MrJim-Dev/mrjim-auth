@@ -23,9 +23,10 @@ import {
 } from "./jwks.js";
 import {
   assertBoundaryObject,
-  boundaryHasThen,
+  captureBoundaryBytes,
   captureBoundaryClock,
   captureBoundaryKeyProvider,
+  captureBoundaryStringArray,
   optionalBoundaryOption,
   requiredBoundaryOption,
 } from "./callback-boundary.js";
@@ -95,13 +96,21 @@ function validDate(value: unknown, label: string): number {
 
 function validClaims(payload: JWTPayload): payload is AccessTokenClaims {
   const audience = payload.aud;
+  let audienceValid = false;
+  if (typeof audience === "string") {
+    audienceValid = audience.trim() !== "";
+  } else {
+    try {
+      captureBoundaryStringArray(audience, "access-token audience", 1, 128);
+      audienceValid = true;
+    } catch {
+      audienceValid = false;
+    }
+  }
   return (
     typeof payload.iss === "string" &&
     payload.iss.trim() !== "" &&
-    (typeof audience === "string" ||
-      (Array.isArray(audience) &&
-        audience.length > 0 &&
-        audience.every((value) => typeof value === "string" && value.trim() !== ""))) &&
+    audienceValid &&
     typeof payload.sub === "string" &&
     payload.sub.trim() !== "" &&
     typeof payload.sid === "string" &&
@@ -154,24 +163,18 @@ export class TokenService {
     const clock = captureBoundaryClock(clockValue, "token clock", () => new Date());
 
     this.issuer = validString(issuerValue as string, "token issuer");
-    const audience = audienceValue as string | string[];
-    if (
-      (typeof audience !== "string" && !Array.isArray(audience)) ||
-      (typeof audience === "string" && audience.trim() === "") ||
-      (Array.isArray(audience) && audience.length === 0) ||
-      (Array.isArray(audience) &&
-        (boundaryHasThen(audience) || audience.some((value) => typeof value !== "string" || value.trim() === "")))
-    ) {
+    const audience = typeof audienceValue === "string"
+      ? audienceValue
+      : captureBoundaryStringArray(audienceValue, "token audience", 1, 128);
+    if (typeof audience === "string" && audience.trim() === "") {
       throw new AuthConfigurationError("token audience must be non-empty");
     }
-    this.audience = Array.isArray(audience) ? [...audience] : audience;
+    this.audience = typeof audience === "string" ? audience : audience as string[];
 
     const hashKey =
       typeof tokenHashKeyValue === "string"
         ? new TextEncoder().encode(tokenHashKeyValue)
-        : tokenHashKeyValue instanceof Uint8Array && !boundaryHasThen(tokenHashKeyValue)
-          ? Uint8Array.from(tokenHashKeyValue)
-          : (() => { throw new AuthConfigurationError("token hash key must be non-empty"); })();
+        : captureBoundaryBytes(tokenHashKeyValue, "token hash key", 1);
     if (hashKey.byteLength === 0) {
       throw new AuthConfigurationError("token hash key must be non-empty");
     }

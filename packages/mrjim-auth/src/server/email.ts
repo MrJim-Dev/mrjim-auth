@@ -86,11 +86,13 @@ export class EmailService {
       1,
     );
     const defaultRedirectValue = optionalBoundaryOption(source, "defaultRedirect", "email default redirect");
-    for (const redirect of allowedRedirects) {
+    for (let index = 0; index < allowedRedirects.length; index += 1) {
+      const redirect = allowedRedirects[index];
+      if (redirect === undefined) throw new AuthConfigurationError("email redirects must be a dense string array");
       validateConfiguredRedirect(redirect);
     }
     const defaultRedirect = defaultRedirectValue ?? allowedRedirects[0];
-    if (typeof defaultRedirect !== "string" || !allowedRedirects.includes(defaultRedirect)) {
+    if (typeof defaultRedirect !== "string" || !hasRedirect(allowedRedirects, defaultRedirect)) {
       throw new AuthConfigurationError("default email redirect must be exactly allowlisted");
     }
     this.allowedRedirects = allowedRedirects;
@@ -100,7 +102,7 @@ export class EmailService {
   /** Returns an exact allowlisted redirect or a stable expected auth error. */
   resolveRedirect(redirect?: string | null): string {
     const candidate = redirect ?? this.defaultRedirect;
-    if (!this.allowedRedirects.includes(candidate)) {
+    if (!hasRedirect(this.allowedRedirects, candidate)) {
       throw new AuthApiError("redirect_not_allowed", 400, "Redirect URL is not allowed");
     }
     return candidate;
@@ -130,4 +132,11 @@ function validateConfiguredRedirect(value: string): void {
   if (parsed.hash !== "") {
     throw new AuthConfigurationError("email redirects may not include fragments");
   }
+}
+
+function hasRedirect(values: readonly string[], candidate: string): boolean {
+  for (let index = 0; index < values.length; index += 1) {
+    if (values[index] === candidate) return true;
+  }
+  return false;
 }

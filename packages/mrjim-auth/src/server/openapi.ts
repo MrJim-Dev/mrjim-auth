@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { AuthConfigurationError } from "../shared/errors.js";
 import { routeContracts, type RouteContract } from "./routes/contracts.js";
+import { assertBoundaryObject, optionalBoundaryOption } from "./callback-boundary.js";
 
 type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
@@ -85,7 +87,16 @@ function pathParameters(contract: RouteContract): JsonValue[] {
 }
 
 function configuredServerUrl(input: OpenApiDocumentInput): string {
-  const candidate = typeof input === "string" ? input : input?.baseUrl;
+  let candidate: unknown;
+  if (typeof input === "string") {
+    candidate = input;
+  } else if (input === undefined) {
+    candidate = undefined;
+  } else {
+    if (input === null || typeof input !== "object") throw new AuthConfigurationError("OpenAPI options must be an object");
+    assertBoundaryObject(input, "OpenAPI options");
+    candidate = optionalBoundaryOption(input, "baseUrl", "OpenAPI base URL");
+  }
   if (candidate === undefined) return "/auth/v1";
   if (typeof candidate !== "string" || candidate.length === 0) throw new TypeError("baseUrl must be a non-empty absolute HTTP(S) URL");
   let parsed: URL;

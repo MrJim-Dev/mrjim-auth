@@ -16,6 +16,13 @@ import {
   type ScopeIdentifier,
   type UUID,
 } from "../shared/types.js";
+import {
+  assertBoundaryObject,
+  boundaryDataProperty,
+  boundaryOwnDataProperty,
+  captureBoundaryClock,
+  captureBoundaryMethodGroup,
+} from "./callback-boundary.js";
 
 /*
  * Authorization is a security boundary. Capture the object/array operations
@@ -97,29 +104,6 @@ function ownDataProperty(value: object, key: PropertyKey): DataProperty {
   } catch {
     return { valid: false, present: false };
   }
-}
-
-function captureAuthorizationFunction(value: unknown, label: string): Function {
-  if (typeof value !== "function") throw new AuthConfigurationError(`${label} must be a function`);
-  let current: object | null = value;
-  for (let depth = 0; current !== null && current !== objectPrototype && depth < 32; depth += 1) {
-    let descriptor: PropertyDescriptor | undefined;
-    try {
-      descriptor = objectGetOwnPropertyDescriptor(current, "then");
-      if (descriptor !== undefined) throw new AuthConfigurationError(`${label} must be a non-thenable function`);
-      current = objectGetPrototypeOf(current);
-    } catch (error) {
-      if (error instanceof AuthConfigurationError) throw error;
-      throw new AuthConfigurationError(`${label} must be a data-property function`);
-    }
-  }
-  if (current !== null && current !== objectPrototype) throw new AuthConfigurationError(`${label} must be a non-thenable function`);
-  return value;
-}
-
-function captureAuthorizationClock(value: unknown): () => Date {
-  if (value === undefined) return defaultClock;
-  return captureAuthorizationFunction(value, "authorization clock") as () => Date;
 }
 
 function isPlainRecord(value: unknown): value is object {
@@ -990,8 +974,9 @@ export class AuthorizationService {
       throw new AuthConfigurationError("authorization repository is incomplete");
     }
     const source = options as unknown as object;
+    assertBoundaryObject(source, "authorization options");
 
-    const repositoryProperty = ownDataProperty(source, "repository");
+    const repositoryProperty = boundaryOwnDataProperty(source, "repository");
     if (!repositoryProperty.valid || !repositoryProperty.present) {
       throw new AuthConfigurationError("authorization repository is incomplete");
     }
@@ -999,8 +984,9 @@ export class AuthorizationService {
     if (repository === null || (typeof repository !== "object" && typeof repository !== "function")) {
       throw new AuthConfigurationError("authorization repository is incomplete");
     }
+    assertBoundaryObject(repository, "authorization repository");
 
-    const authorizationProperty = ownDataProperty(repository, "authorization");
+    const authorizationProperty = boundaryOwnDataProperty(repository, "authorization");
     if (!authorizationProperty.valid || !authorizationProperty.present) {
       throw new AuthConfigurationError("authorization repository is incomplete");
     }
@@ -1008,17 +994,15 @@ export class AuthorizationService {
     if (authorization === null || (typeof authorization !== "object" && typeof authorization !== "function")) {
       throw new AuthConfigurationError("authorization repository is incomplete");
     }
+    assertBoundaryObject(authorization, "authorization repository");
 
-    const effectivePermissionsProperty = ownDataProperty(authorization, "effectivePermissions");
-    if (!effectivePermissionsProperty.valid || !effectivePermissionsProperty.present || typeof effectivePermissionsProperty.value !== "function") {
-      throw new AuthConfigurationError("authorization repository is incomplete");
-    }
-    const effectivePermissions = captureAuthorizationFunction(
-      effectivePermissionsProperty.value,
-      "authorization repository.effectivePermissions",
-    );
+    const authorizationFacade = captureBoundaryMethodGroup(
+      authorization,
+      "authorization repository",
+      ["effectivePermissions"],
+    ) as unknown as AuthorizationRepository;
 
-    const clockProperty = ownDataProperty(source, "clock");
+    const clockProperty = boundaryOwnDataProperty(source, "clock");
     if (!clockProperty.valid) {
       throw new AuthConfigurationError("authorization clock must be a function");
     }
@@ -1027,9 +1011,9 @@ export class AuthorizationService {
       throw new AuthConfigurationError("authorization clock must be a function");
     }
 
-    this.authorization = authorization as AuthorizationRepository;
-    this.effectivePermissions = effectivePermissions as AuthorizationRepository["effectivePermissions"];
-    this.clock = captureAuthorizationClock(configuredClock);
+    this.authorization = authorizationFacade;
+    this.effectivePermissions = authorizationFacade.effectivePermissions;
+    this.clock = captureBoundaryClock(configuredClock, "authorization clock", defaultClock);
     validNow(this.clock);
   }
 

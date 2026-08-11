@@ -152,9 +152,12 @@ function deterministicProvider(overrides: Partial<OAuthProvider> = {}): OAuthPro
 type TestOAuthServiceOptions = {
   readonly repository?: AuthRepository;
   readonly provider?: OAuthProvider;
+  readonly providers?: readonly OAuthProvider[] | ReadonlyMap<string, OAuthProvider>;
   readonly allowVerifiedEmailAutoLink?: boolean;
   readonly defaultRoleKeys?: readonly string[];
   readonly allowedRedirects?: readonly string[];
+  readonly tokenHashKey?: string | Uint8Array;
+  readonly encryptionKey?: string | Uint8Array;
 };
 
 function createOAuthService(options: TestOAuthServiceOptions = {}): OAuthService {
@@ -163,9 +166,9 @@ function createOAuthService(options: TestOAuthServiceOptions = {}): OAuthService
   return new OAuthService({
     repository: currentRepository,
     sessions,
-    providers: [options.provider ?? deterministicProvider()],
-    tokenHashKey: TOKEN_HASH_KEY,
-    encryptionKey: ENCRYPTION_KEY,
+    providers: options.providers ?? [options.provider ?? deterministicProvider()],
+    tokenHashKey: options.tokenHashKey ?? TOKEN_HASH_KEY,
+    encryptionKey: options.encryptionKey ?? ENCRYPTION_KEY,
     allowedRedirects: options.allowedRedirects ?? [CALLBACK, ALT_CALLBACK],
     allowVerifiedEmailAutoLink: options.allowVerifiedEmailAutoLink ?? false,
     defaultRoleKeys: options.defaultRoleKeys ?? [],
@@ -639,6 +642,89 @@ describe("Task 7 OAuth and identity safety", () => {
     });
     expect(() => createOAuth(callable)).toThrow(AuthConfigurationError);
     expect(callableThenCalls).toBe(0);
+  });
+
+  it("bounds and snapshots OAuth collections and byte key material", () => {
+    const revokedRedirects = Proxy.revocable([CALLBACK], {});
+    revokedRedirects.revoke();
+    let revokedRedirectThrown: unknown;
+    try {
+      createOAuthService({ allowedRedirects: revokedRedirects.proxy });
+    } catch (error) {
+      revokedRedirectThrown = error;
+    }
+    expect(revokedRedirectThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(revokedRedirectThrown)).not.toContain("TypeError");
+
+    const ownKeysRedirects = new Proxy([CALLBACK], {
+      ownKeys: () => { throw new Error("OAuth redirects ownKeys sentinel"); },
+    });
+    let ownKeysThrown: unknown;
+    try {
+      createOAuthService({ allowedRedirects: ownKeysRedirects });
+    } catch (error) {
+      ownKeysThrown = error;
+    }
+    expect(ownKeysThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(ownKeysThrown)).not.toContain("ownKeys sentinel");
+
+    const provider = deterministicProvider();
+    const providers = Array.from({ length: 129 }, (_, index) => ({
+      ...provider,
+      name: `provider-${index}`,
+    }));
+    expect(() => createOAuthService({ providers: providers.slice(0, 127) })).not.toThrow();
+    expect(() => createOAuthService({ providers: providers.slice(0, 128) })).not.toThrow();
+    let providersThrown: unknown;
+    try {
+      createOAuthService({ providers });
+    } catch (error) {
+      providersThrown = error;
+    }
+    expect(providersThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(providersThrown)).not.toContain("provider sentinel");
+
+    const inheritedRedirects = new Array<string>(1);
+    const redirectPrototype = Object.create(Array.prototype) as Record<string, unknown>;
+    Object.defineProperty(redirectPrototype, "0", { configurable: true, value: CALLBACK });
+    Object.setPrototypeOf(inheritedRedirects, redirectPrototype);
+    expect(() => createOAuthService({ allowedRedirects: inheritedRedirects })).toThrow(AuthConfigurationError);
+
+    const inheritedProviders = new Array<OAuthProvider>(1);
+    const providerPrototype = Object.create(Array.prototype) as Record<string, unknown>;
+    Object.defineProperty(providerPrototype, "0", { configurable: true, value: provider });
+    Object.setPrototypeOf(inheritedProviders, providerPrototype);
+    expect(() => createOAuthService({ providers: inheritedProviders })).toThrow(AuthConfigurationError);
+
+    const revokedKey = Proxy.revocable(TOKEN_HASH_KEY, {});
+    revokedKey.revoke();
+    let keyThrown: unknown;
+    try {
+      createOAuthService({ tokenHashKey: revokedKey.proxy });
+    } catch (error) {
+      keyThrown = error;
+    }
+    expect(keyThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(keyThrown)).not.toContain("TypeError");
+
+    let lengthReads = 0;
+    const arrayLike = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(arrayLike, "length", {
+      configurable: true,
+      get: () => {
+        lengthReads += 1;
+        throw new Error("OAuth key length sentinel");
+      },
+    });
+    let arrayLikeThrown: unknown;
+    try {
+      createOAuthService({ encryptionKey: arrayLike as never });
+    } catch (error) {
+      arrayLikeThrown = error;
+    }
+    expect(arrayLikeThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(arrayLikeThrown)).not.toContain("length sentinel");
+    expect(lengthReads).toBe(0);
   });
 
   it("signs in by provider subject, links only with a fresh session, and rejects collisions", async () => {

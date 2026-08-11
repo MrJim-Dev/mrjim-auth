@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { AuthRepository } from "../../src/shared/contracts.js";
 import { AuthConfigurationError } from "../../src/shared/errors.js";
 import { EmailService } from "../../src/server/email.js";
 import { AuthServer } from "../../src/server/auth-server.js";
@@ -10,6 +11,49 @@ import { UserService } from "../../src/server/users.js";
 
 const NOW = new Date("2026-08-11T05:00:00.000Z");
 const TOKEN_HASH_KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
+const CALLBACK = "https://project.example.com/auth/callback";
+
+function repositoryFixture(): AuthRepository {
+  const noop = async () => undefined;
+  const repository = {
+    transaction: async (callback: (value: AuthRepository) => unknown) => callback(repository as unknown as AuthRepository),
+    users: {
+      findById: noop, findByIdForUpdate: noop, findByNormalizedEmail: noop,
+      findByNormalizedEmailForUpdate: noop, create: noop, createIfAvailable: noop,
+      update: noop, softDelete: noop,
+    },
+    identities: {
+      findByProviderSubject: noop, listByUserId: noop, create: noop,
+      createIfAvailable: noop, deleteById: noop,
+    },
+    passwordCredentials: { findByUserId: noop, upsert: noop, deleteByUserId: noop },
+    sessions: {
+      create: noop, findByIdForUpdate: noop, findRefreshForUpdate: noop,
+      rotate: noop, revokeSession: noop, revokeFamily: noop, revokeUserSessions: noop,
+    },
+    oneTimeTokens: { issue: noop, consume: noop, consumeBound: noop, recordFailure: noop },
+    oauthStates: { create: noop, consume: noop },
+    authorization: {
+      effectivePermissions: noop, assignRole: noop, unassignRole: noop,
+      setRolePermissions: noop, setRoleInheritance: noop,
+    },
+    roles: { list: noop, findById: noop, create: noop, update: noop, delete: noop },
+    permissions: { list: noop, findById: noop, create: noop, update: noop, delete: noop },
+    operations: { appendAudit: noop, findApiKeyByHash: noop },
+  };
+  return repository as unknown as AuthRepository;
+}
+
+function expectRedactedConfigurationFailure(operation: () => unknown, sentinel: string): void {
+  let thrown: unknown;
+  try {
+    operation();
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toBeInstanceOf(AuthConfigurationError);
+  expect(String(thrown)).not.toContain(sentinel);
+}
 
 describe("public server constructor callback boundaries", () => {
   it("does not invoke AuthServer runtime option accessors", () => {
@@ -179,5 +223,83 @@ describe("public server constructor callback boundaries", () => {
       Object.setPrototypeOf(policy, Object.prototype);
     }
     expect(policyThenCalls).toBe(0);
+  });
+
+  it("redacts hostile collection traps and ignores mutable collection intrinsics", () => {
+    const revoked = Proxy.revocable([CALLBACK], {});
+    revoked.revoke();
+    expectRedactedConfigurationFailure(
+      () => new EmailService({ allowedRedirects: revoked.proxy }),
+      "revoked",
+    );
+
+    const ownKeys = new Proxy([CALLBACK], {
+      ownKeys: () => { throw new Error("ownKeys sentinel"); },
+    });
+    expectRedactedConfigurationFailure(
+      () => new EmailService({ allowedRedirects: ownKeys }),
+      "ownKeys sentinel",
+    );
+
+    const originalSome = Array.prototype.some;
+    const originalPush = Array.prototype.push;
+    const originalSetHas = Set.prototype.has;
+    const originalSetAdd = Set.prototype.add;
+    const originalEntries = Object.entries;
+    try {
+      Array.prototype.some = (() => { throw new Error("array some sentinel"); }) as typeof Array.prototype.some;
+      expect(() => new EmailService({ allowedRedirects: [CALLBACK] })).not.toThrow();
+      Array.prototype.some = originalSome;
+      Array.prototype.push = (() => { throw new Error("array push sentinel"); }) as typeof Array.prototype.push;
+      expect(() => new EmailService({ allowedRedirects: [CALLBACK] })).not.toThrow();
+      Array.prototype.push = originalPush;
+      Set.prototype.has = (() => { throw new Error("set has sentinel"); }) as typeof Set.prototype.has;
+      expect(() => new EmailService({ allowedRedirects: [CALLBACK] })).not.toThrow();
+      Set.prototype.has = originalSetHas;
+      Set.prototype.add = (() => { throw new Error("set add sentinel"); }) as typeof Set.prototype.add;
+      expect(() => new EmailService({ allowedRedirects: [CALLBACK] })).not.toThrow();
+      Set.prototype.add = originalSetAdd;
+      Object.entries = (() => { throw new Error("object entries sentinel"); }) as typeof Object.entries;
+      expect(() => new OneTimeTokenService({
+        repository: repositoryFixture(),
+        mailer: { send: async () => undefined },
+        email: new EmailService({ allowedRedirects: [CALLBACK] }),
+        tokenHashKey: TOKEN_HASH_KEY,
+      })).not.toThrow();
+    } finally {
+      Array.prototype.some = originalSome;
+      Array.prototype.push = originalPush;
+      Set.prototype.has = originalSetHas;
+      Set.prototype.add = originalSetAdd;
+      Object.entries = originalEntries;
+    }
+  });
+
+  it("rejects array-like and revoked byte key material synchronously", () => {
+    let lengthReads = 0;
+    const arrayLike = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(arrayLike, "length", {
+      configurable: true,
+      get: () => {
+        lengthReads += 1;
+        throw new Error("byte length sentinel");
+      },
+    });
+    expectRedactedConfigurationFailure(() => new OneTimeTokenService({
+      repository: repositoryFixture(),
+      mailer: { send: async () => undefined },
+      email: new EmailService({ allowedRedirects: [CALLBACK] }),
+      tokenHashKey: arrayLike as never,
+    }), "byte length sentinel");
+    expect(lengthReads).toBe(0);
+
+    const revoked = Proxy.revocable(TOKEN_HASH_KEY, {});
+    revoked.revoke();
+    expectRedactedConfigurationFailure(() => new OneTimeTokenService({
+      repository: repositoryFixture(),
+      mailer: { send: async () => undefined },
+      email: new EmailService({ allowedRedirects: [CALLBACK] }),
+      tokenHashKey: revoked.proxy,
+    }), "TypeError");
   });
 });

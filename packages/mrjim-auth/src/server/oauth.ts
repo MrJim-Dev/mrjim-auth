@@ -43,8 +43,19 @@ import {
 import { captureAuthServerRepository } from "./auth-server.js";
 import {
   assertBoundaryObject,
+  boundaryDataProperty as sharedBoundaryDataProperty,
+  boundaryIsArray,
+  boundaryIsMap,
+  boundaryMapHasValue,
+  boundaryMapSetValue,
+  captureBoundaryBytes,
   captureBoundaryClock,
+  captureBoundaryDenseArray,
+  captureBoundaryMapEntries,
   captureBoundaryMethodGroup,
+  captureBoundaryStringArray,
+  captureBoundaryUniqueStringArray,
+  createBoundaryMap,
 } from "./callback-boundary.js";
 import { isCodeVerifier } from "../client/pkce.js";
 import { SessionService, type AuthenticatedSession, type SessionContext } from "./sessions.js";
@@ -102,71 +113,17 @@ const transactionValueDelete = Function.prototype.call.bind(WeakMap.prototype.de
 const createTransactionMarker = Object.create;
 const freezeTransactionMarker = Object.freeze;
 const oauthObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
-const oauthObjectGetPrototypeOf = Object.getPrototypeOf;
 const oauthObjectCreate = Object.create;
-const oauthMapEntries = Map.prototype.entries;
-const oauthReflectApply = Reflect.apply;
 
 type OAuthDataProperty =
   | { readonly valid: true; readonly present: false }
   | { readonly valid: true; readonly present: true; readonly value: unknown }
   | { readonly valid: false; readonly present: boolean };
 
-function oauthDataProperty(value: object, key: PropertyKey): OAuthDataProperty {
-  let current: object | null = value;
-  const seen = new Set<object>();
-  for (let depth = 0; current !== null && depth < 32; depth += 1) {
-    if (seen.has(current)) return { valid: false, present: true };
-    seen.add(current);
-    let descriptor: PropertyDescriptor | undefined;
-    try {
-      descriptor = oauthObjectGetOwnPropertyDescriptor(current, key);
-    } catch {
-      return { valid: false, present: false };
-    }
-    if (descriptor !== undefined) {
-      if (!("value" in descriptor)) return { valid: false, present: true };
-      return { valid: true, present: true, value: descriptor.value };
-    }
-    try {
-      current = oauthObjectGetPrototypeOf(current);
-    } catch {
-      return { valid: false, present: false };
-    }
-  }
-  return current === null ? { valid: true, present: false } : { valid: false, present: true };
-}
-
-function oauthHasThen(value: object): boolean {
-  let current: object | null = value;
-  for (let depth = 0; current !== null && depth < 8; depth += 1) {
-    const property = oauthDataProperty(current, "then");
-    if (!property.valid) return true;
-    if (property.present) return true;
-    try {
-      current = oauthObjectGetPrototypeOf(current);
-    } catch {
-      return true;
-    }
-  }
-  return current !== null;
-}
+const oauthDataProperty = sharedBoundaryDataProperty as (value: object, key: PropertyKey) => OAuthDataProperty;
 
 function oauthStringArray(value: unknown, label: string, minimum = 1): readonly string[] {
-  if (!arrayIsArray(value) || oauthHasThen(value)) throw new AuthConfigurationError(`${label} must be a data array`);
-  const lengthProperty = oauthDataProperty(value, "length");
-  if (!lengthProperty.valid || !lengthProperty.present || typeof lengthProperty.value !== "number" || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value < minimum || lengthProperty.value > 128) {
-    throw new AuthConfigurationError(`${label} must be a non-empty string array`);
-  }
-  const output: string[] = [];
-  for (let index = 0; index < lengthProperty.value; index += 1) {
-    const property = oauthDataProperty(value, `${index}`);
-    if (!property.valid || !property.present || typeof property.value !== "string" || property.value.trim() === "") {
-      throw new AuthConfigurationError(`${label} must be a non-empty string array`);
-    }
-    output.push(property.value);
-  }
-  return Object.freeze(output);
+  return captureBoundaryStringArray(value, label, minimum, 128);
 }
 
 function oauthOption(source: object, key: string): unknown {
@@ -199,7 +156,7 @@ function captureOAuthProvider(value: unknown, label: string): OAuthProvider {
     name: name.value,
     clientId: clientId.value,
     scopes: oauthStringArray(scopes.value, `${label}.scopes`),
-    capabilities: Object.freeze({ authorization_code: true, pkce: true, identity_linking: true }),
+    capabilities: freezeOAuthValue({ authorization_code: true, pkce: true, identity_linking: true }),
   };
   if (issuer.present) properties.issuer = issuer.value;
   return captureBoundaryMethodGroup(
@@ -224,34 +181,24 @@ function captureOAuthProviders(value: unknown): readonly (readonly [string, OAut
   if (value !== null && (typeof value === "object" || typeof value === "function")) {
     assertBoundaryObject(value, "OAuth providers");
   }
-  if (arrayIsArray(value)) {
-    const lengthProperty = oauthDataProperty(value, "length");
-    if (!lengthProperty.valid || !lengthProperty.present || typeof lengthProperty.value !== "number" || !Number.isSafeInteger(lengthProperty.value)) {
-      throw new AuthConfigurationError("OAuth providers must be a provider array or map");
+  if (boundaryIsArray(value, "OAuth providers")) {
+    const providers = captureBoundaryDenseArray(value, "OAuth providers", 1, 128);
+    for (let index = 0; index < providers.length; index += 1) {
+      const providerValue = providers[index];
+      const provider = captureOAuthProvider(providerValue, `OAuth provider ${index}`);
+      entries[index] = [provider.name, provider];
     }
-    for (let index = 0; index < lengthProperty.value; index += 1) {
-      const property = oauthDataProperty(value, `${index}`);
-      if (!property.valid || !property.present) throw new AuthConfigurationError("OAuth providers must be a provider array or map");
-      const provider = captureOAuthProvider(property.value, `OAuth provider ${index}`);
-      entries.push([provider.name, provider]);
-    }
-    return Object.freeze(entries);
+    return freezeOAuthValue(entries);
   }
-  if (value instanceof Map) {
-    for (const entry of oauthReflectApply(oauthMapEntries, value, []) as Iterable<unknown>) {
-      if (!arrayIsArray(entry)) throw new AuthConfigurationError("OAuth providers must be a provider array or map");
-      const length = oauthDataProperty(entry, "length");
-      const key = oauthDataProperty(entry, "0");
-      const valueProperty = oauthDataProperty(entry, "1");
-      if (
-        !length.valid || !length.present || length.value !== 2
-        || !key.valid || !key.present || typeof key.value !== "string"
-        || !valueProperty.valid || !valueProperty.present
-      ) throw new AuthConfigurationError("OAuth providers must be a provider array or map");
-      const provider = captureOAuthProvider(valueProperty.value, "OAuth provider");
-      entries.push([key.value, provider]);
+  if (boundaryIsMap(value, "OAuth providers")) {
+    const mapEntries = captureBoundaryMapEntries(value, "OAuth providers", 128);
+    for (let index = 0; index < mapEntries.length; index += 1) {
+      const entry = mapEntries[index];
+      if (entry === undefined || typeof entry[0] !== "string") throw new AuthConfigurationError("OAuth providers must be a provider array or map");
+      const provider = captureOAuthProvider(entry[1], "OAuth provider");
+      entries[index] = [entry[0], provider];
     }
-    return Object.freeze(entries);
+    return freezeOAuthValue(entries);
   }
   throw new AuthConfigurationError("OAuth providers must be a provider array or map");
 }
@@ -392,7 +339,7 @@ function validKey(value: string | Uint8Array, label: string): Buffer {
       throw new AuthConfigurationError(`${label} must be canonical unpadded base64url key material`);
     }
   } else {
-    bytes = copyOAuthBuffer(value);
+    bytes = copyOAuthBuffer(captureBoundaryBytes(value, label, 1));
   }
   if (bytes.byteLength < 32) throw new AuthConfigurationError(`${label} must contain at least 32 decoded bytes`);
   return bytes;
@@ -839,42 +786,73 @@ export class OAuthService {
     if (repositoryValue === null || typeof repositoryValue !== "object") {
       throw new AuthConfigurationError("OAuth repository is incomplete");
     }
-    if (!(sessionsValue instanceof SessionService)) throw new AuthConfigurationError("OAuth session service is required");
+    assertBoundaryObject(sessionsValue, "OAuth session service");
+    let isSessionService = false;
+    try {
+      isSessionService = sessionsValue instanceof SessionService;
+    } catch {
+      throw new AuthConfigurationError("OAuth session service is required");
+    }
+    if (!isSessionService) throw new AuthConfigurationError("OAuth session service is required");
     if (typeof clockValue !== "undefined" && typeof clockValue !== "function") throw new AuthConfigurationError("OAuth clock must be a data-property function");
     const repository = captureAuthServerRepository(repositoryValue as AuthRepository);
-    const sessions = captureOAuthSessions(sessionsValue);
+    const sessions = captureOAuthSessions(sessionsValue as SessionService);
     const providerEntries = captureOAuthProviders(providersValue);
-    const providers = new Map<string, OAuthProvider>();
-    for (const [key, provider] of providerEntries) {
+    const providers = createBoundaryMap<string, OAuthProvider>();
+    for (let entryIndex = 0; entryIndex < providerEntries.length; entryIndex += 1) {
+      const entry = providerEntries[entryIndex];
+      if (entry === undefined) throw new AuthConfigurationError("OAuth providers are malformed");
+      const key = entry[0];
+      const provider = entry[1];
       const name = normalizeProvider(key);
-      if (providers.has(name)) throw new AuthConfigurationError(`duplicate OAuth provider: ${name}`);
+      if (boundaryMapHasValue(providers, name, "OAuth providers")) throw new AuthConfigurationError(`duplicate OAuth provider: ${name}`);
       if (normalizeProvider(provider.name) !== name) throw new AuthConfigurationError("OAuth provider map key does not match adapter name");
       if (typeof provider.clientId !== "string" || provider.clientId.trim() === "") throw new AuthConfigurationError("OAuth provider client ID is required");
-      if (!arrayIsArray(provider.scopes) || provider.scopes.length === 0 || !provider.scopes.every((scope) => typeof scope === "string" && scope.trim() !== "")) {
+      const scopes = captureBoundaryStringArray(provider.scopes, "OAuth provider scopes", 1, 128);
+      for (let scopeIndex = 0; scopeIndex < scopes.length; scopeIndex += 1) {
+        const scope = scopes[scopeIndex];
+        if (scope === undefined || scope.trim() === "") throw new AuthConfigurationError("OAuth provider scopes are required");
+      }
+      if (scopes.length === 0) {
         throw new AuthConfigurationError("OAuth provider scopes are required");
       }
-      providers.set(name, provider);
+      boundaryMapSetValue(providers, name, provider, "OAuth providers");
     }
-    if (providers.size === 0) throw new AuthConfigurationError("at least one OAuth provider is required");
-    const allowed = oauthStringArray(allowedRedirectsValue, "OAuth redirects").map(normalizeRedirect);
-    if (allowed.length === 0 || new Set(allowed).size !== allowed.length) throw new AuthConfigurationError("OAuth redirects must be non-empty and unique");
+    if (providerEntries.length === 0) throw new AuthConfigurationError("at least one OAuth provider is required");
+    const redirectValues = captureBoundaryUniqueStringArray(allowedRedirectsValue, "OAuth redirects", 1, 128);
+    const allowed: string[] = [];
+    for (let index = 0; index < redirectValues.length; index += 1) {
+      const redirect = redirectValues[index];
+      if (redirect === undefined) throw new AuthConfigurationError("OAuth redirects are malformed");
+      allowed[index] = normalizeRedirect(redirect);
+      for (let previous = 0; previous < index; previous += 1) {
+        if (allowed[previous] === allowed[index]) throw new AuthConfigurationError("OAuth redirects must be non-empty and unique");
+      }
+    }
     const defaultRedirect = normalizeRedirect(defaultRedirectValue ?? allowed[0]);
-    if (!allowed.includes(defaultRedirect)) throw new AuthConfigurationError("OAuth default redirect must be exactly allowlisted");
+    let defaultAllowed = false;
+    for (let index = 0; index < allowed.length; index += 1) if (allowed[index] === defaultRedirect) defaultAllowed = true;
+    if (!defaultAllowed) throw new AuthConfigurationError("OAuth default redirect must be exactly allowlisted");
     const freshAge = (freshSessionMaxAgeValue as number | undefined) ?? 5 * 60;
     if (!Number.isSafeInteger(freshAge) || freshAge <= 0 || freshAge > 15 * 60) throw new AuthConfigurationError("OAuth fresh-session age is invalid");
-    const defaultRoleKeys = defaultRoleKeysValue === undefined ? [] : [...oauthStringArray(defaultRoleKeysValue, "OAuth default roles", 0)];
-    if (!defaultRoleKeys.every((key) => roleKeySchema.safeParse(key).success)) {
-      throw new AuthConfigurationError("OAuth default role keys are invalid");
+    const configuredRoleKeys = defaultRoleKeysValue === undefined ? [] : oauthStringArray(defaultRoleKeysValue, "OAuth default roles", 0);
+    const defaultRoleKeys: string[] = [];
+    for (let index = 0; index < configuredRoleKeys.length; index += 1) {
+      const key = configuredRoleKeys[index];
+      if (key === undefined || !roleKeySchema.safeParse(key).success) throw new AuthConfigurationError("OAuth default role keys are invalid");
+      let duplicate = false;
+      for (let previous = 0; previous < defaultRoleKeys.length; previous += 1) if (defaultRoleKeys[previous] === key) duplicate = true;
+      if (!duplicate) defaultRoleKeys[defaultRoleKeys.length] = key;
     }
     this.repository = repository;
     this.sessions = sessions;
     this.providers = providers;
     this.tokenHashKey = validKey(tokenHashKey as string | Uint8Array, "OAuth token hash key");
     this.encryptionKey = deriveEncryptionKey(encryptionKey as string | Uint8Array);
-    this.allowedRedirects = Object.freeze([...allowed]);
+    this.allowedRedirects = captureBoundaryStringArray(allowed, "OAuth redirects", 1, 128);
     this.defaultRedirect = defaultRedirect;
     this.allowVerifiedEmailAutoLink = allowVerifiedEmailAutoLinkValue === true;
-    this.defaultRoleKeys = Object.freeze([...new Set(defaultRoleKeys)]);
+    this.defaultRoleKeys = captureBoundaryStringArray(defaultRoleKeys, "OAuth default roles", 0, 128);
     this.freshSessionMaxAgeSeconds = freshAge;
     this.clock = clock;
     validNow(this.clock);
@@ -882,15 +860,26 @@ export class OAuthService {
 
   /** Lists enabled provider names and public capabilities without credentials. */
   listProviders(): readonly OAuthProviderDiscovery[] {
-    return Object.freeze([...this.providers.values()].map((provider) => ({
+    const values: OAuthProviderDiscovery[] = [];
+    let index = 0;
+    for (const provider of this.providers.values()) {
+      const scopes: string[] = [];
+      for (let scopeIndex = 0; scopeIndex < provider.scopes.length; scopeIndex += 1) {
+        const scope = provider.scopes[scopeIndex];
+        if (scope !== undefined) scopes[scopeIndex] = scope;
+      }
+      values[index] = {
       name: normalizeProvider(provider.name),
-      scopes: Object.freeze([...provider.scopes]),
-      capabilities: Object.freeze({
+      scopes: freezeOAuthValue(scopes),
+      capabilities: freezeOAuthValue({
         authorization_code: true,
         pkce: true,
         identity_linking: true,
       }),
-    })));
+      };
+      index += 1;
+    }
+    return freezeOAuthValue(values);
   }
 
   /** Compatibility alias for HTTP provider-discovery handlers. */

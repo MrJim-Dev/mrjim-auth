@@ -236,6 +236,7 @@ export class SessionService {
     const tokensValue = requiredBoundaryOption(source, "tokens", "session token service");
     const refreshTokenTtlValue = optionalBoundaryOption(source, "refreshTokenTtlSeconds", "refresh token TTL");
     const clockValue = optionalBoundaryOption(source, "clock", "session clock");
+    assertBoundaryObject(tokensValue, "session token service");
     if (!(tokensValue instanceof TokenService)) {
       throw new AuthConfigurationError("session token service is required");
     }
