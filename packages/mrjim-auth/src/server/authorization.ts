@@ -30,15 +30,23 @@ const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetOwnPropertyNames = Object.getOwnPropertyNames;
 const objectGetOwnPropertySymbols = Object.getOwnPropertySymbols;
 const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectHasOwnProperty = Object.prototype.hasOwnProperty;
 const objectPrototype = Object.prototype;
 const arrayIsArray = Array.isArray;
+const arraySort = Array.prototype.sort;
+const mapConstructor = Map;
+const mapHas = Map.prototype.has;
+const mapSet = Map.prototype.set;
 const numberIsSafeInteger = Number.isSafeInteger;
 const stringTrim = String.prototype.trim;
 const stringToLowerCase = String.prototype.toLowerCase;
 const regexpTest = RegExp.prototype.test;
+const weakMapConstructor = WeakMap;
+const weakMapGet = WeakMap.prototype.get;
+const weakMapSet = WeakMap.prototype.set;
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-const MAX_REQUIREMENT_KEYS = 4096;
+const MAX_REQUIREMENT_KEYS = 100_000;
 const MAX_PERMISSION_ROWS = 100_000;
 const PERMISSION_FIELDS = [
   "id",
@@ -63,7 +71,9 @@ function ownDataProperty(value: object, key: PropertyKey): DataProperty {
   try {
     const descriptor = objectGetOwnPropertyDescriptor(value, key);
     if (descriptor === undefined) return { valid: true, present: false };
-    if (!("value" in descriptor)) return { valid: false, present: true };
+    if (!invoke<boolean>(objectHasOwnProperty, descriptor, ["value"])) {
+      return { valid: false, present: true };
+    }
     return { valid: true, present: true, value: descriptor.value };
   } catch {
     return { valid: false, present: false };
@@ -162,26 +172,8 @@ function appendValue<T>(values: T[], value: T): void {
   });
 }
 
-function appendUnique(values: string[], value: string): void {
-  for (let index = 0; index < values.length; index += 1) {
-    if (values[index] === value) return;
-  }
-  appendValue(values, value);
-}
-
 function sortKeys(values: string[]): void {
-  for (let index = 1; index < values.length; index += 1) {
-    const current = values[index];
-    if (current === undefined) continue;
-    let position = index - 1;
-    while (position >= 0) {
-      const previous = values[position];
-      if (previous === undefined || compareKeys(previous, current) <= 0) break;
-      values[position + 1] = previous;
-      position -= 1;
-    }
-    values[position + 1] = current;
-  }
+  invoke<void>(arraySort, values, [compareKeys]);
 }
 
 function keySeparator(value: string): number {
@@ -237,75 +229,45 @@ type NormalizedRequirement = {
   readonly scope?: AuthorizationScope;
 };
 
+type PermissionIndex = {
+  readonly keys: readonly string[];
+  readonly exact: Map<string, true>;
+  readonly resourceWildcards: Map<string, true>;
+  readonly globalWildcard: boolean;
+};
+
 type PermissionCacheEntry = {
   readonly scope: AuthorizationScope | undefined;
-  readonly pending: Promise<readonly string[]>;
+  readonly pending: Promise<PermissionIndex>;
 };
+
+type PermissionCache = PermissionCacheEntry[];
 
 /** A cache explicitly owned by one immutable request subject. */
 export interface AuthorizationRequestContext {
   readonly subject: AuthorizationSubject;
 }
 
-const requestContextBrand = Symbol("mrjim-auth.authorization-request-context");
-const requestContextLoader = Symbol("mrjim-auth.authorization-request-context-loader");
-
-type InternalAuthorizationRequestContext = AuthorizationRequestContext & {
-  readonly [requestContextBrand]: true;
-  readonly [requestContextLoader]: (
-    scope: AuthorizationScope | undefined,
-    loader: () => Promise<readonly string[]>,
-  ) => Promise<readonly string[]>;
+type RequestContextState = {
+  readonly subject: AuthorizationSubject;
+  readonly serviceCaches: WeakMap<object, PermissionCache>;
 };
 
+/*
+ * Context authenticity is an object-identity fact held only in this module.
+ * Reflected symbols, copied properties, and caller-provided loaders carry no
+ * authority. Each authentic context has a separate cache per service object.
+ */
+const requestContextOwnership = new weakMapConstructor<object, RequestContextState>();
+
 function createContextFromSnapshot(subject: AuthorizationSubject): AuthorizationRequestContext {
-  const entries: PermissionCacheEntry[] = [];
-  const context = {
+  const context = objectFreeze({ subject });
+  const state: RequestContextState = {
     subject,
-    [requestContextLoader](scope: AuthorizationScope | undefined, loader: () => Promise<readonly string[]>) {
-      for (let index = 0; index < entries.length; index += 1) {
-        const entry = entries[index];
-        if (entry === undefined) return Promise.resolve([]);
-        if (sameScope(entry.scope, scope)) return entry.pending;
-      }
-
-      let pending: Promise<readonly string[]>;
-      try {
-        pending = loader();
-      } catch {
-        pending = Promise.resolve([]);
-      }
-      appendValue(entries, { scope, pending });
-      return pending;
-    },
-  } as InternalAuthorizationRequestContext;
-  objectDefineProperty(context, requestContextBrand, {
-    configurable: false,
-    enumerable: false,
-    value: true,
-    writable: false,
-  });
-  objectDefineProperty(context, requestContextLoader, {
-    configurable: false,
-    enumerable: false,
-    value: context[requestContextLoader],
-    writable: false,
-  });
-  return objectFreeze(context);
-}
-
-function isRequestContext(value: unknown): value is InternalAuthorizationRequestContext {
-  if (value === null || typeof value !== "object") return false;
-  const brand = ownDataProperty(value, requestContextBrand);
-  const loader = ownDataProperty(value, requestContextLoader);
-  return (
-    brand.valid &&
-    brand.present &&
-    brand.value === true &&
-    loader.valid &&
-    loader.present &&
-    typeof loader.value === "function"
-  );
+    serviceCaches: new weakMapConstructor<object, PermissionCache>(),
+  };
+  invoke<void>(weakMapSet, requestContextOwnership, [context, state]);
+  return context;
 }
 
 /** Creates a frozen request-local authorization context bound to one UUID. */
@@ -322,6 +284,32 @@ function sameScope(
 ): boolean {
   if (left === undefined || right === undefined) return left === right;
   return left.type === right.type && left.id === right.id;
+}
+
+function contextPermissions(
+  state: RequestContextState,
+  service: object,
+  scope: AuthorizationScope | undefined,
+  loader: () => Promise<PermissionIndex>,
+): Promise<PermissionIndex> {
+  let entries = invoke<PermissionCache | undefined>(weakMapGet, state.serviceCaches, [service]);
+  if (entries === undefined) {
+    entries = [];
+    invoke<void>(weakMapSet, state.serviceCaches, [service, entries]);
+  }
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry !== undefined && sameScope(entry.scope, scope)) return entry.pending;
+  }
+
+  let pending: Promise<PermissionIndex>;
+  try {
+    pending = loader();
+  } catch {
+    pending = Promise.resolve(createEmptyPermissionIndex());
+  }
+  appendValue(entries, { scope, pending });
+  return pending;
 }
 
 /** Parses one canonical lowercase `resource.action` permission key. */
@@ -451,7 +439,7 @@ function completePermissionRecord(value: unknown): Permission | null {
       const field = PERMISSION_FIELDS[index];
       if (field === undefined) return null;
       const property = ownDataProperty(value, field);
-      if (property.valid !== true || property.present !== true || !("value" in property)) return null;
+      if (property.valid !== true || property.present !== true) return null;
       objectDefineProperty(snapshot, field, {
         configurable: true,
         enumerable: true,
@@ -493,6 +481,54 @@ function completePermissionRecord(value: unknown): Permission | null {
   }
 }
 
+function newPermissionMap(): Map<string, true> {
+  return new mapConstructor<string, true>();
+}
+
+function mapContains(map: Map<string, true>, key: string): boolean {
+  return invoke<boolean>(mapHas, map, [key]);
+}
+
+function mapAdd(map: Map<string, true>, key: string): void {
+  invoke<Map<string, true>>(mapSet, map, [key, true]);
+}
+
+function createEmptyPermissionIndex(): PermissionIndex {
+  return {
+    keys: objectFreeze([] as string[]),
+    exact: newPermissionMap(),
+    resourceWildcards: newPermissionMap(),
+    globalWildcard: false,
+  };
+}
+
+function permissionIndex(records: readonly Permission[]): PermissionIndex {
+  const keys: string[] = [];
+  const exact = newPermissionMap();
+  const resourceWildcards = newPermissionMap();
+  let globalWildcard = false;
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record === undefined || mapContains(exact, record.key)) continue;
+    mapAdd(exact, record.key);
+    appendValue(keys, record.key);
+    if (record.resource === "*" && record.action === "*") {
+      globalWildcard = true;
+    } else if (record.action === "*") {
+      mapAdd(resourceWildcards, record.resource);
+    }
+  }
+
+  sortKeys(keys);
+  return objectFreeze({
+    keys: objectFreeze(keys),
+    exact,
+    resourceWildcards,
+    globalWildcard,
+  });
+}
+
 function normalizedRequirement(requirement: unknown): NormalizedRequirement | null {
   if (!isPlainRecord(requirement)) return null;
 
@@ -505,7 +541,7 @@ function normalizedRequirement(requirement: unknown): NormalizedRequirement | nu
     property: DataProperty,
   ): readonly string[] | null | undefined => {
     if (!property.present) return undefined;
-    if (property.valid !== true || !("value" in property)) return null;
+    if (property.valid !== true) return null;
     let candidate: unknown[];
     try {
       if (!arrayIsArray(property.value)) return null;
@@ -532,12 +568,16 @@ function normalizedRequirement(requirement: unknown): NormalizedRequirement | nu
     }
 
     const normalized: string[] = [];
+    const seen = newPermissionMap();
     for (let index = 0; index < length; index += 1) {
       const item = ownDataProperty(candidate, `${index}`);
-      if (item.valid !== true || item.present !== true || !("value" in item) || typeof item.value !== "string") return null;
+      if (item.valid !== true || item.present !== true || typeof item.value !== "string") return null;
       const key = safePermissionKey(item.value);
       if (key === null) return null;
-      appendUnique(normalized, key);
+      if (!mapContains(seen, key)) {
+        mapAdd(seen, key);
+        appendValue(normalized, key);
+      }
     }
     if (normalized.length === 0) return null;
     sortKeys(normalized);
@@ -601,18 +641,18 @@ function insufficientPermission(subject: AuthorizationSubject | null): AuthApiEr
   );
 }
 
-function hasPermission(
-  permissions: readonly string[],
-  required: string,
-): boolean {
-  for (let index = 0; index < permissions.length; index += 1) {
-    if (permissionMatches(permissions[index], required)) return true;
-  }
-  return false;
+function hasPermission(index: PermissionIndex, required: string): boolean {
+  if (mapContains(index.exact, required)) return true;
+  const separator = keySeparator(required);
+  if (separator < 0) return false;
+  const action = keyPart(required, separator + 1, required.length);
+  if (action === "*") return false;
+  const resource = keyPart(required, 0, separator);
+  return mapContains(index.resourceWildcards, resource) || index.globalWildcard;
 }
 
 function satisfiesRequirement(
-  permissions: readonly string[],
+  permissions: PermissionIndex,
   requirement: NormalizedRequirement,
 ): boolean {
   if (requirement.any !== undefined) {
@@ -671,9 +711,9 @@ export class AuthorizationService {
   private async resolvePermissions(
     userId: UUID,
     scope: AuthorizationScope | undefined,
-  ): Promise<readonly string[]> {
+  ): Promise<PermissionIndex> {
     const normalized = normalizedScope(scope);
-    if (normalized === null) return [];
+    if (normalized === null) return createEmptyPermissionIndex();
     const options: RepositoryOperationOptions = { now: validNow(this.clock) };
     try {
       const records = await invoke<Promise<unknown>>(
@@ -682,33 +722,30 @@ export class AuthorizationService {
         [userId, normalized, options],
       );
       const snapshot = snapshotPermissionArray(records);
-      if (snapshot === null) return [];
+      if (snapshot === null) return createEmptyPermissionIndex();
 
-      const permissions: string[] = [];
+      const recordsSnapshot: Permission[] = [];
       for (let index = 0; index < snapshot.length; index += 1) {
         const record = completePermissionRecord(snapshot[index]);
-        if (record === null) return [];
-        appendUnique(permissions, record.key);
+        if (record === null) return createEmptyPermissionIndex();
+        appendValue(recordsSnapshot, record);
       }
-      sortKeys(permissions);
-      return objectFreeze(permissions);
+      return permissionIndex(recordsSnapshot);
     } catch {
       // Missing/corrupt authorization data and adapter failures are fail closed.
-      return [];
+      return createEmptyPermissionIndex();
     }
   }
 
   private contextForUser(
     context: AuthorizationRequestContext | undefined,
     userId: UUID,
-  ): InternalAuthorizationRequestContext | null {
+  ): RequestContextState | null {
     if (context === undefined) return null;
-    if (!isRequestContext(context)) return null;
-    const subjectProperty = ownDataProperty(context, "subject");
-    if (!subjectProperty.valid || !subjectProperty.present) return null;
-    const bound = snapshotAuthorizationSubject(subjectProperty.value);
-    if (bound === null || bound.user_id !== userId) return null;
-    return context;
+    if (context === null || typeof context !== "object") return null;
+    const state = invoke<RequestContextState | undefined>(weakMapGet, requestContextOwnership, [context]);
+    if (state === undefined || state.subject.user_id !== userId) return null;
+    return state;
   }
 
   /** Resolves normalized effective permission keys for a user and optional scope. */
@@ -724,12 +761,15 @@ export class AuthorizationService {
     const requestContext = this.contextForUser(context, validatedUserId);
     if (context !== undefined && requestContext === null) return [];
     if (requestContext !== null) {
-      return requestContext[requestContextLoader](
+      const resolved = await contextPermissions(
+        requestContext,
+        this,
         normalized,
         () => this.resolvePermissions(validatedUserId, normalized),
       );
+      return resolved.keys;
     }
-    return this.resolvePermissions(validatedUserId, normalized);
+    return (await this.resolvePermissions(validatedUserId, normalized)).keys;
   }
 
   /**
@@ -753,7 +793,9 @@ export class AuthorizationService {
     }
     const permissions = requestContext === null
       ? await this.resolvePermissions(boundSubject.user_id, normalized.scope)
-      : await requestContext[requestContextLoader](
+      : await contextPermissions(
+        requestContext,
+        this,
         normalized.scope,
         () => this.resolvePermissions(boundSubject.user_id, normalized.scope),
       );

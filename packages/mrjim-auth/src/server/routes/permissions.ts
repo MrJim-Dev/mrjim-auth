@@ -1,9 +1,8 @@
-import { z } from "zod";
 import { AuthApiError } from "../../shared/errors.js";
 import { authFailure, authSuccess, type AuthResult } from "../../shared/result.js";
 import {
-  scopeIdentifierSchema,
   type AuthorizationScope,
+  type ScopeIdentifier,
 } from "../../shared/types.js";
 import {
   AuthorizationService,
@@ -12,18 +11,27 @@ import {
 } from "../authorization.js";
 
 const objectDefineProperty = Object.defineProperty;
+const reflectApply = Reflect.apply;
+const regexpTest = RegExp.prototype.test;
+const searchParamsGet = URLSearchParams.prototype.get;
+const searchParamsGetAll = URLSearchParams.prototype.getAll;
+const searchParamsKeys = URLSearchParams.prototype.keys;
+const stringTrim = String.prototype.trim;
 
-const scopeTypeSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(64)
-  .regex(/^[a-z][a-z0-9_-]*$/)
-  .refine((value) => value === value.toLowerCase());
+const requestIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const scopeTypePattern = /^[a-z][a-z0-9_-]*$/;
+
+function invoke<T>(method: Function, receiver: unknown, args: readonly unknown[]): T {
+  return reflectApply(method, receiver, args as unknown[]) as T;
+}
 
 function requestId(request: Request): string | undefined {
-  const value = request.headers.get("x-request-id");
-  return value !== null && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value) ? value : undefined;
+  try {
+    const value = request.headers.get("x-request-id");
+    return value !== null && invoke<boolean>(regexpTest, requestIdPattern, [value]) ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function json(value: unknown, status = 200): Response {
@@ -59,23 +67,38 @@ function methodNotAllowed(request: Request): Response {
 }
 
 function parseScope(request: Request): AuthorizationScope | undefined | null {
-  const url = new URL(request.url);
-  for (const key of url.searchParams.keys()) {
-    if (key !== "scope_type" && key !== "scope_id") return null;
-  }
-  if (url.searchParams.getAll("scope_type").length > 1) return null;
-  if (url.searchParams.getAll("scope_id").length > 1) return null;
-  const type = url.searchParams.get("scope_type");
-  const id = url.searchParams.get("scope_id");
-  if (type === null && id === null) return undefined;
-  if (type === null || id === null) return null;
-  if (type.includes("\u0000") || id.includes("\u0000")) return null;
-  const parsedType = scopeTypeSchema.safeParse(type);
-  const parsedId = scopeIdentifierSchema.safeParse(id);
-  if (!parsedType.success || !parsedId.success || parsedType.data !== type || parsedId.data !== id) {
+  try {
+    const url = new URL(request.url);
+    const params = url.searchParams;
+    const keys = invoke<IterableIterator<string>>(searchParamsKeys, params, []);
+    for (const key of keys) {
+      if (key !== "scope_type" && key !== "scope_id") return null;
+    }
+    const types = invoke<readonly string[]>(searchParamsGetAll, params, ["scope_type"]);
+    const ids = invoke<readonly string[]>(searchParamsGetAll, params, ["scope_id"]);
+    if (types.length > 1 || ids.length > 1) return null;
+    const type = invoke<string | null>(searchParamsGet, params, ["scope_type"]);
+    const id = invoke<string | null>(searchParamsGet, params, ["scope_id"]);
+    if (type === null && id === null) return undefined;
+    if (type === null || id === null) return null;
+    if (type.includes("\u0000") || id.includes("\u0000")) return null;
+
+    const trimmedType = invoke<string>(stringTrim, type, []);
+    const trimmedId = invoke<string>(stringTrim, id, []);
+    if (
+      trimmedType !== type ||
+      trimmedId !== id ||
+      trimmedType.length === 0 ||
+      trimmedType.length > 64 ||
+      trimmedId.length === 0 ||
+      !invoke<boolean>(regexpTest, scopeTypePattern, [trimmedType])
+    ) {
+      return null;
+    }
+    return { type: trimmedType, id: trimmedId as ScopeIdentifier };
+  } catch {
     return null;
   }
-  return { type: parsedType.data, id: parsedId.data };
 }
 
 /** Serves the authenticated user's safe effective permission-key endpoint. */

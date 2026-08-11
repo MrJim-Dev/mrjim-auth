@@ -58,6 +58,50 @@ async function expectInsufficient(operation: Promise<unknown>): Promise<void> {
   });
 }
 
+async function captureFailure(operation: Promise<unknown>): Promise<unknown> {
+  try {
+    await operation;
+    return null;
+  } catch (error) {
+    return error;
+  }
+}
+
+async function withPrototypeValue<T>(
+  value: unknown,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(Object.prototype, "value");
+  Object.defineProperty(Object.prototype, "value", {
+    configurable: true,
+    enumerable: false,
+    value,
+    writable: true,
+  });
+  try {
+    return await callback();
+  } finally {
+    if (original === undefined) {
+      Reflect.deleteProperty(Object.prototype, "value");
+    } else {
+      Object.defineProperty(Object.prototype, "value", original);
+    }
+  }
+}
+
+function generatedPermission(index: number): Permission {
+  const resource = `resource_${index.toString(36)}` as Permission["resource"];
+  return {
+    id: "00000000-0000-4000-8000-000000000010" as Permission["id"],
+    key: `${resource}.read` as Permission["key"],
+    resource,
+    action: "read" as Permission["action"],
+    description: null,
+    created_at: NOW.toISOString(),
+    updated_at: NOW.toISOString(),
+  };
+}
+
 describe("authorization permission matching", () => {
   it("accepts canonical exact resource.action keys and rejects non-canonical keys", () => {
     expect(normalizePermissionKey("invoice.read")).toBe("invoice.read");
@@ -259,6 +303,104 @@ describe("authorization permission matching", () => {
     expect(await arrayService.getPermissions(USER_ID)).toEqual([]);
   });
 
+  it("rejects descriptor accessors when Object.prototype.value is polluted", async () => {
+    const service = serviceFor(() => [permission("invoice.read")]);
+
+    let subjectReads = 0;
+    const accessorSubject = {} as { readonly user_id: UUID };
+    Object.defineProperty(accessorSubject, "user_id", {
+      configurable: true,
+      get() {
+        subjectReads += 1;
+        return USER_ID;
+      },
+    });
+    const subjectFailure = await withPrototypeValue(
+      USER_ID,
+      () => captureFailure(service.authorize(accessorSubject, { all: ["invoice.read"] })),
+    );
+    expect(subjectFailure).toMatchObject({ code: "insufficient_permission", status: 403 });
+    expect(subjectReads).toBe(0);
+
+    for (const field of ["all", "any"] as const) {
+      let reads = 0;
+      const requirement = {} as Record<string, unknown>;
+      Object.defineProperty(requirement, field, {
+        configurable: true,
+        get() {
+          reads += 1;
+          return ["invoice.read"];
+        },
+      });
+      const failure = await withPrototypeValue(
+        ["invoice.read"],
+        () => captureFailure(service.authorize(subject(), requirement as never)),
+      );
+      expect(failure).toMatchObject({ code: "insufficient_permission", status: 403 });
+      expect(reads).toBe(0);
+    }
+
+    let scopeReads = 0;
+    const scopeRequirement = { all: ["invoice.read"] } as Record<string, unknown>;
+    const pollutedScope: AuthorizationScope = {
+      type: "tenant",
+      id: scopeIdentifierSchema.parse("tenant_1"),
+    };
+    Object.defineProperty(scopeRequirement, "scope", {
+      configurable: true,
+      get() {
+        scopeReads += 1;
+        return pollutedScope;
+      },
+    });
+    const scopeFailure = await withPrototypeValue(
+      pollutedScope,
+      () => captureFailure(service.authorize(subject(), scopeRequirement as never)),
+    );
+    expect(scopeFailure).toMatchObject({ code: "insufficient_permission", status: 403 });
+    expect(scopeReads).toBe(0);
+
+    const valid = permission("invoice.read");
+    let elementReads = 0;
+    const rows = new Array<Permission>(1);
+    Object.defineProperty(rows, "0", {
+      configurable: true,
+      get() {
+        elementReads += 1;
+        return valid;
+      },
+    });
+    const elementService = serviceFor(() => rows);
+    const elementResult = await withPrototypeValue(valid, () => elementService.getPermissions(USER_ID));
+    expect(elementResult).toEqual([]);
+    expect(elementReads).toBe(0);
+
+    for (const field of [
+      "id",
+      "key",
+      "resource",
+      "action",
+      "description",
+      "created_at",
+      "updated_at",
+    ] as const) {
+      let reads = 0;
+      const row = { ...valid } as Record<string, unknown>;
+      const fieldValue = row[field];
+      Object.defineProperty(row, field, {
+        configurable: true,
+        get() {
+          reads += 1;
+          return fieldValue;
+        },
+      });
+      const rowService = serviceFor(() => [row]);
+      const result = await withPrototypeValue(fieldValue, () => rowService.getPermissions(USER_ID, undefined));
+      expect(result, field).toEqual([]);
+      expect(reads, field).toBe(0);
+    }
+  });
+
   it("does not depend on mutable Set or Array prototype methods", async () => {
     const valid = permission("invoice.read");
     const service = serviceFor(() => [valid]);
@@ -323,6 +465,62 @@ describe("authorization permission matching", () => {
     expect(reads).toBe(2);
   });
 
+  it("rejects reflected forged contexts and isolates cache state across services", async () => {
+    let serviceAReads = 0;
+    let serviceBReads = 0;
+    const serviceA = serviceFor(async () => {
+      serviceAReads += 1;
+      return [permission("invoice.read")];
+    });
+    const serviceB = serviceFor(async () => {
+      serviceBReads += 1;
+      return [];
+    });
+    const genuine = createAuthorizationRequestContext(subject());
+    expect(genuine).not.toBeNull();
+    if (genuine === null) return;
+
+    const forged = Object.create(Object.getPrototypeOf(genuine)) as Record<PropertyKey, unknown>;
+    Object.defineProperty(forged, "subject", {
+      configurable: true,
+      enumerable: true,
+      value: genuine.subject,
+      writable: false,
+    });
+    const symbols = Object.getOwnPropertySymbols(genuine);
+    let loaderSymbol: symbol | undefined;
+    for (let index = 0; index < symbols.length; index += 1) {
+      const symbol = symbols[index];
+      if (symbol === undefined) continue;
+      const descriptor = Object.getOwnPropertyDescriptor(genuine, symbol);
+      if (descriptor === undefined) continue;
+      if ("value" in descriptor && typeof descriptor.value === "function") {
+        loaderSymbol = symbol;
+      } else {
+        Object.defineProperty(forged, symbol, descriptor);
+      }
+    }
+    if (loaderSymbol !== undefined) {
+      Object.defineProperty(forged, loaderSymbol, {
+        configurable: true,
+        enumerable: false,
+        value: async () => ["invoice.read"],
+        writable: false,
+      });
+    }
+
+    await expectInsufficient(serviceB.authorize(subject(), { all: ["invoice.read"] }, forged as never));
+    expect(serviceBReads).toBe(0);
+
+    const context = createAuthorizationRequestContext(subject());
+    expect(context).not.toBeNull();
+    if (context === null) return;
+    await expect(serviceA.authorize(subject(), { all: ["invoice.read"] }, context)).resolves.toMatchObject({ user_id: USER_ID });
+    await expectInsufficient(serviceB.authorize(subject(), { all: ["invoice.read"] }, context));
+    expect(serviceAReads).toBe(1);
+    expect(serviceBReads).toBe(1);
+  });
+
   it("deduplicates concurrent authorization reads inside one request context", async () => {
     let reads = 0;
     const service = serviceFor(async () => {
@@ -341,5 +539,79 @@ describe("authorization permission matching", () => {
     expect(results[0]?.user_id).toBe(USER_ID);
     expect(results[1]?.user_id).toBe(USER_ID);
     expect(reads).toBe(1);
+  });
+
+  it("resolves a deterministic large permission result within the practical indexed bound", async () => {
+    const rows: Permission[] = [];
+    for (let index = 0; index < 100_000; index += 1) {
+      rows.push(generatedPermission(index));
+    }
+    const service = serviceFor(() => rows);
+    const resolved = await service.getPermissions(USER_ID);
+    expect(resolved).toHaveLength(100_000);
+    expect(resolved[0]).toBe("resource_0.read");
+    expect(resolved[99_999]).toBe("resource_zzz.read");
+  }, 8_000);
+
+  it("evaluates a deterministic large all-requirement without a full grant scan", async () => {
+    const requirements: string[] = [];
+    for (let index = 0; index < 10_000; index += 1) {
+      requirements.push(`resource_${index.toString(36)}.read`);
+    }
+    const service = serviceFor(() => [permission("*.*")]);
+    await expect(service.authorize(subject(), { all: requirements })).resolves.toMatchObject({ user_id: USER_ID });
+  }, 8_000);
+
+  it("rejects unknown and malformed query data under URL and RegExp prototype tampering", async () => {
+    const service = serviceFor(() => [permission("invoice.read")]);
+    const originalKeys = URLSearchParams.prototype.keys;
+    const originalGet = URLSearchParams.prototype.get;
+    const originalGetAll = URLSearchParams.prototype.getAll;
+    const originalTest = RegExp.prototype.test;
+
+    let response: Response;
+    try {
+      URLSearchParams.prototype.keys = (() => (function* emptyKeys() {})()) as typeof URLSearchParams.prototype.keys;
+      URLSearchParams.prototype.get = (() => null) as typeof URLSearchParams.prototype.get;
+      URLSearchParams.prototype.getAll = (() => []) as typeof URLSearchParams.prototype.getAll;
+      RegExp.prototype.test = (() => true) as typeof RegExp.prototype.test;
+      response = await permissionsRoute(
+        service,
+        new Request("https://project.example.com/user/permissions?unknown=grant"),
+        subject(),
+      );
+    } finally {
+      URLSearchParams.prototype.keys = originalKeys;
+      URLSearchParams.prototype.get = originalGet;
+      URLSearchParams.prototype.getAll = originalGetAll;
+      RegExp.prototype.test = originalTest;
+    }
+    expect(response.status).toBe(400);
+
+    const duplicateOriginalGetAll = URLSearchParams.prototype.getAll;
+    try {
+      URLSearchParams.prototype.getAll = (() => []) as typeof URLSearchParams.prototype.getAll;
+      response = await permissionsRoute(
+        service,
+        new Request("https://project.example.com/user/permissions?scope_type=tenant&scope_type=other&scope_id=one"),
+        subject(),
+      );
+    } finally {
+      URLSearchParams.prototype.getAll = duplicateOriginalGetAll;
+    }
+    expect(response.status).toBe(400);
+
+    const malformedOriginalGet = URLSearchParams.prototype.get;
+    try {
+      URLSearchParams.prototype.get = (() => null) as typeof URLSearchParams.prototype.get;
+      response = await permissionsRoute(
+        service,
+        new Request("https://project.example.com/user/permissions?scope_type=TENANT&scope_id=one"),
+        subject(),
+      );
+    } finally {
+      URLSearchParams.prototype.get = malformedOriginalGet;
+    }
+    expect(response.status).toBe(400);
   });
 });

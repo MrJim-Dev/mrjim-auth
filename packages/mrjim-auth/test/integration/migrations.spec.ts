@@ -1319,6 +1319,118 @@ describe("Task 3 PostgreSQL migrations", () => {
         ).resolves.toBe(migration.sql);
       }
 
+      const packedBoundaryResult = await runCommandResult(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `
+            const root = await import("mrjim-auth");
+            const server = await import("mrjim-auth/server");
+            const browser = await import("mrjim-auth/client/pkce");
+            if (typeof root.createClient !== "function") throw new Error("packed root import failed");
+            if (typeof server.AuthorizationService !== "function") throw new Error("packed server import failed");
+            if (typeof browser.generateCodeVerifier !== "function") throw new Error("packed browser import failed");
+
+            const user = {
+              user_id: "00000000-0000-4000-8000-000000000001",
+              request_id: "packed-request",
+            };
+            const permission = {
+              id: "00000000-0000-4000-8000-000000000010",
+              key: "invoice.read",
+              resource: "invoice",
+              action: "read",
+              description: null,
+              created_at: "2026-08-11T00:00:00.000Z",
+              updated_at: "2026-08-11T00:00:00.000Z",
+            };
+            const genuine = server.createAuthorizationRequestContext(user);
+            if (genuine === null) throw new Error("packed context creation failed");
+            const forged = Object.create(Object.getPrototypeOf(genuine));
+            Object.defineProperty(forged, "subject", {
+              configurable: true,
+              enumerable: true,
+              value: genuine.subject,
+              writable: false,
+            });
+            const symbols = Object.getOwnPropertySymbols(genuine);
+            for (const symbol of symbols) {
+              const descriptor = Object.getOwnPropertyDescriptor(genuine, symbol);
+              if (descriptor !== undefined) Object.defineProperty(forged, symbol, descriptor);
+            }
+            const loaderSymbol = symbols.find((symbol) => {
+              const descriptor = Object.getOwnPropertyDescriptor(genuine, symbol);
+              return descriptor !== undefined && Object.prototype.hasOwnProperty.call(descriptor, "value") && typeof descriptor.value === "function";
+            });
+            if (loaderSymbol !== undefined) {
+              Object.defineProperty(forged, loaderSymbol, {
+                configurable: true,
+                enumerable: false,
+                value: async () => ["invoice.read"],
+                writable: false,
+              });
+            }
+
+            const emptyService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: async () => [] } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            let forgedRejected = false;
+            try {
+              await emptyService.authorize(user, { all: ["invoice.read"] }, forged);
+            } catch (error) {
+              forgedRejected = error?.code === "insufficient_permission";
+            }
+            if (!forgedRejected) throw new Error("packed forged context was accepted");
+
+            let emptyReads = 0;
+            const grantService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: async () => [permission] } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            const countingEmptyService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: async () => { emptyReads += 1; return []; } } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            const context = server.createAuthorizationRequestContext(user);
+            if (context === null) throw new Error("packed second context creation failed");
+            await grantService.authorize(user, { all: ["invoice.read"] }, context);
+            let denied = false;
+            try {
+              await countingEmptyService.authorize(user, { all: ["invoice.read"] }, context);
+            } catch (error) {
+              denied = error?.code === "insufficient_permission";
+            }
+            if (!denied || emptyReads !== 1) throw new Error("packed context cache crossed service boundaries");
+
+            const largePermissions = new Array(100000);
+            for (let index = 0; index < largePermissions.length; index += 1) {
+              const resource = "resource_" + index.toString(36);
+              largePermissions[index] = {
+                id: permission.id,
+                key: resource + ".read",
+                resource,
+                action: "read",
+                description: null,
+                created_at: permission.created_at,
+                updated_at: permission.updated_at,
+              };
+            }
+            const largeService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: async () => largePermissions } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            const largeResult = await largeService.getPermissions(user.user_id);
+            if (largeResult.length !== 100000 || largeResult[0] !== "resource_0.read" || largeResult[99999] !== "resource_zzz.read") {
+              throw new Error("packed indexed permission result was not deterministic");
+            }
+          `,
+        ],
+        { cwd: consumerRoot },
+      );
+      expect(packedBoundaryResult.code, packedBoundaryResult.stderr).toBe(0);
+
       const cliEnvironment = {
         ...process.env,
         DATABASE_URL: localDatabaseUrl(),
@@ -1351,5 +1463,5 @@ describe("Task 3 PostgreSQL migrations", () => {
     } finally {
       await rm(consumerRoot, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

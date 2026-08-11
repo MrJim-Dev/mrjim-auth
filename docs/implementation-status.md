@@ -217,7 +217,28 @@ expiry check; byte/checksum assertions preserve `0001–0004` unchanged. No
 callback code is kept in process memory or represented as a self-contained
 reusable token.
 
-Task 8 Fix Pass 1 is implemented pending fresh independent review. `AuthorizationService`
+Task 8 Fix Pass 2 is implemented pending fresh independent review. `AuthorizationService`
+now authenticates request contexts only through module-private `WeakMap`
+ownership, isolates each context cache by service instance, rejects reflected
+or caller-carried loaders, and preserves fresh-request revocation behavior.
+Descriptor checks use captured own-data semantics, including under polluted
+`Object.prototype.value`; permission results use captured `Map` indexing and
+`Array.prototype.sort` for deterministic O(n) expected deduplication plus
+O(n log n) ordering and O(1)-style wildcard lookups. The permissions route
+uses captured query methods and manual fail-closed scope validation under
+prototype tampering. Fix Pass 2 focused RED was 5 failed/20 passed; the
+identical GREEN is 25/25. The full suite is 17 files and 223/223 tests. The
+repository/shared group is 36/36, migration/state is 24/24, and the
+export/browser group is 12/12. The packed consumer covers installation,
+assets/CLI, direct root/server/browser imports, packed context-forgery/cache
+regressions, and a deterministic 100,000-row built-package result. Frozen
+install, build, typecheck, lint, docs check, diff check, and protected hashes
+pass. No migration, manifest, lockfile, dependency, direct-user-permission
+model, paid service, or runtime-network dependency changed. Corrupted-cycle
+read termination is not claimed beyond the recursive `UNION` CTE and
+write-time cycle guard. Fresh independent review remains pending.
+
+Task 8 Fix Pass 1 was implemented pending fresh independent review. `AuthorizationService`
 consumes the existing PostgreSQL authorization repository, whose recursive CTE
 expands active assigned roles and inherited roles with `UNION` duplicate
 elimination and deterministic permission-key ordering. Direct grants mean only
