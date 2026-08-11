@@ -27,15 +27,17 @@ const requiredExportKeys = [
   "./express",
   "./nextjs",
   "./nextjs/server",
+  "./client/pkce",
   "./testing",
 ] as const;
 
-const browserEntryFiles = ["dist/index.js", "dist/adapters/nextjs-browser.js"] as const;
+const browserEntryFiles = ["dist/index.js", "dist/adapters/nextjs-browser.js", "dist/client/pkce.js"] as const;
 const migrationAssetFiles = [
   "dist/postgres/migrations/0001_core.sql",
   "dist/postgres/migrations/0002_authorization.sql",
   "dist/postgres/migrations/0003_oauth_operations.sql",
   "dist/postgres/migrations/0004_repository_hardening.sql",
+  "dist/postgres/migrations/0005_oauth_callback.sql",
 ] as const;
 const nodeOnlyImportPattern = /^(?:node:)?(?:assert|buffer|child_process|cluster|crypto|dgram|dns|events|fs|http|https|module|net|os|path|perf_hooks|process|readline|stream|string_decoder|timers|tls|tty|url|util|v8|vm|worker_threads|zlib)(?:\/.*)?$/;
 const serverOnlyDependencyPattern = /^(?:@node-rs\/argon2|argon2|kysely|pg|pg-native|postgres|postgresjs)(?:\/.*)?$/;
@@ -184,6 +186,13 @@ describe("package export boundaries", () => {
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
         introducedIn: "0.1.0",
       },
+      {
+        migrationOrder: 5,
+        version: "0005_oauth_callback",
+        fileName: "0005_oauth_callback.sql",
+        checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+        introducedIn: "0.1.0",
+      },
     ]);
     expect(Object.isFrozen(postgres.MIGRATIONS)).toBe(true);
     expect(postgres.MIGRATIONS.every((migration) => Object.isFrozen(migration))).toBe(true);
@@ -192,18 +201,41 @@ describe("package export boundaries", () => {
     }
   });
 
-  it("exposes the Node-only Task 6 lifecycle services without browser dependencies", async () => {
+  it("exposes the Node-only lifecycle and OAuth services without browser dependencies", async () => {
     const server = await import("mrjim-auth/server");
     expect(Object.keys(server).sort()).toEqual([
       "ARGON2ID_PASSWORD_POLICY",
       "ES256_ALGORITHM",
       "EmailService",
+      "GenericOidcProvider",
+      "GoogleOAuthProvider",
+      "OAuthProviderError",
+      "OAuthService",
+      "OidcOAuthProvider",
       "OneTimeTokenService",
       "PasswordService",
       "SessionService",
       "TokenService",
       "UserService",
+      "authorizeRoute",
+      "callbackRoute",
+      "createOAuthRoutes",
+      "exchangeRoute",
+      "providersRoute",
     ]);
+  });
+
+  it("exposes only browser-safe RFC 7636 helpers from the client subpath", async () => {
+    const client = await import("mrjim-auth/client/pkce");
+    expect(Object.keys(client).sort()).toEqual([
+      "PKCE_CODE_CHALLENGE_METHOD",
+      "createCodeChallenge",
+      "generateCodeChallenge",
+      "generateCodeVerifier",
+      "generatePkcePair",
+      "isCodeVerifier",
+    ]);
+    expect(client.PKCE_CODE_CHALLENGE_METHOD).toBe("S256");
   });
 
   it("exposes only the bundled fake mailer from the testing subpath", async () => {
@@ -219,7 +251,7 @@ describe("package export boundaries", () => {
   it("does not expose unfinished behavior from later-task subpaths", async () => {
     for (const exportKey of requiredExportKeys
       .slice(1)
-      .filter((key) => key !== "./postgres" && key !== "./server" && key !== "./testing")) {
+      .filter((key) => key !== "./postgres" && key !== "./server" && key !== "./client/pkce" && key !== "./testing")) {
       expect(Object.keys(await import(packageSpecifier(exportKey)))).toEqual([]);
     }
   });

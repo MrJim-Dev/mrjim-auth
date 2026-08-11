@@ -14,8 +14,8 @@ import { adapterTransaction, trustedFailure } from "./adapter-boundary.js";
 import type { TrustedServiceError } from "./adapter-boundary.js";
 import { EmailService, normalizeAndValidateEmail } from "./email.js";
 
-/** Every supported one-time flow is purpose-bound in PostgreSQL. */
-export type OneTimeTokenPurpose = OneTimeTokenInput["purpose"];
+/** Public mail-delivery one-time flows; OAuth callback codes use OAuthService. */
+export type OneTimeTokenPurpose = Exclude<OneTimeTokenInput["purpose"], "oauth_callback">;
 
 export interface OneTimeTokenIssueInput {
   readonly purpose: OneTimeTokenPurpose;

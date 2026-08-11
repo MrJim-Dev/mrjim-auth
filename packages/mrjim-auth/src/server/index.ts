@@ -51,3 +51,35 @@ export {
   type UserServiceOptions,
   type VerifyOtpInput,
 } from "./users.js";
+export {
+  OAuthService,
+  type OAuthAuthorizeInput,
+  type OAuthAuthorizeResult,
+  type OAuthCallbackInput,
+  type OAuthCallbackResult,
+  type OAuthExchangeInput,
+  type OAuthFlow,
+  type OAuthLinkResult,
+  type OAuthProviderDiscovery,
+  type OAuthServiceOptions,
+  type OAuthSessionResult,
+  type OAuthSubject,
+} from "./oauth.js";
+export {
+  GenericOidcProvider,
+  GoogleOAuthProvider,
+  OAuthProviderError,
+  OidcOAuthProvider,
+  type OAuthProvider,
+  type OAuthProviderAuthorizationInput,
+  type OAuthProviderCapabilities,
+  type OAuthProviderExchangeInput,
+  type OAuthProviderProfile,
+} from "./oauth-providers.js";
+export {
+  authorizeRoute,
+  callbackRoute,
+  createOAuthRoutes,
+  exchangeRoute,
+  providersRoute,
+} from "./routes/oauth.js";

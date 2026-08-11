@@ -120,6 +120,25 @@ resolution was independently confirmed against simultaneous replacement of
 all captured methods. Task 6 is approved with no remaining Critical or
 Important findings.
 
+Task 7 implements the Node-only Google/OIDC OAuth boundary and browser-safe
+RFC 7636 S256 helpers. `OAuthService` creates exact-redirect, flow-bound,
+HMAC-digested, ten-minute single-use state rows with encrypted verifier/nonce
+material; callback processing consumes state once, validates the injected
+provider profile, and issues only a durable HMAC-digested `oauth_callback`
+one-time code with a database-enforced maximum 60-second TTL. Code exchange
+consumes that row atomically with session creation, so concurrent replays have
+one winner and a failed session transaction leaves the code available for a
+retry. Provider-subject sign-in, fresh-session signed linking, collision
+rejection, verified-email-only opt-in auto-linking, safe identity projection,
+redacted audit events, and final-login-method unlink protection are included.
+
+The forward-only `0005_oauth_callback` migration is required because the
+immutable `0001–0004` `one_time_tokens_purpose_check` cannot accept the new
+durable callback purpose. It adds only the new purpose and its `<= 60 seconds`
+expiry check; byte/checksum assertions preserve `0001–0004` unchanged. No
+callback code is kept in process memory or represented as a self-contained
+reusable token.
+
 ## Required dependency policy
 
 - Required runtime, build, test, documentation, and release dependencies must be free/open-source.
@@ -153,6 +172,14 @@ mailer, hosted identity provider, hosted rate limiter, Redis service, or remote
 database is required. The lifecycle integration tests use only disposable
 local PostgreSQL 16 clusters.
 
+Task 7 adds the free/open-source, exact-pinned `openid-client@6.8.4` runtime
+dependency (MIT; project `panva/openid-client`) for discovery and validated
+authorization-code exchange. Its exact-pinned `oauth4webapi@3.8.6` transitive
+dependency is also MIT-licensed and project-owned by `panva/oauth4webapi`.
+Tests inject deterministic provider adapters and use disposable local
+PostgreSQL; no live Google, hosted OIDC, paid mail, Redis, Docker, remote
+database, or paid SaaS service is required.
+
 ## Task progress
 
 | Task | Status | Verification |
@@ -163,7 +190,7 @@ local PostgreSQL 16 clusters.
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
-| 7. OAuth and identities | In progress | Task brief generated; implementation and review pending |
+| 7. OAuth and identities | Complete — implementation handoff | Focused RED/GREEN, provider verifier, migration, package-boundary, full-suite, build, typecheck, lint, docs, frozen-install, and diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Pending | Not run |
 | 9. HTTP and OpenAPI | Pending | Not run |
 | 10. Browser client | Pending | Not run |
@@ -191,6 +218,10 @@ CLI migration test exceeded Vitest's default five-second timeout under that
 review run, then passed within seven seconds when rerun with a bounded
 30-second timeout. The controller's plain `pnpm test` run passed 156/156. A
 per-test timeout should be considered during Task 14 release hardening.
+
+Task 7 blockers: none. The independent reviewer is intentionally left to the
+main controller after this implementer handoff; no paid or hosted service is
+needed for the remaining review.
 
 ## Remaining work
 
@@ -844,3 +875,16 @@ objects or Hayahai/shipping fields. Full auth behavior remains intentionally
 unimplemented for later tasks.
 
 No paid SaaS or hosted service was used or required for these checks.
+
+## Task 7 final verification
+
+- Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
+- Mandatory GREEN: the same focused command passed with 2 files and 11 tests.
+- Provider/export/migration checks: `pnpm vitest run packages/mrjim-auth/test/unit/oauth-providers.spec.ts packages/mrjim-auth/test/contract/package-exports.spec.ts packages/mrjim-auth/test/integration/migrations.spec.ts` passed with 3 files and 40 tests.
+- `pnpm test` — passed; 15 files and 173 tests, including a fresh build.
+- `pnpm install --frozen-lockfile` — passed; lockfile up to date, resolution skipped.
+- `pnpm build` — passed; browser and Node TypeScript builds completed.
+- `pnpm typecheck` — passed.
+- `pnpm lint` — passed.
+- `pnpm docs:check` — passed; 2 required documents found.
+- `git diff --check` — passed with no whitespace errors.

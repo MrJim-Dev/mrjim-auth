@@ -282,7 +282,14 @@ export interface SessionRepository {
 /** Purpose-bound one-time token input. Only the digest is persisted. */
 export interface OneTimeTokenInput {
   user_id?: UUID | null;
-  purpose: "signup" | "email_change" | "recovery" | "magic_link" | "email_otp" | "invite";
+  purpose:
+    | "signup"
+    | "email_change"
+    | "recovery"
+    | "magic_link"
+    | "email_otp"
+    | "invite"
+    | "oauth_callback";
   token_hash: Uint8Array;
   target: string;
   redirect?: string | null;
@@ -517,6 +524,13 @@ export interface OAuthStateInput {
   expires_at: Date;
 }
 
+/** Optional exact bindings used while atomically consuming an OAuth state. */
+export interface OAuthStateConsumeOptions extends RepositoryOperationOptions {
+  readonly provider?: string;
+  readonly flow?: OAuthStateInput["flow"];
+  readonly redirect?: string;
+}
+
 /** @internal Safe OAuth state record used by server-side callback orchestration. */
 export interface OAuthStateRecord extends Omit<OAuthStateInput, "state_hash"> {
   id: UUID;
@@ -536,7 +550,7 @@ export interface OAuthStateRepository {
   consume(
     stateHash: Uint8Array,
     now: Date,
-    options?: RepositoryOperationOptions,
+    options?: OAuthStateConsumeOptions,
   ): Promise<OAuthStateRecord | null>;
 }
 

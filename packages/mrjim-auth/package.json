@@ -30,6 +30,10 @@
       "types": "./dist/adapters/nextjs-server.d.ts",
       "import": "./dist/adapters/nextjs-server.js"
     },
+    "./client/pkce": {
+      "types": "./dist/client/pkce.d.ts",
+      "import": "./dist/client/pkce.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
@@ -46,6 +50,7 @@
     "argon2": "0.44.0",
     "jose": "6.2.8",
     "kysely": "0.29.5",
+    "openid-client": "6.8.4",
     "pg": "8.23.0",
     "zod": "4.4.3"
   },

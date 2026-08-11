@@ -1,6 +1,7 @@
 /** Stable adapter error codes for expected repository-boundary failures. */
 export type PostgresRepositoryErrorCode =
   | "email_exists"
+  | "identity_exists"
   | "transaction_required"
   | "not_found"
   | "protected_role"
@@ -57,6 +58,19 @@ export function mapDuplicateNormalizedEmail(error: unknown): never {
     throw new PostgresRepositoryError(
       "email_exists",
       "a user with this normalized email already exists",
+      { constraint: details.constraint, cause: error },
+    );
+  }
+  throw error;
+}
+
+/** Map the provider-subject uniqueness race without exposing SQL details. */
+export function mapDuplicateIdentity(error: unknown): never {
+  const details = postgresErrorDetails(error);
+  if (details.code === "23505" && details.constraint === "identities_provider_subject_key") {
+    throw new PostgresRepositoryError(
+      "identity_exists",
+      "this provider identity is already linked",
       { constraint: details.constraint, cause: error },
     );
   }

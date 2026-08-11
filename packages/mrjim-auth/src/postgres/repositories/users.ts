@@ -2,6 +2,7 @@ import type {
   CreateUserInput,
   IdentityRepository,
   OneTimeTokenRepository,
+  OAuthStateConsumeOptions,
   OAuthStateRepository,
   PasswordCredentialRepository,
   UpdateUserInput,
@@ -14,7 +15,7 @@ import {
   safeIdentityDataSchema,
 } from "../../shared/types.js";
 import { sql, type InsertObject, type Selectable, type UpdateObject } from "kysely";
-import { PostgresRepositoryError, mapDuplicateNormalizedEmail, requireTransaction } from "./errors.js";
+import { PostgresRepositoryError, mapDuplicateIdentity, mapDuplicateNormalizedEmail, requireTransaction } from "./errors.js";
 import type { OneTimeTokenInput } from "../../shared/contracts.js";
 import {
   assertDigest,
@@ -262,12 +263,16 @@ function createIdentityRepository(context: RepositoryContext): IdentityRepositor
           created_at: now,
           updated_at: now,
         };
-        const row = await authDb(transaction)
-          .insertInto("identities")
-          .values(values)
-          .returning(IDENTITY_COLUMNS)
-          .executeTakeFirstOrThrow();
-        return mapIdentity(row);
+        try {
+          const row = await authDb(transaction)
+            .insertInto("identities")
+            .values(values)
+            .returning(IDENTITY_COLUMNS)
+            .executeTakeFirstOrThrow();
+          return mapIdentity(row);
+        } catch (error) {
+          mapDuplicateIdentity(error);
+        }
       });
     },
 
@@ -454,9 +459,9 @@ function createOAuthStateRepository(context: RepositoryContext): OAuthStateRepos
       });
     },
 
-    async consume(stateHash, now) {
+    async consume(stateHash, now, options?: OAuthStateConsumeOptions) {
       return withTransaction(context, async (transaction) => {
-        const row = await authDb(transaction)
+        let query = authDb(transaction)
           .updateTable("oauth_states")
           .set({ consumed_at: now })
           .where("state_hash", "=", assertDigest(stateHash, "OAuth state hash"))
@@ -471,9 +476,11 @@ function createOAuthStateRepository(context: RepositoryContext): OAuthStateRepos
                 .whereRef("users.id", "=", "oauth_states.linking_user_id")
                 .where("deleted_at", "is", null),
             ),
-          ]))
-          .returning(OAUTH_STATE_COLUMNS)
-          .executeTakeFirst();
+          ]));
+        if (options?.provider !== undefined) query = query.where("provider", "=", options.provider.trim().toLowerCase());
+        if (options?.flow !== undefined) query = query.where("flow", "=", options.flow);
+        if (options?.redirect !== undefined) query = query.where("redirect_target", "=", options.redirect);
+        const row = await query.returning(OAUTH_STATE_COLUMNS).executeTakeFirst();
         return row === undefined ? null : mapOAuthState(row);
       });
     },
