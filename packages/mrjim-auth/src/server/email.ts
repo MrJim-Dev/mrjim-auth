@@ -1,4 +1,10 @@
 import { AuthApiError, AuthConfigurationError } from "../shared/errors.js";
+import {
+  assertBoundaryObject,
+  captureBoundaryStringArray,
+  optionalBoundaryOption,
+  requiredBoundaryOption,
+} from "./callback-boundary.js";
 
 /** The only normalization applied to an email address. */
 export function normalizeEmail(value: string): string {
@@ -69,17 +75,25 @@ export class EmailService {
     readonly allowedRedirects: readonly string[];
     readonly defaultRedirect?: string;
   }) {
-    if (options.allowedRedirects.length === 0) {
-      throw new AuthConfigurationError("at least one email redirect is required");
+    if (options === null || typeof options !== "object") {
+      throw new AuthConfigurationError("email options are incomplete");
     }
-    for (const redirect of options.allowedRedirects) {
+    const source = options as unknown as object;
+    assertBoundaryObject(source, "email options");
+    const allowedRedirects = captureBoundaryStringArray(
+      requiredBoundaryOption(source, "allowedRedirects", "email redirects"),
+      "email redirects",
+      1,
+    );
+    const defaultRedirectValue = optionalBoundaryOption(source, "defaultRedirect", "email default redirect");
+    for (const redirect of allowedRedirects) {
       validateConfiguredRedirect(redirect);
     }
-    const defaultRedirect = options.defaultRedirect ?? options.allowedRedirects[0];
-    if (defaultRedirect === undefined || !options.allowedRedirects.includes(defaultRedirect)) {
+    const defaultRedirect = defaultRedirectValue ?? allowedRedirects[0];
+    if (typeof defaultRedirect !== "string" || !allowedRedirects.includes(defaultRedirect)) {
       throw new AuthConfigurationError("default email redirect must be exactly allowlisted");
     }
-    this.allowedRedirects = [...options.allowedRedirects];
+    this.allowedRedirects = allowedRedirects;
     this.defaultRedirect = defaultRedirect;
   }
 

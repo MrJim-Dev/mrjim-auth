@@ -289,21 +289,18 @@ JWKS/provider discovery, refresh-token logout, identities, permissions, and all
 other Task 9 routes are included; Task 10 browser behavior, Task 11 adapters,
 and Task 12 administration remain untouched.
 
-The current Task 9 remediation round follows an independent `CHANGES_REQUIRED`
-verdict. It adds exact RED-before-fix regressions and bounded GREEN fixes for
-bodyless-route Content-Encoding validation, explicit absent/valid/invalid
-header states, fail-closed Fetch Metadata, parsed CORS request-header lists,
-pre-schema repository/mailer/limiter and required service/session callback
-capture, OAuth client-held PKCE binding, and OAuth wire redaction. The earlier stream-cancellation, OpenAPI structure,
-and service/repository immutability fixes remain covered and unchanged in
-scope. Current focused GREEN is HTTP 24/24, OpenAPI 1/1, and OAuth integration
-30/30; full verification is GREEN for this round. No dependency,
+The current Task 9 remediation round follows the same reviewer’s
+`CHANGES_REQUIRED` verdict. It fixes the three Important constructor
+trust-boundary findings with one shared descriptor-only callback capture and
+recursive SDK-owned security-configuration snapshot, and audits the public
+server constructors/factories for the same accessor, thenable, receiver, and
+post-construction mutation class, including provider credentials and exported
+email/password security configuration. The previously closed HTTP/header/body,
+stream-cancellation, OpenAPI, OAuth-wire/PKCE, export, and Tasks 1–8 behavior
+remains covered and unchanged in scope. Exact constructor RED regressions are
+now GREEN; the current full suite is 20 files/278 tests. No dependency,
 lockfile, migration, paid service, hosted service, or remote database behavior
-was added. Controller verification is now GREEN for the full 19-file/267-test
-suite, frozen install, build, typecheck, lint, docs check, 12 export/browser
-tests, migration state 1/1, migration integration 23/23, deterministic
-OpenAPI validation, fresh packed-install handler checks, protected migration
-hashes, and diff checks; the same reviewer’s re-review is still required.
+was added. The same reviewer’s re-review is still required.
 
 The independent security review recorder remains blocked by the exact tooling
 error `scan.target.snapshotDigest: expected a non-empty string`. This is not a
@@ -365,7 +362,7 @@ database, external network, or paid SaaS service is required.
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
-| 9. HTTP and OpenAPI | Awaiting same-reviewer re-review — CHANGES_REQUIRED, not approved | Round-2 RED→GREEN regressions cover strict headers, bodyless encoding, CORS lists, construction capture, and OAuth wire/PKCE behavior; focused HTTP 24/24, OpenAPI 1/1, OAuth 30/30, full 267/267, exports/browser 12/12, migration state 1/1, migrations 23/23, frozen install, build/typecheck/lint/docs, deterministic OpenAPI, fresh packed handlers, protected hashes, and diff checks passed; independent re-review remains required |
+| 9. HTTP and OpenAPI | Awaiting same-reviewer re-review — round-3 CHANGES_REQUIRED, not approved | Round-3 constructor RED→GREEN regressions cover thenable/accessor rejection, receiver-safe callback capture, caller-mutation isolation, nested signing-key/secrets snapshots, and the public server-constructor audit; current HTTP 25/25, OpenAPI 1/1, OAuth 31/31, full 20-file/278-test suite, exports/browser 12/12, migration, packed, and deterministic OpenAPI gates are recorded in the Task 9 report; independent re-review remains required |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |

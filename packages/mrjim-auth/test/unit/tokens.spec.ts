@@ -293,6 +293,140 @@ describe("TokenService", () => {
       expect(result.error).toMatchObject({ name: "AuthError", code: "invalid_token", status: 401 });
     }
   });
+
+  it("captures key-provider and clock boundaries without invoking hostile values", async () => {
+    const thenableCases: readonly [string, (provider: KeyProvider, calls: { value: number }) => void][] = [
+      ["own data thenable", (provider, calls) => Object.defineProperty(provider, "then", {
+        configurable: true,
+        value: () => { calls.value += 1; },
+      })],
+      ["own accessor then", (provider, calls) => Object.defineProperty(provider, "then", {
+        configurable: true,
+        get: () => { calls.value += 1; throw new Error("key-provider-then-sentinel"); },
+      })],
+      ["inherited data thenable", (provider, calls) => {
+        const prototype = Object.create(Object.getPrototypeOf(provider));
+        Object.defineProperty(prototype, "then", { configurable: true, value: () => { calls.value += 1; } });
+        Object.setPrototypeOf(provider, prototype);
+      }],
+      ["inherited accessor then", (provider, calls) => {
+        const prototype = Object.create(Object.getPrototypeOf(provider));
+        Object.defineProperty(prototype, "then", {
+          configurable: true,
+          get: () => { calls.value += 1; throw new Error("inherited-key-provider-then-sentinel"); },
+        });
+        Object.setPrototypeOf(provider, prototype);
+      }],
+      ["poisoned prototype", (provider, calls) => {
+        const prototype = Object.create(Object.getPrototypeOf(provider), {
+          then: {
+            configurable: true,
+            get: () => { calls.value += 1; throw new Error("poisoned-key-provider-then-sentinel"); },
+          },
+        });
+        Object.setPrototypeOf(provider, prototype);
+      }],
+    ];
+
+    for (const [label, install] of thenableCases) {
+      const provider = makeProvider(new Map([["active", generateEs256Key()]]));
+      const calls = { value: 0 };
+      install(provider, calls);
+      let thrown: unknown;
+      try {
+        makeService(provider);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, label).toBeInstanceOf(AuthConfigurationError);
+      expect(String(thrown), label).not.toContain("sentinel");
+      expect(calls.value, label).toBe(0);
+    }
+
+    const callableThenable = Object.assign(() => undefined, {
+      getActiveKeyId: () => "active",
+      getSigningKey: () => "",
+      getVerificationKeys: () => new Map(),
+    }) as unknown as KeyProvider;
+    let callableThenCalls = 0;
+    Object.defineProperty(callableThenable, "then", {
+      configurable: true,
+      value: () => { callableThenCalls += 1; },
+    });
+    expect(() => makeService(callableThenable)).toThrow(AuthConfigurationError);
+    expect(callableThenCalls).toBe(0);
+
+    const accessorProvider = makeProvider(new Map([["active", generateEs256Key()]]));
+    let methodGetterCalls = 0;
+    Object.defineProperty(accessorProvider, "getActiveKeyId", {
+      configurable: true,
+      get: () => { methodGetterCalls += 1; throw new Error("key-provider-method-sentinel"); },
+    });
+    let methodThrown: unknown;
+    try {
+      makeService(accessorProvider);
+    } catch (error) {
+      methodThrown = error;
+    }
+    expect(methodThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(methodThrown)).not.toContain("key-provider-method-sentinel");
+    expect(methodGetterCalls).toBe(0);
+
+    const clockAccessorOptions = {
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      keyProvider: makeProvider(new Map([["active", generateEs256Key()]])),
+      tokenHashKey: TOKEN_HASH_KEY,
+      accessTokenTtlSeconds: 900,
+    } as any;
+    let clockGetterCalls = 0;
+    Object.defineProperty(clockAccessorOptions, "clock", {
+      configurable: true,
+      get: () => { clockGetterCalls += 1; throw new Error("clock-sentinel"); },
+    });
+    let clockThrown: unknown;
+    try {
+      new TokenService(clockAccessorOptions);
+    } catch (error) {
+      clockThrown = error;
+    }
+    expect(clockThrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(clockThrown)).not.toContain("clock-sentinel");
+    expect(clockGetterCalls).toBe(0);
+
+    const thenableClock = (() => NOW) as (() => Date) & { then?: () => void };
+    let clockThenCalls = 0;
+    Object.defineProperty(thenableClock, "then", {
+      configurable: true,
+      value: () => { clockThenCalls += 1; },
+    });
+    expect(() => makeService(makeProvider(new Map([["active", generateEs256Key()]])), { clock: thenableClock })).toThrow(AuthConfigurationError);
+    expect(clockThenCalls).toBe(0);
+
+    const key = generateEs256Key();
+    let oldCalls = 0;
+    let newCalls = 0;
+    const receiverProvider = {
+      keys: new Map([["active", key]]),
+      getActiveKeyId() { return "active"; },
+      getSigningKey(this: { keys: ReadonlyMap<string, GeneratedKey> }, keyId: string) {
+        return this.keys.get(keyId)?.privateKey ?? "";
+      },
+      getVerificationKeys(this: { keys: ReadonlyMap<string, GeneratedKey> }) {
+        oldCalls += 1;
+        return new Map([...this.keys].map(([keyId, value]) => [keyId, value.publicKey]));
+      },
+    } as KeyProvider & { keys: ReadonlyMap<string, GeneratedKey>; getVerificationKeys: () => ReadonlyMap<string, string> };
+    const receiverService = makeService(receiverProvider);
+    receiverProvider.getVerificationKeys = () => {
+      newCalls += 1;
+      return new Map();
+    };
+    const jwks = await receiverService.jwks();
+    expect(jwks.keys).toHaveLength(1);
+    expect(oldCalls).toBe(1);
+    expect(newCalls).toBe(0);
+  });
 });
 
 async function importKeyForTest(value: string, kind: "private") {

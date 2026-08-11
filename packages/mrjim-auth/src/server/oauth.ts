@@ -41,6 +41,11 @@ import {
   type OAuthProviderProfile,
 } from "./oauth-providers.js";
 import { captureAuthServerRepository } from "./auth-server.js";
+import {
+  assertBoundaryObject,
+  captureBoundaryClock,
+  captureBoundaryMethodGroup,
+} from "./callback-boundary.js";
 import { isCodeVerifier } from "../client/pkce.js";
 import { SessionService, type AuthenticatedSession, type SessionContext } from "./sessions.js";
 
@@ -99,7 +104,6 @@ const freezeTransactionMarker = Object.freeze;
 const oauthObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const oauthObjectGetPrototypeOf = Object.getPrototypeOf;
 const oauthObjectCreate = Object.create;
-const oauthObjectDefineProperty = Object.defineProperty;
 const oauthMapEntries = Map.prototype.entries;
 const oauthReflectApply = Reflect.apply;
 
@@ -148,14 +152,6 @@ function oauthHasThen(value: object): boolean {
   return current !== null;
 }
 
-function oauthRequiredFunction(value: object, label: string, method: string): Function {
-  const property = oauthDataProperty(value, method);
-  if (!property.valid || !property.present || typeof property.value !== "function") {
-    throw new AuthConfigurationError(`${label}.${method} must be a data-property function`);
-  }
-  return property.value;
-}
-
 function oauthStringArray(value: unknown, label: string, minimum = 1): readonly string[] {
   if (!arrayIsArray(value) || oauthHasThen(value)) throw new AuthConfigurationError(`${label} must be a data array`);
   const lengthProperty = oauthDataProperty(value, "length");
@@ -190,7 +186,7 @@ function captureOAuthProvider(value: unknown, label: string): OAuthProvider {
     throw new AuthConfigurationError(`${label} adapter is incomplete`);
   }
   const source = value as object;
-  if (oauthHasThen(source)) throw new AuthConfigurationError(`${label} adapter must not be thenable`);
+  assertBoundaryObject(source, `${label} adapter`);
   const name = oauthDataProperty(source, "name");
   const clientId = oauthDataProperty(source, "clientId");
   const issuer = oauthDataProperty(source, "issuer");
@@ -198,42 +194,36 @@ function captureOAuthProvider(value: unknown, label: string): OAuthProvider {
   if (!name.valid || !name.present || typeof name.value !== "string") throw new AuthConfigurationError(`${label}.name must be a data property`);
   if (!clientId.valid || !clientId.present || typeof clientId.value !== "string") throw new AuthConfigurationError(`${label}.clientId must be a data property`);
   if (!scopes.valid || !scopes.present) throw new AuthConfigurationError(`${label}.scopes must be a data property`);
-  const authorizationUrl = oauthRequiredFunction(source, label, "authorizationUrl");
-  const exchange = oauthRequiredFunction(source, label, "exchange");
-  const facade = oauthObjectCreate(null) as Record<string, unknown>;
-  oauthObjectDefineProperty(facade, "name", { configurable: false, enumerable: true, writable: false, value: name.value });
-  oauthObjectDefineProperty(facade, "clientId", { configurable: false, enumerable: true, writable: false, value: clientId.value });
-  oauthObjectDefineProperty(facade, "scopes", { configurable: false, enumerable: true, writable: false, value: oauthStringArray(scopes.value, `${label}.scopes`) });
   if (!issuer.valid) throw new AuthConfigurationError(`${label}.issuer must be a data property`);
-  if (issuer.present) oauthObjectDefineProperty(facade, "issuer", { configurable: false, enumerable: true, writable: false, value: issuer.value });
-  oauthObjectDefineProperty(facade, "capabilities", { configurable: false, enumerable: true, writable: false, value: Object.freeze({ authorization_code: true, pkce: true, identity_linking: true }) });
-  oauthObjectDefineProperty(facade, "authorizationUrl", { configurable: false, enumerable: true, writable: false, value: (...args: unknown[]) => oauthReflectApply(authorizationUrl, source, args) });
-  oauthObjectDefineProperty(facade, "exchange", { configurable: false, enumerable: true, writable: false, value: (...args: unknown[]) => oauthReflectApply(exchange, source, args) });
-  return Object.freeze(facade) as unknown as OAuthProvider;
+  const properties: Record<string, unknown> = {
+    name: name.value,
+    clientId: clientId.value,
+    scopes: oauthStringArray(scopes.value, `${label}.scopes`),
+    capabilities: Object.freeze({ authorization_code: true, pkce: true, identity_linking: true }),
+  };
+  if (issuer.present) properties.issuer = issuer.value;
+  return captureBoundaryMethodGroup(
+    source,
+    label,
+    ["authorizationUrl", "exchange"],
+    [],
+    properties,
+  ) as unknown as OAuthProvider;
 }
 
 function captureOAuthSessions(value: SessionService): SessionService {
-  const source = value as unknown as object;
-  const create = oauthRequiredFunction(source, "OAuth sessions", "create");
-  const authorizeSession = oauthRequiredFunction(source, "OAuth sessions", "authorizeSession");
-  const facade = oauthObjectCreate(null) as Record<string, unknown>;
-  oauthObjectDefineProperty(facade, "create", {
-    configurable: false,
-    enumerable: true,
-    writable: false,
-    value: (...args: unknown[]) => oauthReflectApply(create, source, args),
-  });
-  oauthObjectDefineProperty(facade, "authorizeSession", {
-    configurable: false,
-    enumerable: true,
-    writable: false,
-    value: (...args: unknown[]) => oauthReflectApply(authorizeSession, source, args),
-  });
-  return Object.freeze(facade) as unknown as SessionService;
+  return captureBoundaryMethodGroup(
+    value,
+    "OAuth sessions",
+    ["create", "authorizeSession"],
+  ) as unknown as SessionService;
 }
 
 function captureOAuthProviders(value: unknown): readonly (readonly [string, OAuthProvider])[] {
   const entries: Array<readonly [string, OAuthProvider]> = [];
+  if (value !== null && (typeof value === "object" || typeof value === "function")) {
+    assertBoundaryObject(value, "OAuth providers");
+  }
   if (arrayIsArray(value)) {
     const lengthProperty = oauthDataProperty(value, "length");
     if (!lengthProperty.valid || !lengthProperty.present || typeof lengthProperty.value !== "number" || !Number.isSafeInteger(lengthProperty.value)) {
@@ -833,6 +823,7 @@ export class OAuthService {
   constructor(options: OAuthServiceOptions) {
     if (options === null || typeof options !== "object") throw new AuthConfigurationError("OAuth options are incomplete");
     const source = options as unknown as object;
+    assertBoundaryObject(source, "OAuth options");
     const repositoryValue = oauthOption(source, "repository");
     const sessionsValue = oauthOption(source, "sessions");
     const providersValue = oauthOption(source, "providers");
@@ -844,6 +835,7 @@ export class OAuthService {
     const defaultRoleKeysValue = oauthOption(source, "defaultRoleKeys");
     const freshSessionMaxAgeValue = oauthOption(source, "freshSessionMaxAgeSeconds");
     const clockValue = oauthOption(source, "clock");
+    const clock = captureBoundaryClock(clockValue, "OAuth clock", () => new Date());
     if (repositoryValue === null || typeof repositoryValue !== "object") {
       throw new AuthConfigurationError("OAuth repository is incomplete");
     }
@@ -884,7 +876,7 @@ export class OAuthService {
     this.allowVerifiedEmailAutoLink = allowVerifiedEmailAutoLinkValue === true;
     this.defaultRoleKeys = Object.freeze([...new Set(defaultRoleKeys)]);
     this.freshSessionMaxAgeSeconds = freshAge;
-    this.clock = (clockValue as (() => Date) | undefined) ?? (() => new Date());
+    this.clock = clock;
     validNow(this.clock);
   }
 

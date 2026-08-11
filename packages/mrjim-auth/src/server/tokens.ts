@@ -21,6 +21,14 @@ import {
   importEs256Key,
   type PublicEs256Jwk,
 } from "./jwks.js";
+import {
+  assertBoundaryObject,
+  boundaryHasThen,
+  captureBoundaryClock,
+  captureBoundaryKeyProvider,
+  optionalBoundaryOption,
+  requiredBoundaryOption,
+} from "./callback-boundary.js";
 
 /** The verified claims required from every Task 5 access token. */
 export interface AccessTokenClaims extends JWTPayload {
@@ -128,40 +136,48 @@ export class TokenService {
   private readonly clock: () => Date;
 
   constructor(options: TokenServiceOptions) {
-    this.issuer = validString(options.issuer, "token issuer");
+    if (options === null || typeof options !== "object") {
+      throw new AuthConfigurationError("token options are incomplete");
+    }
+    const source = options as unknown as object;
+    assertBoundaryObject(source, "token options");
+
+    // Snapshot every callback-bearing option before ordinary validation can
+    // touch a hostile accessor or a mutable provider object.
+    const issuerValue = requiredBoundaryOption(source, "issuer", "token issuer");
+    const audienceValue = requiredBoundaryOption(source, "audience", "token audience");
+    const keyProviderValue = requiredBoundaryOption(source, "keyProvider", "token key provider");
+    const tokenHashKeyValue = requiredBoundaryOption(source, "tokenHashKey", "token hash key");
+    const accessTokenTtlValue = optionalBoundaryOption(source, "accessTokenTtlSeconds", "access token TTL");
+    const clockValue = optionalBoundaryOption(source, "clock", "token clock");
+    const keyProvider = captureBoundaryKeyProvider(keyProviderValue);
+    const clock = captureBoundaryClock(clockValue, "token clock", () => new Date());
+
+    this.issuer = validString(issuerValue as string, "token issuer");
+    const audience = audienceValue as string | string[];
     if (
-      (typeof options.audience !== "string" && !Array.isArray(options.audience)) ||
-      (typeof options.audience === "string" && options.audience.trim() === "") ||
-      (Array.isArray(options.audience) && options.audience.length === 0) ||
-      (Array.isArray(options.audience) &&
-        options.audience.some((value) => typeof value !== "string" || value.trim() === ""))
+      (typeof audience !== "string" && !Array.isArray(audience)) ||
+      (typeof audience === "string" && audience.trim() === "") ||
+      (Array.isArray(audience) && audience.length === 0) ||
+      (Array.isArray(audience) &&
+        (boundaryHasThen(audience) || audience.some((value) => typeof value !== "string" || value.trim() === "")))
     ) {
       throw new AuthConfigurationError("token audience must be non-empty");
     }
-    this.audience = Array.isArray(options.audience)
-      ? [...options.audience]
-      : options.audience;
-    if (
-      options.keyProvider === null ||
-      typeof options.keyProvider !== "object" ||
-      typeof options.keyProvider.getActiveKeyId !== "function" ||
-      typeof options.keyProvider.getSigningKey !== "function" ||
-      typeof options.keyProvider.getVerificationKeys !== "function"
-    ) {
-      throw new AuthConfigurationError("token key provider is incomplete");
-    }
-    this.keyProvider = options.keyProvider;
+    this.audience = Array.isArray(audience) ? [...audience] : audience;
 
     const hashKey =
-      typeof options.tokenHashKey === "string"
-        ? new TextEncoder().encode(options.tokenHashKey)
-        : Uint8Array.from(options.tokenHashKey);
+      typeof tokenHashKeyValue === "string"
+        ? new TextEncoder().encode(tokenHashKeyValue)
+        : tokenHashKeyValue instanceof Uint8Array && !boundaryHasThen(tokenHashKeyValue)
+          ? Uint8Array.from(tokenHashKeyValue)
+          : (() => { throw new AuthConfigurationError("token hash key must be non-empty"); })();
     if (hashKey.byteLength === 0) {
       throw new AuthConfigurationError("token hash key must be non-empty");
     }
     this.tokenHashKey = hashKey;
 
-    const accessTokenTtlSeconds = options.accessTokenTtlSeconds ?? DEFAULT_ACCESS_TOKEN_TTL_SECONDS;
+    const accessTokenTtlSeconds = (accessTokenTtlValue as number | undefined) ?? DEFAULT_ACCESS_TOKEN_TTL_SECONDS;
     if (
       !Number.isSafeInteger(accessTokenTtlSeconds) ||
       accessTokenTtlSeconds < 300 ||
@@ -170,7 +186,8 @@ export class TokenService {
       throw new AuthConfigurationError("access token TTL must be between 300 and 3600 seconds");
     }
     this.accessTokenTtlSeconds = accessTokenTtlSeconds;
-    this.clock = options.clock ?? (() => new Date());
+    this.keyProvider = keyProvider;
+    this.clock = clock;
     validClock(this.clock);
   }
 

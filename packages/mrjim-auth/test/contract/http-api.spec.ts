@@ -1,5 +1,6 @@
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
+import { AuthConfigurationError } from "../../src/shared/errors.js";
 
 const BASE_URL = "https://project.example.com/auth/v1";
 const SITE_URL = "https://project.example.com";
@@ -761,6 +762,15 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     });
     expect(() => serverModule.createAuthServer(thenableOptions)).toThrow();
     expect(thenGetterCalls).toBe(0);
+
+    const callbackThenableOptions = makeOptions([]) as any;
+    let callbackThenCalls = 0;
+    Object.defineProperty(callbackThenableOptions.services.users.signUp, "then", {
+      configurable: true,
+      value: () => { callbackThenCalls += 1; },
+    });
+    expect(() => serverModule.createAuthServer(callbackThenableOptions)).toThrow(AuthConfigurationError);
+    expect(callbackThenCalls).toBe(0);
   });
 
   it("captures configured repository, mailer, and limiter callbacks before schema inspection", () => {
@@ -788,6 +798,74 @@ describe("Task 9 framework-neutral HTTP contract", () => {
       expect(getterCalls, label).toBe(0);
       expect(String(thrown), label).not.toContain(`${label}-sentinel`);
     }
+  });
+
+  it("snapshots nested security configuration before schema inspection", () => {
+    const targets: readonly [string, (options: any, getter: () => unknown) => void][] = [
+      ["signingKeys aggregate", (options, getter) => {
+        Object.defineProperty(options.signingKeys, "activeKeyId", { configurable: true, enumerable: true, get: getter });
+      }],
+      ["inherited signingKeys field", (options, getter) => {
+        const prototype = Object.create(Object.getPrototypeOf(options.signingKeys));
+        Object.defineProperty(prototype, "activeKeyId", { configurable: true, get: getter });
+        delete options.signingKeys.activeKeyId;
+        Object.setPrototypeOf(options.signingKeys, prototype);
+      }],
+      ["signing key map", (options, getter) => {
+        Object.defineProperty(options.signingKeys.keys, "test", { configurable: true, enumerable: true, get: getter });
+      }],
+      ["signing key material record", (options, getter) => {
+        const material = { d: "key-material" };
+        Object.defineProperty(material, "x", { configurable: true, enumerable: true, get: getter });
+        options.signingKeys.keys.test = material;
+      }],
+      ["signing key map thenable", (options, getter) => {
+        Object.defineProperty(options.signingKeys.keys, "then", { configurable: true, enumerable: true, get: getter });
+      }],
+      ["secrets tokenHashKey", (options, getter) => {
+        Object.defineProperty(options.secrets, "tokenHashKey", { configurable: true, enumerable: true, get: getter });
+      }],
+      ["secrets aggregate thenable", (options, getter) => {
+        Object.defineProperty(options.secrets, "then", { configurable: true, enumerable: true, get: getter });
+      }],
+      ["redirect array entry", (options, getter) => {
+        Object.defineProperty(options.redirects.allowed, "0", { configurable: true, enumerable: true, get: getter });
+      }],
+      ["authorization array entry", (options, getter) => {
+        options.authorization.defaultRoleKeys = ["role.user"];
+        Object.defineProperty(options.authorization.defaultRoleKeys, "0", { configurable: true, enumerable: true, get: getter });
+      }],
+      ["OAuth client secret", (options, getter) => {
+        options.oauth = { google: { clientId: "google-client", clientSecret: "secret" } };
+        Object.defineProperty(options.oauth.google, "clientSecret", { configurable: true, enumerable: true, get: getter });
+      }],
+    ];
+    for (const [label, install] of targets) {
+      const options = makeOptions([]) as any;
+      let getterCalls = 0;
+      install(options, () => {
+        getterCalls += 1;
+        throw new Error(`${label}-sentinel`);
+      });
+      let thrown: unknown;
+      try {
+        serverModule.createAuthServer(options);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, label).toBeInstanceOf(Error);
+      expect(getterCalls, label).toBe(0);
+      expect(String(thrown), label).not.toContain("sentinel");
+    }
+
+    const options = makeOptions([]) as any;
+    const auth = serverModule.createAuthServer(options);
+    options.signingKeys.activeKeyId = "mutated";
+    options.signingKeys.keys.test = generatedSigningKey();
+    return auth.handle(request("/.well-known/jwks.json")).then(async (response) => {
+      expect(response.status).toBe(200);
+      expect((await body(response)).data.keys[0].kid).toBe("test");
+    });
   });
 
   it("rejects expired and revoked API keys before dispatch", async () => {

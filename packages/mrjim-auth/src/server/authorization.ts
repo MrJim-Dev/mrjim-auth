@@ -99,6 +99,29 @@ function ownDataProperty(value: object, key: PropertyKey): DataProperty {
   }
 }
 
+function captureAuthorizationFunction(value: unknown, label: string): Function {
+  if (typeof value !== "function") throw new AuthConfigurationError(`${label} must be a function`);
+  let current: object | null = value;
+  for (let depth = 0; current !== null && current !== objectPrototype && depth < 32; depth += 1) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = objectGetOwnPropertyDescriptor(current, "then");
+      if (descriptor !== undefined) throw new AuthConfigurationError(`${label} must be a non-thenable function`);
+      current = objectGetPrototypeOf(current);
+    } catch (error) {
+      if (error instanceof AuthConfigurationError) throw error;
+      throw new AuthConfigurationError(`${label} must be a data-property function`);
+    }
+  }
+  if (current !== null && current !== objectPrototype) throw new AuthConfigurationError(`${label} must be a non-thenable function`);
+  return value;
+}
+
+function captureAuthorizationClock(value: unknown): () => Date {
+  if (value === undefined) return defaultClock;
+  return captureAuthorizationFunction(value, "authorization clock") as () => Date;
+}
+
 function isPlainRecord(value: unknown): value is object {
   if (value === null || typeof value !== "object") return false;
   try {
@@ -966,8 +989,9 @@ export class AuthorizationService {
     if (options === null || typeof options !== "object") {
       throw new AuthConfigurationError("authorization repository is incomplete");
     }
+    const source = options as unknown as object;
 
-    const repositoryProperty = ownDataProperty(options, "repository");
+    const repositoryProperty = ownDataProperty(source, "repository");
     if (!repositoryProperty.valid || !repositoryProperty.present) {
       throw new AuthConfigurationError("authorization repository is incomplete");
     }
@@ -986,15 +1010,15 @@ export class AuthorizationService {
     }
 
     const effectivePermissionsProperty = ownDataProperty(authorization, "effectivePermissions");
-    if (
-      !effectivePermissionsProperty.valid ||
-      !effectivePermissionsProperty.present ||
-      typeof effectivePermissionsProperty.value !== "function"
-    ) {
+    if (!effectivePermissionsProperty.valid || !effectivePermissionsProperty.present || typeof effectivePermissionsProperty.value !== "function") {
       throw new AuthConfigurationError("authorization repository is incomplete");
     }
+    const effectivePermissions = captureAuthorizationFunction(
+      effectivePermissionsProperty.value,
+      "authorization repository.effectivePermissions",
+    );
 
-    const clockProperty = ownDataProperty(options, "clock");
+    const clockProperty = ownDataProperty(source, "clock");
     if (!clockProperty.valid) {
       throw new AuthConfigurationError("authorization clock must be a function");
     }
@@ -1004,8 +1028,8 @@ export class AuthorizationService {
     }
 
     this.authorization = authorization as AuthorizationRepository;
-    this.effectivePermissions = effectivePermissionsProperty.value as AuthorizationRepository["effectivePermissions"];
-    this.clock = configuredClock === undefined ? defaultClock : configuredClock as () => Date;
+    this.effectivePermissions = effectivePermissions as AuthorizationRepository["effectivePermissions"];
+    this.clock = captureAuthorizationClock(configuredClock);
     validNow(this.clock);
   }
 

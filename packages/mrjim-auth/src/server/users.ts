@@ -23,6 +23,17 @@ import {
   isAdapterBoundaryFailure,
 } from "./adapter-boundary.js";
 import type { TrustedServiceError } from "./adapter-boundary.js";
+import {
+  assertBoundaryObject,
+  boundaryDataProperty,
+  captureBoundaryClock,
+  captureBoundaryFunction,
+  captureBoundaryMethodGroup,
+  captureBoundaryRepository,
+  captureBoundaryStringArray,
+  optionalBoundaryOption,
+  requiredBoundaryOption,
+} from "./callback-boundary.js";
 
 export interface UserRequestContext extends SessionContext {
   readonly request_id?: string;
@@ -188,33 +199,74 @@ export class UserService {
   private readonly clock: () => Date;
 
   constructor(options: UserServiceOptions) {
-    if (options.repository === null || typeof options.repository !== "object") {
+    if (options === null || typeof options !== "object") {
+      throw new AuthConfigurationError("user service options are incomplete");
+    }
+    const source = options as unknown as object;
+    assertBoundaryObject(source, "user service options");
+    const repositoryValue = requiredBoundaryOption(source, "repository", "user repository");
+    const passwordsValue = requiredBoundaryOption(source, "passwords", "password service");
+    const emailValue = requiredBoundaryOption(source, "email", "email service");
+    const mailerValue = requiredBoundaryOption(source, "mailer", "mailer");
+    const oneTimeTokensValue = requiredBoundaryOption(source, "oneTimeTokens", "one-time-token service");
+    const sessionsValue = optionalBoundaryOption(source, "sessions", "session service");
+    const rateLimiterValue = optionalBoundaryOption(source, "rateLimiter", "rate limiter");
+    const defaultRoleKeysValue = optionalBoundaryOption(source, "defaultRoleKeys", "default role keys");
+    const requireEmailConfirmationValue = optionalBoundaryOption(source, "requireEmailConfirmation", "email confirmation option");
+    const concealUserExistenceValue = optionalBoundaryOption(source, "concealUserExistence", "user concealment option");
+    const onOperationalFailureValue = optionalBoundaryOption(source, "onOperationalFailure", "operational failure hook");
+    const clockValue = optionalBoundaryOption(source, "clock", "user service clock");
+    if (repositoryValue === null || typeof repositoryValue !== "object") {
       throw new AuthConfigurationError("user repository is required");
     }
-    if (!(options.passwords instanceof PasswordService)) {
+    if (!(passwordsValue instanceof PasswordService)) {
       throw new AuthConfigurationError("password service is required");
     }
-    if (!(options.email instanceof EmailService)) {
+    if (!(emailValue instanceof EmailService)) {
       throw new AuthConfigurationError("email service is required");
     }
-    if (!(options.oneTimeTokens instanceof OneTimeTokenService)) {
+    if (!(oneTimeTokensValue instanceof OneTimeTokenService)) {
       throw new AuthConfigurationError("one-time-token service is required");
     }
-    if (options.mailer === null || typeof options.mailer !== "object" || typeof options.mailer.send !== "function") {
-      throw new AuthConfigurationError("mailer is required");
+    const emailAllowedProperty = boundaryDataProperty(emailValue, "allowedRedirects");
+    const emailDefaultProperty = boundaryDataProperty(emailValue, "defaultRedirect");
+    if (!emailAllowedProperty.valid || !emailAllowedProperty.present || !emailDefaultProperty.valid || !emailDefaultProperty.present || typeof emailDefaultProperty.value !== "string") {
+      throw new AuthConfigurationError("email service is incomplete");
     }
-    this.repository = options.repository;
-    this.passwords = options.passwords;
-    this.email = options.email;
-    this.mailer = options.mailer;
-    this.oneTimeTokens = options.oneTimeTokens;
-    this.sessions = options.sessions;
-    this.rateLimiter = options.rateLimiter;
-    this.defaultRoleKeys = [...(options.defaultRoleKeys ?? [])].map((key) => key.toLowerCase());
-    this.requireEmailConfirmation = options.requireEmailConfirmation ?? true;
-    this.concealUserExistence = options.concealUserExistence ?? true;
-    this.onOperationalFailure = options.onOperationalFailure;
-    this.clock = options.clock ?? (() => new Date());
+    this.repository = captureBoundaryRepository(repositoryValue);
+    this.passwords = captureBoundaryMethodGroup(passwordsValue, "password service", ["hash", "verify"]) as unknown as PasswordService;
+    this.email = captureBoundaryMethodGroup(
+      emailValue,
+      "email service",
+      ["resolveRedirect"],
+      [],
+      {
+        allowedRedirects: captureBoundaryStringArray(emailAllowedProperty.value, "email.allowedRedirects", 1),
+        defaultRedirect: emailDefaultProperty.value,
+      },
+      "facade",
+    ) as unknown as EmailService;
+    this.mailer = captureBoundaryMethodGroup(mailerValue, "mailer", ["send"]) as unknown as Mailer;
+    this.oneTimeTokens = captureBoundaryMethodGroup(
+      oneTimeTokensValue,
+      "one-time-token service",
+      ["resolveRedirect", "issue", "verify", "resend", "consumeForMutation"],
+    ) as unknown as OneTimeTokenService;
+    this.sessions = sessionsValue === undefined
+      ? undefined
+      : sessionsValue instanceof SessionService
+        ? captureBoundaryMethodGroup(sessionsValue, "session service", ["create", "authorizeSession"]) as unknown as SessionService
+        : (() => { throw new AuthConfigurationError("session service is invalid"); })();
+    this.rateLimiter = rateLimiterValue === undefined
+      ? undefined
+      : captureBoundaryMethodGroup(rateLimiterValue, "rate limiter", ["consume"]) as unknown as RateLimiter;
+    this.defaultRoleKeys = [...captureBoundaryStringArray(defaultRoleKeysValue ?? [], "default role keys")].map((key) => key.toLowerCase());
+    this.requireEmailConfirmation = (requireEmailConfirmationValue as boolean | undefined) ?? true;
+    this.concealUserExistence = (concealUserExistenceValue as boolean | undefined) ?? true;
+    this.onOperationalFailure = onOperationalFailureValue === undefined
+      ? undefined
+      : captureBoundaryFunction(onOperationalFailureValue, "operational failure hook") as (event: SafeOperationalFailure) => void | Promise<void>;
+    this.clock = captureBoundaryClock(clockValue, "user service clock", () => new Date());
     validNow(this.clock);
   }
 

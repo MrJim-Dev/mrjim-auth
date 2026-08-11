@@ -497,6 +497,22 @@ describe("Task 7 OAuth and identity safety", () => {
     })).toThrow();
     expect(providerGetterCalls).toBe(0);
 
+    const thenableProvider = deterministicProvider() as any;
+    let providerThenCalls = 0;
+    Object.defineProperty(thenableProvider.authorizationUrl, "then", {
+      configurable: true,
+      value: () => { providerThenCalls += 1; },
+    });
+    expect(() => new OAuthService({
+      repository: requireRepository(),
+      sessions,
+      providers: [thenableProvider],
+      tokenHashKey: TOKEN_HASH_KEY,
+      encryptionKey: ENCRYPTION_KEY,
+      allowedRedirects: [CALLBACK],
+    })).toThrow(AuthConfigurationError);
+    expect(providerThenCalls).toBe(0);
+
     const provider = deterministicProvider() as any;
     const options = {
       repository: requireRepository(),
@@ -518,6 +534,23 @@ describe("Task 7 OAuth and identity safety", () => {
     expect(() => new OAuthService(options)).toThrow();
     expect(clockGetterCalls).toBe(0);
 
+    const thenableClock = (() => now) as (() => Date) & { then?: () => void };
+    let clockThenCalls = 0;
+    Object.defineProperty(thenableClock, "then", {
+      configurable: true,
+      value: () => { clockThenCalls += 1; },
+    });
+    expect(() => new OAuthService({
+      repository: requireRepository(),
+      sessions,
+      providers: [deterministicProvider()],
+      tokenHashKey: TOKEN_HASH_KEY,
+      encryptionKey: ENCRYPTION_KEY,
+      allowedRedirects: [CALLBACK],
+      clock: thenableClock,
+    })).toThrow(AuthConfigurationError);
+    expect(clockThenCalls).toBe(0);
+
     const service = createOAuthService({ provider });
     provider.authorizationUrl = () => { throw new Error("swapped-provider-callback"); };
     const authorized = await service.authorize({ provider: "google", redirectTo: CALLBACK });
@@ -535,6 +568,77 @@ describe("Task 7 OAuth and identity safety", () => {
     mutableSessions.create = () => { throw new Error("swapped-session-callback"); };
     const signedIn = await sessionService.signInFromProfile(profile({ subject: "captured-session-subject", email: "captured-session@example.com" }));
     expect(signedIn.error).toBeNull();
+  });
+
+  it("rejects thenable OAuth session dependencies without invoking them", () => {
+    const createOAuth = (candidate: SessionService) => new OAuthService({
+      repository: requireRepository(),
+      sessions: candidate,
+      providers: [deterministicProvider()],
+      tokenHashKey: TOKEN_HASH_KEY,
+      encryptionKey: ENCRYPTION_KEY,
+      allowedRedirects: [CALLBACK],
+    });
+    const cases: readonly [string, (sessions: SessionService, calls: { value: number }) => void][] = [
+      ["own data", (sessions, calls) => Object.defineProperty(sessions, "then", {
+        configurable: true,
+        value: () => { calls.value += 1; },
+      })],
+      ["own accessor", (sessions, calls) => Object.defineProperty(sessions, "then", {
+        configurable: true,
+        get: () => { calls.value += 1; throw new Error("session-then-sentinel"); },
+      })],
+      ["inherited data", (sessions, calls) => {
+        const prototype = Object.create(Object.getPrototypeOf(sessions));
+        Object.defineProperty(prototype, "then", { configurable: true, value: () => { calls.value += 1; } });
+        Object.setPrototypeOf(sessions, prototype);
+      }],
+      ["inherited accessor", (sessions, calls) => {
+        const prototype = Object.create(Object.getPrototypeOf(sessions));
+        Object.defineProperty(prototype, "then", {
+          configurable: true,
+          get: () => { calls.value += 1; throw new Error("inherited-session-then-sentinel"); },
+        });
+        Object.setPrototypeOf(sessions, prototype);
+      }],
+      ["poisoned prototype", (sessions, calls) => {
+        const prototype = Object.create(Object.getPrototypeOf(sessions), {
+          then: {
+            configurable: true,
+            get: () => { calls.value += 1; throw new Error("poisoned-session-then-sentinel"); },
+          },
+        });
+        Object.setPrototypeOf(sessions, prototype);
+      }],
+    ];
+
+    for (const [label, install] of cases) {
+      const sessions = createServices().sessions;
+      const calls = { value: 0 };
+      install(sessions, calls);
+      let thrown: unknown;
+      try {
+        createOAuth(sessions);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, label).toBeInstanceOf(AuthConfigurationError);
+      expect(String(thrown), label).not.toContain("sentinel");
+      expect(calls.value, label).toBe(0);
+    }
+
+    const callable = Object.assign(() => undefined, {
+      create: () => undefined,
+      authorizeSession: () => undefined,
+    }) as unknown as SessionService;
+    Object.setPrototypeOf(callable, SessionService.prototype);
+    let callableThenCalls = 0;
+    Object.defineProperty(callable, "then", {
+      configurable: true,
+      value: () => { callableThenCalls += 1; },
+    });
+    expect(() => createOAuth(callable)).toThrow(AuthConfigurationError);
+    expect(callableThenCalls).toBe(0);
   });
 
   it("signs in by provider subject, links only with a fresh session, and rejects collisions", async () => {

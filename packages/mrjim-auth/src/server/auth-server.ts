@@ -15,6 +15,16 @@ import type { AccessTokenClaims } from "./tokens.js";
 import { handlePublicRoute } from "./routes/public.js";
 import { handleUserRoute } from "./routes/user.js";
 import {
+  boundaryDataProperty,
+  assertBoundaryObject,
+  boundaryHasThen,
+  boundaryOwnDataProperty,
+  captureBoundaryMethodGroup,
+  captureBoundaryRepository,
+  captureBoundaryStringArray,
+  requiredBoundaryOption,
+} from "./callback-boundary.js";
+import {
   routeContracts,
   refreshTokenRequestSchema,
   signupRequestSchema,
@@ -232,73 +242,8 @@ function hasThenProperty(value: object): boolean {
   return current !== null;
 }
 
-function inheritedDataProperty(value: object, key: PropertyKey): DataProperty {
-  let current: object | null = value;
-  const seen = new Set<object>();
-  for (let depth = 0; current !== null && depth < MAX_SNAPSHOT_DEPTH; depth += 1) {
-    if (seen.has(current)) return { valid: false, present: true };
-    seen.add(current);
-    try {
-      const descriptor = objectGetOwnPropertyDescriptor(current, key);
-      if (descriptor !== undefined) {
-        if (!("value" in descriptor)) return { valid: false, present: true };
-        return { valid: true, present: true, value: descriptor.value };
-      }
-      current = objectGetPrototypeOf(current);
-    } catch {
-      return { valid: false, present: false };
-    }
-  }
-  return current === null ? { valid: true, present: false } : { valid: false, present: true };
-}
-
-function requiredFunction(value: object, label: string, method: string): Function {
-  const property = inheritedDataProperty(value, method);
-  if (!property.valid || !property.present || typeof property.value !== "function") {
-    throw new AuthConfigurationError(`${label}.${method} must be a data-property function`);
-  }
-  return property.value;
-}
-
-function captureMethodGroup(
-  value: unknown,
-  label: string,
-  required: readonly string[],
-  optional: readonly string[] = [],
-): Record<string, unknown> {
-  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
-    throw new AuthConfigurationError(`${label} service is incomplete`);
-  }
-  const source = value as object;
-  if (hasThenProperty(source)) throw new AuthConfigurationError(`${label} service must not be thenable`);
-  const facade = objectCreate(null) as Record<string, unknown>;
-  for (const method of required) {
-    const captured = requiredFunction(source, label, method);
-    objectDefineProperty(facade, method, {
-      configurable: false,
-      enumerable: true,
-      writable: false,
-      value: (...args: unknown[]) => reflectApply(captured, source, args),
-    });
-  }
-  for (const method of optional) {
-    const property = inheritedDataProperty(source, method);
-    if (!property.valid) throw new AuthConfigurationError(`${label}.${method} must be a data-property function`);
-    if (!property.present) continue;
-    if (typeof property.value !== "function") throw new AuthConfigurationError(`${label}.${method} must be a data-property function`);
-    const captured = property.value;
-    objectDefineProperty(facade, method, {
-      configurable: false,
-      enumerable: true,
-      writable: false,
-      value: (...args: unknown[]) => reflectApply(captured, source, args),
-    });
-  }
-  return objectFreeze(facade);
-}
-
 function requiredMember(value: object, label: string, member: string): unknown {
-  const property = inheritedDataProperty(value, member);
+  const property = boundaryDataProperty(value, member);
   if (!property.valid || !property.present) throw new AuthConfigurationError(`${label}.${member} is unavailable`);
   return property.value;
 }
@@ -308,19 +253,6 @@ const SESSION_SERVICE_METHODS = ["refresh", "authorizeSession", "signOut"] as co
 const TOKEN_SERVICE_METHODS = ["verifyAccessToken", "jwks"] as const;
 const AUTHORIZATION_SERVICE_METHODS = ["getPermissions", "authorize"] as const;
 const OAUTH_SERVICE_METHODS = ["listProviders", "authorize", "callback", "exchangeCode", "listIdentities", "unlinkIdentity"] as const;
-const REPOSITORY_METHODS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  root: ["transaction"],
-  users: ["findById", "findByIdForUpdate", "findByNormalizedEmail", "findByNormalizedEmailForUpdate", "create", "createIfAvailable", "update", "softDelete"],
-  identities: ["findByProviderSubject", "listByUserId", "create", "createIfAvailable", "deleteById"],
-  passwordCredentials: ["findByUserId", "upsert", "deleteByUserId"],
-  sessions: ["create", "findByIdForUpdate", "findRefreshForUpdate", "rotate", "revokeSession", "revokeFamily", "revokeUserSessions"],
-  oneTimeTokens: ["issue", "consume", "consumeBound", "recordFailure"],
-  oauthStates: ["create", "consume"],
-  authorization: ["effectivePermissions", "assignRole", "unassignRole", "setRolePermissions", "setRoleInheritance"],
-  roles: ["list", "findById", "create", "update", "delete"],
-  permissions: ["list", "findById", "create", "update", "delete"],
-  operations: ["appendAudit", "findApiKeyByHash"],
-});
 
 /** Captures all service callbacks without mutating the caller's composition. */
 export function captureAuthServerServices(value: AuthServerServices): AuthServerServices {
@@ -330,65 +262,31 @@ export function captureAuthServerServices(value: AuthServerServices): AuthServer
   const source = value as object;
   if (hasThenProperty(source)) throw new AuthConfigurationError("auth server services must not be thenable");
   const facade = objectCreate(null) as Record<string, unknown>;
-  objectDefineProperty(facade, "users", { configurable: false, enumerable: true, writable: false, value: captureMethodGroup(requiredMember(source, "auth", "users"), "user", USER_SERVICE_METHODS) });
-  objectDefineProperty(facade, "sessions", { configurable: false, enumerable: true, writable: false, value: captureMethodGroup(requiredMember(source, "auth", "sessions"), "session", SESSION_SERVICE_METHODS, ["revokeRefreshToken"]) });
-  objectDefineProperty(facade, "tokens", { configurable: false, enumerable: true, writable: false, value: captureMethodGroup(requiredMember(source, "auth", "tokens"), "token", TOKEN_SERVICE_METHODS) });
-  objectDefineProperty(facade, "authorization", { configurable: false, enumerable: true, writable: false, value: captureMethodGroup(requiredMember(source, "auth", "authorization"), "authorization", AUTHORIZATION_SERVICE_METHODS) });
-  const oauth = inheritedDataProperty(source, "oauth");
+  objectDefineProperty(facade, "users", { configurable: false, enumerable: true, writable: false, value: captureBoundaryMethodGroup(requiredMember(source, "auth", "users"), "user", USER_SERVICE_METHODS) });
+  objectDefineProperty(facade, "sessions", { configurable: false, enumerable: true, writable: false, value: captureBoundaryMethodGroup(requiredMember(source, "auth", "sessions"), "session", SESSION_SERVICE_METHODS, ["revokeRefreshToken"]) });
+  objectDefineProperty(facade, "tokens", { configurable: false, enumerable: true, writable: false, value: captureBoundaryMethodGroup(requiredMember(source, "auth", "tokens"), "token", TOKEN_SERVICE_METHODS) });
+  objectDefineProperty(facade, "authorization", { configurable: false, enumerable: true, writable: false, value: captureBoundaryMethodGroup(requiredMember(source, "auth", "authorization"), "authorization", AUTHORIZATION_SERVICE_METHODS) });
+  const oauth = boundaryDataProperty(source, "oauth");
   if (!oauth.valid) throw new AuthConfigurationError("OAuth service must be a data property");
   if (oauth.present && oauth.value !== undefined) {
-    objectDefineProperty(facade, "oauth", { configurable: false, enumerable: true, writable: false, value: captureMethodGroup(oauth.value, "OAuth", OAUTH_SERVICE_METHODS) });
+    objectDefineProperty(facade, "oauth", { configurable: false, enumerable: true, writable: false, value: captureBoundaryMethodGroup(oauth.value, "OAuth", OAUTH_SERVICE_METHODS) });
   }
   return objectFreeze(facade) as unknown as AuthServerServices;
 }
 
 /** Captures the configured mail-delivery callback before schema inspection. */
 export function captureAuthServerMailer(value: Mailer): Mailer {
-  return captureMethodGroup(value, "email", ["send"]) as unknown as Mailer;
+  return captureBoundaryMethodGroup(value, "email", ["send"]) as unknown as Mailer;
 }
 
 /** Captures the configured rate-limit callback before schema inspection. */
 export function captureAuthServerRateLimiter(value: RateLimiter): RateLimiter {
-  return captureMethodGroup(value, "rateLimiter", ["consume"]) as unknown as RateLimiter;
+  return captureBoundaryMethodGroup(value, "rateLimiter", ["consume"]) as unknown as RateLimiter;
 }
 
 /** Captures every repository callback used by the server and default services. */
 export function captureAuthServerRepository(value: AuthRepository): AuthRepository {
-  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
-    throw new AuthConfigurationError("database repository is incomplete");
-  }
-  const source = value as object;
-  if (hasThenProperty(source)) throw new AuthConfigurationError("database repository must not be thenable");
-  const facade = objectCreate(null) as Record<string, unknown>;
-  for (const [member, methods] of Object.entries(REPOSITORY_METHODS)) {
-    if (member === "root") {
-      const transaction = requiredFunction(source, "database", "transaction");
-      objectDefineProperty(facade, "transaction", {
-        configurable: false,
-        enumerable: true,
-        writable: false,
-        value: (...args: unknown[]) => {
-          const callback = args[0];
-          if (typeof callback !== "function") return reflectApply(transaction, source, args);
-          const wrapped = (transactionRepository: unknown, ...callbackArgs: unknown[]) => reflectApply(
-            callback,
-            undefined,
-            [captureAuthServerRepository(transactionRepository as AuthRepository), ...callbackArgs],
-          );
-          return reflectApply(transaction, source, [wrapped, ...args.slice(1)]);
-        },
-      });
-      continue;
-    }
-    const group = requiredMember(source, "database", member);
-    objectDefineProperty(facade, member, {
-      configurable: false,
-      enumerable: true,
-      writable: false,
-      value: captureMethodGroup(group, `database.${member}`, methods),
-    });
-  }
-  return objectFreeze(facade) as unknown as AuthRepository;
+  return captureBoundaryRepository(value);
 }
 
 function isAsciiAlphaNumeric(value: string | undefined): boolean {
@@ -827,7 +725,8 @@ export type AuthSubject = AuthorizationSubject;
 
 /** Framework-neutral Web Request/Response authentication server. */
 export class AuthServer {
-  private readonly config: AuthServerOptions;
+  private readonly tokenIssuer: string;
+  private readonly tokenAudience: string | string[];
   private readonly repository: AuthRepository;
   private readonly services: AuthServerServices;
   private readonly apiKeyHashKey: Uint8Array;
@@ -837,14 +736,43 @@ export class AuthServer {
   private readonly allowedRedirects: readonly string[];
 
   constructor(options: AuthServerRuntimeOptions) {
-    this.config = options.config;
-    this.repository = captureAuthServerRepository(options.repository);
-    this.services = captureAuthServerServices(options.services);
-    this.apiKeyHashKey = nativeUint8Array.from(options.apiKeyHashKey);
-    this.baseOrigin = options.baseOrigin;
-    this.basePath = options.basePath;
-    this.allowedOrigins = objectFreeze([...options.allowedOrigins]);
-    this.allowedRedirects = objectFreeze([...options.allowedRedirects]);
+    if (options === null || typeof options !== "object") throw new AuthConfigurationError("auth server runtime options are incomplete");
+    const source = options as unknown as object;
+    assertBoundaryObject(source, "auth server runtime options");
+    const config = requiredBoundaryOption(source, "config", "auth server config");
+    const repository = requiredBoundaryOption(source, "repository", "auth server repository");
+    const services = requiredBoundaryOption(source, "services", "auth server services");
+    const apiKeyHashKey = requiredBoundaryOption(source, "apiKeyHashKey", "API-key hash key");
+    const baseOrigin = requiredBoundaryOption(source, "baseOrigin", "auth server base origin");
+    const basePath = requiredBoundaryOption(source, "basePath", "auth server base path");
+    const allowedOrigins = requiredBoundaryOption(source, "allowedOrigins", "auth server allowed origins");
+    const allowedRedirects = requiredBoundaryOption(source, "allowedRedirects", "auth server allowed redirects");
+    if (!(apiKeyHashKey instanceof nativeUint8Array) || boundaryHasThen(apiKeyHashKey)) throw new AuthConfigurationError("API-key hash key must be a byte array");
+    if (config === null || typeof config !== "object") throw new AuthConfigurationError("auth server config is incomplete");
+    const configSource = config as object;
+    assertBoundaryObject(configSource, "auth server config");
+    const signingKeysProperty = boundaryOwnDataProperty(configSource, "signingKeys");
+    if (!signingKeysProperty.valid || !signingKeysProperty.present || signingKeysProperty.value === null || typeof signingKeysProperty.value !== "object") {
+      throw new AuthConfigurationError("auth server signing keys are incomplete");
+    }
+    const signingKeys = signingKeysProperty.value as object;
+    assertBoundaryObject(signingKeys, "auth server signing keys");
+    const issuerProperty = boundaryOwnDataProperty(signingKeys, "issuer");
+    const audienceProperty = boundaryOwnDataProperty(signingKeys, "audience");
+    if (!issuerProperty.valid || !issuerProperty.present || typeof issuerProperty.value !== "string" || !audienceProperty.valid || !audienceProperty.present || (typeof audienceProperty.value !== "string" && !Array.isArray(audienceProperty.value))) {
+      throw new AuthConfigurationError("auth server signing keys are incomplete");
+    }
+    this.tokenIssuer = issuerProperty.value;
+    this.tokenAudience = Array.isArray(audienceProperty.value)
+      ? [...captureBoundaryStringArray(audienceProperty.value, "auth server token audience", 1)]
+      : audienceProperty.value;
+    this.repository = captureAuthServerRepository(repository as AuthRepository);
+    this.services = captureAuthServerServices(services as AuthServerServices);
+    this.apiKeyHashKey = nativeUint8Array.from(apiKeyHashKey);
+    this.baseOrigin = baseOrigin as string;
+    this.basePath = basePath as string;
+    this.allowedOrigins = captureBoundaryStringArray(allowedOrigins, "auth server allowed origins");
+    this.allowedRedirects = captureBoundaryStringArray(allowedRedirects, "auth server allowed redirects");
     if (this.apiKeyHashKey.byteLength < 32) throw new AuthConfigurationError("API-key hash key must contain at least 32 bytes");
   }
 
@@ -1207,8 +1135,8 @@ export class AuthServer {
       claimsParsed.data.exp <= claimsParsed.data.iat ||
       claimsParsed.data.iat > nowSeconds ||
       claimsParsed.data.exp <= nowSeconds ||
-      claimsParsed.data.iss !== this.config.signingKeys.issuer ||
-      !audienceMatches(claimsParsed.data.aud, this.config.signingKeys.audience) ||
+      claimsParsed.data.iss !== this.tokenIssuer ||
+      !audienceMatches(claimsParsed.data.aud, this.tokenAudience) ||
       !uuidSchema.safeParse(claimsParsed.data.sid).success
     ) throw new AuthApiError("unauthorized", 401, "Invalid access token", requestId);
     const userRaw = await invokeUntrusted(() => this.repository.users.findById(uuidSchema.parse(claimsParsed.data.sub)));

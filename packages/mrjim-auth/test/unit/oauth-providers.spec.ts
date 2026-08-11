@@ -11,6 +11,7 @@ import {
   OidcOAuthProvider,
   providerCodeChallenge,
 } from "../../src/server/oauth-providers.js";
+import { AuthConfigurationError } from "../../src/shared/errors.js";
 
 const TLS_KEY = `-----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgt3zy1YONNbO3EPT2
@@ -265,6 +266,35 @@ describe("OAuth provider adapters with a local HTTPS OIDC server", () => {
   beforeAll(async () => fixture.start());
   afterAll(async () => fixture.stop());
 
+  it("does not invoke Google credential option accessors", () => {
+    const options = Object.create(null) as Record<string, unknown>;
+    let getterCalls = 0;
+    Object.defineProperty(options, "clientId", {
+      configurable: true,
+      get: () => { getterCalls += 1; throw new Error("google-client-id-sentinel"); },
+    });
+    let thrown: unknown;
+    try {
+      new GoogleOAuthProvider(options as never);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AuthConfigurationError);
+    expect(String(thrown)).not.toContain("google-client-id-sentinel");
+    expect(getterCalls).toBe(0);
+  });
+
+  it("rejects thenable Google credential options without assimilation", () => {
+    const options = { clientId: "google-client", clientSecret: "google-secret" } as Record<string, unknown>;
+    let thenCalls = 0;
+    Object.defineProperty(options, "then", {
+      configurable: true,
+      value: () => { thenCalls += 1; },
+    });
+    expect(() => new GoogleOAuthProvider(options as never)).toThrow(AuthConfigurationError);
+    expect(thenCalls).toBe(0);
+  });
+
   it("rejects non-HTTPS issuers at construction and keeps Google scopes fixed", () => {
     expect(() => new OidcOAuthProvider({
       name: "insecure",
@@ -274,6 +304,29 @@ describe("OAuth provider adapters with a local HTTPS OIDC server", () => {
     })).toThrow(/HTTPS/i);
     const google = new GoogleOAuthProvider({ clientId: "google-client", clientSecret: "google-secret" });
     expect(google.scopes).toEqual(["openid", "email", "profile"]);
+  });
+
+  it("rejects a custom-fetch accessor without invoking it", () => {
+    const options = {
+      name: "local-oidc",
+      clientId: CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
+      issuer: "https://issuer.example.com",
+    } as Record<string, unknown>;
+    let getterCalls = 0;
+    Object.defineProperty(options, "customFetch", {
+      configurable: true,
+      get: () => { getterCalls += 1; throw new Error("custom-fetch-sentinel"); },
+    });
+    let thrown: unknown;
+    try {
+      new OidcOAuthProvider(options as never);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect(String(thrown)).not.toContain("custom-fetch-sentinel");
+    expect(getterCalls).toBe(0);
   });
 
   it("performs discovery, authorization, token exchange, JWKS signature validation, and one-use code handling", async () => {

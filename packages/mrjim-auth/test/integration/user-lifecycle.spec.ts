@@ -94,9 +94,11 @@ function services(options: {
   readonly requireEmailConfirmation?: boolean;
   readonly passwordPolicy?: { readonly memoryCost?: number };
   readonly repository?: PostgresAdapter;
+  readonly repositoryTransform?: (repository: PostgresAdapter) => PostgresAdapter;
 } = {}) {
-  const currentRepository = options.repository ?? repository;
-  if (currentRepository === undefined) throw new Error("repository is not initialized");
+  const baseRepository = options.repository ?? repository;
+  if (baseRepository === undefined) throw new Error("repository is not initialized");
+  const currentRepository = options.repositoryTransform?.(baseRepository) ?? baseRepository;
   const mailer = new FakeMailer();
   const email = new EmailService({ allowedRedirects: [CALLBACK, ALT_CALLBACK], defaultRedirect: CALLBACK });
   const tokens = new TokenService({
@@ -742,20 +744,28 @@ describe("Task 6 user lifecycle", () => {
     if (disposable === undefined) throw new Error("expected disposable PostgreSQL");
     const banRepository = createPostgresAdapter({ pool: disposable.pool });
 
-    const createService = services({ requireEmailConfirmation: false, concealUserExistence: false });
-    const createFixture = data(await createService.users.signUp({ email: "session-create-ban-race@example.com", password: PASSWORD }));
-    if (createFixture.user === null) throw new Error("expected session-create race user");
-    const createOriginalTransaction = createService.repository.transaction.bind(createService.repository);
+    let createGateEnabled = false;
     let createEnteredResolve: (() => void) | undefined;
     const createEntered = new Promise<void>((resolve) => { createEnteredResolve = resolve; });
     let createReleaseResolve: (() => void) | undefined;
     const createRelease = new Promise<void>((resolve) => { createReleaseResolve = resolve; });
-    (createService.repository as unknown as { transaction: typeof createService.repository.transaction }).transaction = async (callback) =>
-      createOriginalTransaction(async (transaction) => {
-        createEnteredResolve?.();
-        await createRelease;
-        return callback(transaction);
-      });
+    const createService = services({
+      requireEmailConfirmation: false,
+      concealUserExistence: false,
+      repositoryTransform: (base) => ({
+        ...base,
+        async transaction<T>(callback: (transaction: AuthRepository) => Promise<T>): Promise<T> {
+          if (createGateEnabled) {
+            createEnteredResolve?.();
+            await createRelease;
+          }
+          return base.transaction(callback);
+        },
+      }),
+    });
+    const createFixture = data(await createService.users.signUp({ email: "session-create-ban-race@example.com", password: PASSWORD }));
+    if (createFixture.user === null) throw new Error("expected session-create race user");
+    createGateEnabled = true;
     try {
       const createAttempt = createService.sessions.create(createFixture.user);
       await createEntered;
@@ -765,24 +775,32 @@ describe("Task 6 user lifecycle", () => {
       const createdSessionRows = await disposable.pool.query("SELECT id FROM auth.sessions WHERE user_id = $1", [createFixture.user.id]);
       expect(createdSessionRows.rows).toHaveLength(1);
     } finally {
+      createGateEnabled = false;
       createReleaseResolve?.();
-      (createService.repository as unknown as { transaction: typeof createService.repository.transaction }).transaction = createOriginalTransaction;
     }
 
-    const refreshService = services({ requireEmailConfirmation: false, concealUserExistence: false });
-    const refreshFixture = data(await refreshService.users.signUp({ email: "session-refresh-ban-race@example.com", password: PASSWORD }));
-    if (refreshFixture.user === null || refreshFixture.session === null) throw new Error("expected session-refresh race user");
-    const refreshOriginalTransaction = refreshService.repository.transaction.bind(refreshService.repository);
+    let refreshGateEnabled = false;
     let refreshEnteredResolve: (() => void) | undefined;
     const refreshEntered = new Promise<void>((resolve) => { refreshEnteredResolve = resolve; });
     let refreshReleaseResolve: (() => void) | undefined;
     const refreshRelease = new Promise<void>((resolve) => { refreshReleaseResolve = resolve; });
-    (refreshService.repository as unknown as { transaction: typeof refreshService.repository.transaction }).transaction = async (callback) =>
-      refreshOriginalTransaction(async (transaction) => {
-        refreshEnteredResolve?.();
-        await refreshRelease;
-        return callback(transaction);
-      });
+    const refreshService = services({
+      requireEmailConfirmation: false,
+      concealUserExistence: false,
+      repositoryTransform: (base) => ({
+        ...base,
+        async transaction<T>(callback: (transaction: AuthRepository) => Promise<T>): Promise<T> {
+          if (refreshGateEnabled) {
+            refreshEnteredResolve?.();
+            await refreshRelease;
+          }
+          return base.transaction(callback);
+        },
+      }),
+    });
+    const refreshFixture = data(await refreshService.users.signUp({ email: "session-refresh-ban-race@example.com", password: PASSWORD }));
+    if (refreshFixture.user === null || refreshFixture.session === null) throw new Error("expected session-refresh race user");
+    refreshGateEnabled = true;
     try {
       const refreshAttempt = refreshService.sessions.refresh(refreshFixture.session.refresh_token);
       await refreshEntered;
@@ -797,8 +815,8 @@ describe("Task 6 user lifecycle", () => {
       expect(refreshRows.rows[0]?.used_at).toBeNull();
       expect(refreshRows.rows[0]?.revoked_at).toBeNull();
     } finally {
+      refreshGateEnabled = false;
       refreshReleaseResolve?.();
-      (refreshService.repository as unknown as { transaction: typeof refreshService.repository.transaction }).transaction = refreshOriginalTransaction;
       await banRepository.close();
     }
   });
@@ -830,7 +848,25 @@ describe("Task 6 user lifecycle", () => {
   });
 
   it("cannot issue an old-password session after a real recovery reset commits first", async () => {
-    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    let gateEnabled = false;
+    let enteredResolve: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => { enteredResolve = resolve; });
+    let releaseResolve: (() => void) | undefined;
+    const release = new Promise<void>((resolve) => { releaseResolve = resolve; });
+    const service = services({
+      requireEmailConfirmation: false,
+      concealUserExistence: false,
+      repositoryTransform: (base) => ({
+        ...base,
+        async transaction<T>(callback: (transaction: AuthRepository) => Promise<T>): Promise<T> {
+          if (gateEnabled) {
+            enteredResolve?.();
+            await release;
+          }
+          return base.transaction(callback);
+        },
+      }),
+    });
     const created = data(await service.users.signUp({ email: "reset-race@example.com", password: PASSWORD }));
     if (created.user === null) throw new Error("expected reset-race user");
     const recoveryRequest = await service.users.resetPasswordForEmail(created.user.email ?? "", { redirectTo: CALLBACK });
@@ -844,17 +880,7 @@ describe("Task 6 user lifecycle", () => {
       repository: alternateRepository,
     });
 
-    const originalTransaction = service.repository.transaction.bind(service.repository);
-    let enteredResolve: (() => void) | undefined;
-    const entered = new Promise<void>((resolve) => { enteredResolve = resolve; });
-    let releaseResolve: (() => void) | undefined;
-    const release = new Promise<void>((resolve) => { releaseResolve = resolve; });
-    (service.repository as unknown as { transaction: typeof service.repository.transaction }).transaction = async (callback) =>
-      originalTransaction(async (transaction) => {
-        enteredResolve?.();
-        await release;
-        return callback(transaction);
-      });
+    gateEnabled = true;
 
     try {
       const oldPasswordSignIn = service.users.signIn({ email: created.user.email ?? "", password: PASSWORD });
@@ -871,8 +897,8 @@ describe("Task 6 user lifecycle", () => {
       expect(stale.data).toBeNull();
       expect(stale.error?.code).toBe("invalid_credentials");
     } finally {
+      gateEnabled = false;
       releaseResolve?.();
-      (service.repository as unknown as { transaction: typeof service.repository.transaction }).transaction = originalTransaction;
       await alternateRepository.close();
     }
   });

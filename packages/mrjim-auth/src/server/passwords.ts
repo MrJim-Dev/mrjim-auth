@@ -1,5 +1,9 @@
 import argon2 from "argon2";
 import { AuthApiError, AuthConfigurationError } from "../shared/errors.js";
+import {
+  assertBoundaryObject,
+  optionalBoundaryOption,
+} from "./callback-boundary.js";
 
 /** The minimum Argon2id password policy required by the auth schema. */
 export const ARGON2ID_PASSWORD_POLICY = Object.freeze({
@@ -73,11 +77,20 @@ function parseParams(encodedHash: string): { memoryCost: number; timeCost: numbe
 }
 
 function normalizedPolicy(policy: PasswordPolicy = {}): Required<PasswordPolicy> {
+  if (policy === null || typeof policy !== "object") {
+    throw new AuthConfigurationError("password policy must be an object");
+  }
+  const source = policy as unknown as object;
+  assertBoundaryObject(source, "password policy");
+  const memoryCost = optionalBoundaryOption(source, "memoryCost", "password policy memory cost") as number | undefined;
+  const timeCost = optionalBoundaryOption(source, "timeCost", "password policy time cost") as number | undefined;
+  const parallelism = optionalBoundaryOption(source, "parallelism", "password policy parallelism") as number | undefined;
+  const version = optionalBoundaryOption(source, "version", "password policy version") as number | undefined;
   const result = {
-    memoryCost: policy.memoryCost ?? ARGON2ID_PASSWORD_POLICY.memoryCost,
-    timeCost: policy.timeCost ?? ARGON2ID_PASSWORD_POLICY.timeCost,
-    parallelism: policy.parallelism ?? ARGON2ID_PASSWORD_POLICY.parallelism,
-    version: policy.version ?? ARGON2ID_PASSWORD_POLICY.version,
+    memoryCost: memoryCost ?? ARGON2ID_PASSWORD_POLICY.memoryCost,
+    timeCost: timeCost ?? ARGON2ID_PASSWORD_POLICY.timeCost,
+    parallelism: parallelism ?? ARGON2ID_PASSWORD_POLICY.parallelism,
+    version: version ?? ARGON2ID_PASSWORD_POLICY.version,
   };
   if (
     !Number.isSafeInteger(result.memoryCost) ||

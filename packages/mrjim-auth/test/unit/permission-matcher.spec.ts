@@ -8,6 +8,7 @@ import {
 } from "../../src/server/authorization.js";
 import { permissionsRoute } from "../../src/server/routes/permissions.js";
 import type { AuthRepository } from "../../src/shared/contracts.js";
+import { AuthConfigurationError } from "../../src/shared/errors.js";
 import {
   lowercaseKeySchema,
   permissionKeySchema,
@@ -1587,6 +1588,37 @@ describe("authorization permission matching", () => {
       get() { throw new Error("clock getter must not run"); },
     });
     expect(() => new AuthorizationService(accessorClockOptions as never)).toThrow();
+
+    const thenablePermissions = (() => []) as (() => unknown) & { then?: () => void };
+    let permissionThenCalls = 0;
+    Object.defineProperty(thenablePermissions, "then", {
+      configurable: true,
+      value: () => { permissionThenCalls += 1; },
+    });
+    const thenableRepository = { authorization: { effectivePermissions: thenablePermissions } } as unknown as AuthRepository;
+    expect(() => new AuthorizationService({ repository: thenableRepository })).toThrow(AuthConfigurationError);
+    expect(permissionThenCalls).toBe(0);
+
+    const inheritedThenPermissions = (() => []) as (() => unknown) & { then?: () => void };
+    const inheritedThenPrototype = Object.create(Object.getPrototypeOf(inheritedThenPermissions));
+    let inheritedPermissionThenCalls = 0;
+    Object.defineProperty(inheritedThenPrototype, "then", {
+      configurable: true,
+      value: () => { inheritedPermissionThenCalls += 1; },
+    });
+    Object.setPrototypeOf(inheritedThenPermissions, inheritedThenPrototype);
+    const inheritedThenRepository = { authorization: { effectivePermissions: inheritedThenPermissions } } as unknown as AuthRepository;
+    expect(() => new AuthorizationService({ repository: inheritedThenRepository })).toThrow(AuthConfigurationError);
+    expect(inheritedPermissionThenCalls).toBe(0);
+
+    const thenableClock = (() => NOW) as (() => Date) & { then?: () => void };
+    let clockThenCalls = 0;
+    Object.defineProperty(thenableClock, "then", {
+      configurable: true,
+      value: () => { clockThenCalls += 1; },
+    });
+    expect(() => new AuthorizationService({ repository, clock: thenableClock })).toThrow(AuthConfigurationError);
+    expect(clockThenCalls).toBe(0);
   });
 
   it("uses captured Date operations and fresh operation-time snapshots", async () => {

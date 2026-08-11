@@ -16,6 +16,14 @@ import type { Session, User, UUID } from "../shared/types.js";
 import { sanitizeRedactedMetadata, uuidSchema } from "../shared/types.js";
 import type { AccessTokenClaims } from "./tokens.js";
 import { TokenService } from "./tokens.js";
+import {
+  assertBoundaryObject,
+  captureBoundaryClock,
+  captureBoundaryMethodGroup,
+  captureBoundaryRepository,
+  optionalBoundaryOption,
+  requiredBoundaryOption,
+} from "./callback-boundary.js";
 
 /** Context attached to a session operation; raw user-agent values are never persisted. */
 export interface SessionContext {
@@ -214,25 +222,31 @@ function mapCreateError(error: unknown): AuthApiError | null {
  */
 export class SessionService {
   private readonly repository: AuthRepository;
-  private readonly tokens: TokenService;
+  private readonly tokens: Pick<TokenService, "hashOpaqueToken" | "issueAccessToken" | "verifyAccessToken">;
   private readonly refreshTokenTtlSeconds: number;
   private readonly clock: () => Date;
 
   constructor(options: SessionServiceOptions) {
-    if (
-      options.repository === null ||
-      typeof options.repository !== "object" ||
-      typeof options.repository.transaction !== "function"
-    ) {
-      throw new AuthConfigurationError("session repository is incomplete");
+    if (options === null || typeof options !== "object") {
+      throw new AuthConfigurationError("session options are incomplete");
     }
-    if (!(options.tokens instanceof TokenService)) {
+    const source = options as unknown as object;
+    assertBoundaryObject(source, "session options");
+    const repositoryValue = requiredBoundaryOption(source, "repository", "session repository");
+    const tokensValue = requiredBoundaryOption(source, "tokens", "session token service");
+    const refreshTokenTtlValue = optionalBoundaryOption(source, "refreshTokenTtlSeconds", "refresh token TTL");
+    const clockValue = optionalBoundaryOption(source, "clock", "session clock");
+    if (!(tokensValue instanceof TokenService)) {
       throw new AuthConfigurationError("session token service is required");
     }
-    this.repository = options.repository;
-    this.tokens = options.tokens;
+    this.repository = captureBoundaryRepository(repositoryValue);
+    this.tokens = captureBoundaryMethodGroup(
+      tokensValue,
+      "session token service",
+      ["hashOpaqueToken", "issueAccessToken", "verifyAccessToken"],
+    ) as unknown as Pick<TokenService, "hashOpaqueToken" | "issueAccessToken" | "verifyAccessToken">;
     this.refreshTokenTtlSeconds =
-      options.refreshTokenTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
+      (refreshTokenTtlValue as number | undefined) ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
     if (
       !Number.isSafeInteger(this.refreshTokenTtlSeconds) ||
       this.refreshTokenTtlSeconds < 3_600 ||
@@ -240,7 +254,7 @@ export class SessionService {
     ) {
       throw new AuthConfigurationError("refresh token TTL must be between 3600 seconds and 90 days");
     }
-    this.clock = options.clock ?? (() => new Date());
+    this.clock = captureBoundaryClock(clockValue, "session clock", () => new Date());
     nowFrom(this.clock);
   }
 

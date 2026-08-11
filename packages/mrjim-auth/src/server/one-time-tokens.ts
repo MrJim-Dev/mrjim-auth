@@ -13,6 +13,16 @@ import { sanitizeRedactedMetadata, type UUID } from "../shared/types.js";
 import { adapterTransaction, trustedFailure } from "./adapter-boundary.js";
 import type { TrustedServiceError } from "./adapter-boundary.js";
 import { EmailService, normalizeAndValidateEmail } from "./email.js";
+import {
+  assertBoundaryObject,
+  boundaryDataProperty,
+  captureBoundaryClock,
+  captureBoundaryMethodGroup,
+  captureBoundaryRepository,
+  captureBoundaryStringArray,
+  optionalBoundaryOption,
+  requiredBoundaryOption,
+} from "./callback-boundary.js";
 
 /** Public mail-delivery one-time flows; OAuth callback codes use OAuthService. */
 export type OneTimeTokenPurpose = Exclude<OneTimeTokenInput["purpose"], "oauth_callback">;
@@ -157,26 +167,44 @@ export class OneTimeTokenService {
   private readonly defaultRedirect: string;
 
   constructor(options: OneTimeTokenServiceOptions) {
-    if (options.repository === null || typeof options.repository !== "object" || typeof options.repository.transaction !== "function") {
-      throw new AuthConfigurationError("one-time-token repository is incomplete");
-    }
-    if (options.mailer === null || typeof options.mailer !== "object" || typeof options.mailer.send !== "function") {
-      throw new AuthConfigurationError("one-time-token mailer is incomplete");
-    }
-    if (!(options.email instanceof EmailService)) {
+    if (options === null || typeof options !== "object") throw new AuthConfigurationError("one-time-token options are incomplete");
+    const source = options as unknown as object;
+    assertBoundaryObject(source, "one-time-token options");
+    const repositoryValue = requiredBoundaryOption(source, "repository", "one-time-token repository");
+    const mailerValue = requiredBoundaryOption(source, "mailer", "one-time-token mailer");
+    const emailValue = requiredBoundaryOption(source, "email", "one-time-token email service");
+    const tokenHashKeyValue = requiredBoundaryOption(source, "tokenHashKey", "one-time-token hash key");
+    const allowedRedirectsValue = optionalBoundaryOption(source, "allowedRedirects", "one-time-token redirects");
+    const defaultRedirectValue = optionalBoundaryOption(source, "defaultRedirect", "one-time-token default redirect");
+    const clockValue = optionalBoundaryOption(source, "clock", "one-time-token clock");
+    if (!(emailValue instanceof EmailService)) {
       throw new AuthConfigurationError("email redirect service is required");
     }
-    const tokenHashKey = typeof options.tokenHashKey === "string"
-      ? new TextEncoder().encode(options.tokenHashKey)
-      : Uint8Array.from(options.tokenHashKey);
+    const emailAllowedProperty = boundaryDataProperty(emailValue, "allowedRedirects");
+    const emailDefaultProperty = boundaryDataProperty(emailValue, "defaultRedirect");
+    if (!emailAllowedProperty.valid || !emailAllowedProperty.present || !emailDefaultProperty.valid || !emailDefaultProperty.present || typeof emailDefaultProperty.value !== "string") {
+      throw new AuthConfigurationError("email redirect service is incomplete");
+    }
+    const emailAllowed = captureBoundaryStringArray(emailAllowedProperty.value, "email.allowedRedirects", 1);
+    const email = captureBoundaryMethodGroup(
+      emailValue,
+      "email",
+      ["resolveRedirect", "link"],
+      [],
+      { allowedRedirects: emailAllowed, defaultRedirect: emailDefaultProperty.value },
+      "facade",
+    ) as unknown as EmailService;
+    const tokenHashKey = typeof tokenHashKeyValue === "string"
+      ? new TextEncoder().encode(tokenHashKeyValue)
+      : Uint8Array.from(tokenHashKeyValue as Uint8Array);
     if (tokenHashKey.byteLength === 0) throw new AuthConfigurationError("one-time-token hash key is empty");
-    this.repository = options.repository;
-    this.mailer = options.mailer;
-    this.email = options.email;
+    this.repository = captureBoundaryRepository(repositoryValue);
+    this.mailer = captureBoundaryMethodGroup(mailerValue, "one-time-token mailer", ["send"]) as unknown as Mailer;
+    this.email = email;
     this.tokenHashKey = tokenHashKey;
-    this.clock = options.clock ?? (() => new Date());
-    this.allowedRedirects = [...(options.allowedRedirects ?? options.email.allowedRedirects)];
-    this.defaultRedirect = options.defaultRedirect ?? this.allowedRedirects[0] ?? options.email.defaultRedirect;
+    this.clock = captureBoundaryClock(clockValue, "one-time-token clock", () => new Date());
+    this.allowedRedirects = [...captureBoundaryStringArray(allowedRedirectsValue ?? emailAllowed, "one-time-token redirects", 1)];
+    this.defaultRedirect = (defaultRedirectValue as string | undefined) ?? this.allowedRedirects[0] ?? (emailDefaultProperty.value as string);
     if (this.allowedRedirects.length === 0 || !this.allowedRedirects.includes(this.defaultRedirect)) {
       throw new AuthConfigurationError("one-time-token default redirect must be exactly allowlisted");
     }

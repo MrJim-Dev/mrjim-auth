@@ -11,6 +11,13 @@ import {
   type Configuration,
 } from "openid-client";
 import { sanitizeIdentityData, type SafeIdentityData } from "../shared/types.js";
+import {
+  assertBoundaryObject,
+  captureBoundaryFunction,
+  captureBoundaryStringArray,
+  optionalBoundaryOption,
+  requiredBoundaryOption,
+} from "./callback-boundary.js";
 
 /** A stable public capability advertised by provider discovery. */
 export interface OAuthProviderCapabilities {
@@ -88,6 +95,18 @@ interface OidcProviderOptions {
   readonly scopes?: readonly string[];
   /** Optional project-owned fetch implementation, useful for private/self-hosted issuers. */
   readonly customFetch?: CustomFetch;
+}
+
+function captureGoogleOptions(value: unknown): { readonly clientId: unknown; readonly clientSecret: unknown } {
+  if (value === null || typeof value !== "object") {
+    throw new TypeError("Google provider options are incomplete");
+  }
+  const source = value as object;
+  assertBoundaryObject(source, "Google provider options");
+  return {
+    clientId: requiredBoundaryOption(source, "clientId", "Google client ID"),
+    clientSecret: requiredBoundaryOption(source, "clientSecret", "Google client secret"),
+  };
 }
 
 function validString(value: unknown, label: string): string {
@@ -180,12 +199,23 @@ export class OidcOAuthProvider implements OAuthProvider {
   private configurationPromise: Promise<Configuration> | undefined;
 
   constructor(options: OidcProviderOptions) {
-    this.name = validString(options.name, "OIDC provider name").trim().toLowerCase();
-    this.clientId = validString(options.clientId, "OIDC client ID");
-    this.clientSecret = validString(options.clientSecret, "OIDC client secret");
-    this.issuer = asIssuer(options.issuer);
-    this.providerFetch = options.customFetch;
-    this.scopes = Object.freeze([...(options.scopes ?? ["openid", "email", "profile"])]) as readonly string[];
+    if (options === null || typeof options !== "object") throw new TypeError("OIDC provider options are incomplete");
+    const source = options as unknown as object;
+    assertBoundaryObject(source, "OIDC provider options");
+    const nameValue = requiredBoundaryOption(source, "name", "OIDC provider name");
+    const clientIdValue = requiredBoundaryOption(source, "clientId", "OIDC client ID");
+    const clientSecretValue = requiredBoundaryOption(source, "clientSecret", "OIDC client secret");
+    const issuerValue = requiredBoundaryOption(source, "issuer", "OIDC issuer");
+    const scopesValue = optionalBoundaryOption(source, "scopes", "OIDC scopes");
+    const customFetchValue = optionalBoundaryOption(source, "customFetch", "OIDC custom fetch");
+    this.name = validString(nameValue, "OIDC provider name").trim().toLowerCase();
+    this.clientId = validString(clientIdValue, "OIDC client ID");
+    this.clientSecret = validString(clientSecretValue, "OIDC client secret");
+    this.issuer = asIssuer(issuerValue);
+    this.providerFetch = customFetchValue === undefined
+      ? undefined
+      : captureBoundaryFunction(customFetchValue, "OIDC custom fetch") as CustomFetch;
+    this.scopes = captureBoundaryStringArray(scopesValue ?? ["openid", "email", "profile"], "OIDC scopes", 1) as readonly string[];
     if (!this.scopes.includes("openid")) {
       throw new TypeError("OIDC scopes must include openid");
     }
@@ -255,10 +285,11 @@ export class OidcOAuthProvider implements OAuthProvider {
 /** Google OpenID Connect adapter with the required identity scopes. */
 export class GoogleOAuthProvider extends OidcOAuthProvider {
   constructor(options: { readonly clientId: string; readonly clientSecret: string }) {
+    const captured = captureGoogleOptions(options);
     super({
       name: "google",
-      clientId: options.clientId,
-      clientSecret: options.clientSecret,
+      clientId: captured.clientId as string,
+      clientSecret: captured.clientSecret as string,
       issuer: "https://accounts.google.com",
       scopes: ["openid", "email", "profile"],
     });

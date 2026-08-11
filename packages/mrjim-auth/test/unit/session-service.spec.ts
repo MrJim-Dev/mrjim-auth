@@ -104,19 +104,51 @@ function makeRepository(
     readonly operations?: Partial<OperationsRepository>;
   } = {},
 ): AuthRepository {
+  const users = {
+    findById: async () => null,
+    findByIdForUpdate: async () => null,
+    findByNormalizedEmail: async () => null,
+    findByNormalizedEmailForUpdate: async () => null,
+    create: async () => null,
+    createIfAvailable: async () => null,
+    update: async () => null,
+    softDelete: async () => undefined,
+    ...parts.users,
+  } as UserRepository;
+  const sessions = {
+    create: async () => ({ session: {}, refreshToken: {} }),
+    findByIdForUpdate: async () => null,
+    findRefreshForUpdate: async () => null,
+    rotate: async () => null,
+    revokeSession: async () => undefined,
+    revokeFamily: async () => undefined,
+    revokeUserSessions: async () => undefined,
+    ...parts.sessions,
+  } as SessionRepository;
+  const operations = {
+    appendAudit: async () => undefined,
+    findApiKeyByHash: async () => null,
+    ...parts.operations,
+  } as OperationsRepository;
   return {
     transaction,
-    users: parts.users as UserRepository,
-    identities: {} as AuthRepository["identities"],
-    passwordCredentials: {} as AuthRepository["passwordCredentials"],
-    sessions: parts.sessions as SessionRepository,
-    oneTimeTokens: {} as AuthRepository["oneTimeTokens"],
-    oauthStates: {} as AuthRepository["oauthStates"],
-    authorization: {} as AuthRepository["authorization"],
-    roles: {} as AuthRepository["roles"],
-    permissions: {} as AuthRepository["permissions"],
-    operations: parts.operations as OperationsRepository,
-  } as AuthRepository;
+    users,
+    identities: {
+      findByProviderSubject: async () => null,
+      listByUserId: async () => [],
+      create: async () => null,
+      createIfAvailable: async () => null,
+      deleteById: async () => undefined,
+    },
+    passwordCredentials: { findByUserId: async () => null, upsert: async () => undefined, deleteByUserId: async () => undefined },
+    sessions,
+    oneTimeTokens: { issue: async () => undefined, consume: async () => null, consumeBound: async () => null, recordFailure: async () => null },
+    oauthStates: { create: async () => undefined, consume: async () => null },
+    authorization: { effectivePermissions: async () => [], assignRole: async () => undefined, unassignRole: async () => undefined, setRolePermissions: async () => undefined, setRoleInheritance: async () => undefined },
+    roles: { list: async () => [], findById: async () => null, create: async () => null, update: async () => null, delete: async () => undefined },
+    permissions: { list: async () => [], findById: async () => null, create: async () => null, update: async () => null, delete: async () => undefined },
+    operations,
+  } as unknown as AuthRepository;
 }
 
 function makeService(repository: AuthRepository, tokenService = makeTokenService()): SessionService {
