@@ -30,6 +30,7 @@ const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetOwnPropertyNames = Object.getOwnPropertyNames;
 const objectGetOwnPropertySymbols = Object.getOwnPropertySymbols;
 const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectSetPrototypeOf = Object.setPrototypeOf;
 const objectHasOwnProperty = Object.prototype.hasOwnProperty;
 const objectPrototype = Object.prototype;
 const arrayIsArray = Array.isArray;
@@ -41,6 +42,18 @@ const mapHas = Map.prototype.has;
 const mapSet = Map.prototype.set;
 const numberIsFinite = Number.isFinite;
 const numberIsSafeInteger = Number.isSafeInteger;
+const promiseConstructor = Promise;
+const promisePrototype = Promise.prototype;
+const promiseThen = Promise.prototype.then;
+const promiseSpeciesKey = Symbol.species;
+const promisePrototypeConstructorDescriptor = objectGetOwnPropertyDescriptor(
+  promisePrototype,
+  "constructor",
+);
+const promiseSpeciesDescriptor = objectGetOwnPropertyDescriptor(
+  promiseConstructor,
+  promiseSpeciesKey,
+);
 const reflectConstruct = Reflect.construct;
 const stringTrim = String.prototype.trim;
 const stringToLowerCase = String.prototype.toLowerCase;
@@ -213,6 +226,12 @@ function appendValue<T>(values: T[], value: T): void {
     value,
     writable: true,
   });
+}
+
+function newNullPrototypeArray<T>(): T[] {
+  const values: T[] = [];
+  invoke<object>(objectSetPrototypeOf, undefined, [values, null]);
+  return values;
 }
 
 function sortKeys(values: string[]): void {
@@ -446,6 +465,7 @@ function normalizedScope(scope: unknown): AuthorizationScope | null | undefined 
 function snapshotPermissionArray(value: unknown): unknown[] | null {
   try {
     if (!arrayIsArray(value)) return null;
+    if (hasThenProperty(value)) return null;
     const lengthProperty = ownDataProperty(value, "length");
     if (
       !lengthProperty.valid ||
@@ -466,6 +486,88 @@ function snapshotPermissionArray(value: unknown): unknown[] | null {
     }
     return snapshot;
   } catch {
+    return null;
+  }
+}
+
+function hasThenProperty(value: object): boolean {
+  let current: object | null = value;
+  for (let depth = 0; current !== null && depth < 8; depth += 1) {
+    try {
+      if (objectGetOwnPropertyDescriptor(current, "then") !== undefined) return true;
+      current = objectGetPrototypeOf(current);
+    } catch {
+      return true;
+    }
+  }
+  return current !== null;
+}
+
+type NativePromiseOutcome = {
+  readonly signal: Promise<unknown>;
+  readonly state: { rejected: boolean; value: unknown };
+};
+
+function samePropertyDescriptor(
+  left: PropertyDescriptor | undefined,
+  right: PropertyDescriptor | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.configurable === right.configurable &&
+    left.enumerable === right.enumerable &&
+    left.writable === right.writable &&
+    left.value === right.value &&
+    left.get === right.get &&
+    left.set === right.set
+  );
+}
+
+function nativePromiseOutcome(value: unknown): NativePromiseOutcome | null {
+  const state = objectCreate(null) as { rejected: boolean; value: unknown };
+  objectDefineProperty(state, "rejected", {
+    configurable: false,
+    enumerable: false,
+    value: false,
+    writable: true,
+  });
+  objectDefineProperty(state, "value", {
+    configurable: false,
+    enumerable: false,
+    value: undefined,
+    writable: true,
+  });
+  try {
+    if (
+      value === null ||
+      (typeof value !== "object" && typeof value !== "function") ||
+      objectGetPrototypeOf(value) !== promisePrototype ||
+      objectGetOwnPropertyDescriptor(value, "constructor") !== undefined ||
+      objectGetOwnPropertyDescriptor(value, "then") !== undefined ||
+      !samePropertyDescriptor(
+        objectGetOwnPropertyDescriptor(promisePrototype, "constructor"),
+        promisePrototypeConstructorDescriptor,
+      ) ||
+      !samePropertyDescriptor(
+        objectGetOwnPropertyDescriptor(promiseConstructor, promiseSpeciesKey),
+        promiseSpeciesDescriptor,
+      )
+    ) {
+      return null;
+    }
+    const signal = invoke<Promise<unknown>>(promiseThen, value, [
+      (resolved: unknown) => {
+        state.value = resolved;
+      },
+      (_reason: unknown) => {
+        state.rejected = true;
+      },
+    ]);
+    return { signal, state };
+  } catch {
+    // The exact native prototype and captured constructor/species descriptors
+    // exclude subclasses and adapter-controlled constructor/species hooks
+    // before the native brand-checking `then` is invoked.
     return null;
   }
 }
@@ -547,16 +649,36 @@ function mapAdd(map: Map<string, true>, key: string): void {
 }
 
 function createEmptyPermissionIndex(): PermissionIndex {
-  return {
-    keys: objectFreeze([] as string[]),
-    exact: newPermissionMap(),
-    resourceWildcards: newPermissionMap(),
-    globalWildcard: false,
-  };
+  const index = objectCreate(null) as PermissionIndex;
+  objectDefineProperty(index, "keys", {
+    configurable: false,
+    enumerable: true,
+    value: objectFreeze(newNullPrototypeArray<string>()),
+    writable: false,
+  });
+  objectDefineProperty(index, "exact", {
+    configurable: false,
+    enumerable: true,
+    value: newPermissionMap(),
+    writable: false,
+  });
+  objectDefineProperty(index, "resourceWildcards", {
+    configurable: false,
+    enumerable: true,
+    value: newPermissionMap(),
+    writable: false,
+  });
+  objectDefineProperty(index, "globalWildcard", {
+    configurable: false,
+    enumerable: true,
+    value: false,
+    writable: false,
+  });
+  return objectFreeze(index);
 }
 
 function permissionIndex(records: readonly Permission[]): PermissionIndex {
-  const keys: string[] = [];
+  const keys = newNullPrototypeArray<string>();
   const exact = newPermissionMap();
   const resourceWildcards = newPermissionMap();
   let globalWildcard = false;
@@ -574,12 +696,32 @@ function permissionIndex(records: readonly Permission[]): PermissionIndex {
   }
 
   sortKeys(keys);
-  return objectFreeze({
-    keys: objectFreeze(keys),
-    exact,
-    resourceWildcards,
-    globalWildcard,
+  const index = objectCreate(null) as PermissionIndex;
+  objectDefineProperty(index, "keys", {
+    configurable: false,
+    enumerable: true,
+    value: objectFreeze(keys),
+    writable: false,
   });
+  objectDefineProperty(index, "exact", {
+    configurable: false,
+    enumerable: true,
+    value: exact,
+    writable: false,
+  });
+  objectDefineProperty(index, "resourceWildcards", {
+    configurable: false,
+    enumerable: true,
+    value: resourceWildcards,
+    writable: false,
+  });
+  objectDefineProperty(index, "globalWildcard", {
+    configurable: false,
+    enumerable: true,
+    value: globalWildcard,
+    writable: false,
+  });
+  return objectFreeze(index);
 }
 
 function normalizedRequirement(requirement: unknown): NormalizedRequirement | null {
@@ -824,11 +966,21 @@ export class AuthorizationService {
     if (normalized === null) return createEmptyPermissionIndex();
     const options: RepositoryOperationOptions = { now: validNow(this.clock) };
     try {
-      const records = await invoke<Promise<unknown>>(
+      const rawRecords = invoke<unknown>(
         this.effectivePermissions,
         this.authorization,
         [userId, normalized, options],
       );
+      let records: unknown;
+      if (arrayIsArray(rawRecords)) {
+        records = rawRecords;
+      } else {
+        const outcome = nativePromiseOutcome(rawRecords);
+        if (outcome === null) return createEmptyPermissionIndex();
+        await outcome.signal;
+        if (outcome.state.rejected) return createEmptyPermissionIndex();
+        records = outcome.state.value;
+      }
       const snapshot = snapshotPermissionArray(records);
       if (snapshot === null) return createEmptyPermissionIndex();
 
@@ -864,10 +1016,10 @@ export class AuthorizationService {
   ): Promise<readonly string[]> {
     const validatedUserId = safeUserId(userId);
     const normalized = normalizedScope(scope);
-    if (validatedUserId === null || normalized === null) return [];
+    if (validatedUserId === null || normalized === null) return newNullPrototypeArray<string>();
 
     const requestContext = this.contextForUser(context, validatedUserId);
-    if (context !== undefined && requestContext === null) return [];
+    if (context !== undefined && requestContext === null) return newNullPrototypeArray<string>();
     if (requestContext !== null) {
       const resolved = await contextPermissions(
         requestContext,

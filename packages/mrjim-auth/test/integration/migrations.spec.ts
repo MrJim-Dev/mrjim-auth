@@ -1404,6 +1404,131 @@ describe("Task 3 PostgreSQL migrations", () => {
             }
             if (!denied || emptyReads !== 1) throw new Error("packed context cache crossed service boundaries");
 
+            const resolvingThenable = { then(resolve) { resolve([permission]); } };
+            const directThenableService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: () => resolvingThenable } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            let directThenableRejected = false;
+            try {
+              await directThenableService.authorize(user, { all: ["invoice.read"] });
+            } catch (error) {
+              directThenableRejected = error?.code === "insufficient_permission";
+            }
+            if (!directThenableRejected) throw new Error("packed non-native thenable was accepted");
+
+            let getterReads = 0;
+            const getterThenable = {};
+            Object.defineProperty(getterThenable, "then", {
+              configurable: true,
+              get() {
+                getterReads += 1;
+                return (resolve) => resolve([permission]);
+              },
+            });
+            const getterThenableService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: () => getterThenable } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            let getterThenableRejected = false;
+            try {
+              await getterThenableService.authorize(user, { all: ["invoice.read"] });
+            } catch (error) {
+              getterThenableRejected = error?.code === "insufficient_permission";
+            }
+            if (!getterThenableRejected || getterReads !== 0) throw new Error("packed thenable getter was observed");
+
+            const syncGrantService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: () => [permission] } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            let pollutedThenRejected = false;
+            await withObjectPrototypeProperty("then", {
+              configurable: true,
+              enumerable: false,
+              value(resolve) { resolve([permission]); },
+              writable: true,
+            }, async () => {
+              try {
+                await syncGrantService.authorize(user, { all: ["invoice.read"] });
+              } catch (error) {
+                pollutedThenRejected = error?.code === "insufficient_permission";
+              }
+            });
+            if (!pollutedThenRejected) throw new Error("packed Object.prototype.then bypassed validation");
+
+            let rejectedThenableRejected = false;
+            try {
+              await new server.AuthorizationService({
+                repository: { authorization: { effectivePermissions: () => ({ then(_resolve, reject) { reject(new Error("thenable rejection")); } }) } },
+                clock: () => new Date("2026-08-11T00:00:00.000Z"),
+              }).authorize(user, { all: ["invoice.read"] });
+            } catch (error) {
+              rejectedThenableRejected = error?.code === "insufficient_permission";
+            }
+            if (!rejectedThenableRejected) throw new Error("packed rejected thenable escaped");
+
+            let nativePromiseRejected = false;
+            try {
+              await new server.AuthorizationService({
+                repository: { authorization: { effectivePermissions: () => Promise.resolve([permission]) } },
+                clock: () => new Date("2026-08-11T00:00:00.000Z"),
+              }).authorize(user, { all: ["invoice.read"] });
+            } catch {
+              nativePromiseRejected = true;
+            }
+            if (nativePromiseRejected) throw new Error("packed native Promise was rejected");
+
+            let speciesReads = 0;
+            class ForgedPromise extends Promise {
+              static get [Symbol.species]() {
+                speciesReads += 1;
+                return Promise;
+              }
+            }
+            const subclassPromise = new ForgedPromise((resolve) => resolve([permission]));
+            let subclassRejected = false;
+            try {
+              await new server.AuthorizationService({
+                repository: { authorization: { effectivePermissions: () => subclassPromise } },
+                clock: () => new Date("2026-08-11T00:00:00.000Z"),
+              }).authorize(user, { all: ["invoice.read"] });
+            } catch (error) {
+              subclassRejected = error?.code === "insufficient_permission";
+            }
+            if (!subclassRejected || speciesReads !== 0) throw new Error("packed Promise subclass/species was observed");
+
+            let constructorReads = 0;
+            const constructorPromise = Promise.resolve([permission]);
+            Object.defineProperty(constructorPromise, "constructor", {
+              configurable: true,
+              get() {
+                constructorReads += 1;
+                return Promise;
+              },
+            });
+            let constructorRejected = false;
+            try {
+              await new server.AuthorizationService({
+                repository: { authorization: { effectivePermissions: () => constructorPromise } },
+                clock: () => new Date("2026-08-11T00:00:00.000Z"),
+              }).authorize(user, { all: ["invoice.read"] });
+            } catch (error) {
+              constructorRejected = error?.code === "insufficient_permission";
+            }
+            if (!constructorRejected || constructorReads !== 0) throw new Error("packed Promise constructor was observed");
+
+            let nativeRejectionHandled = false;
+            try {
+              await new server.AuthorizationService({
+                repository: { authorization: { effectivePermissions: () => Promise.reject(new Error("native rejection")) } },
+                clock: () => new Date("2026-08-11T00:00:00.000Z"),
+              }).authorize(user, { all: ["invoice.read"] });
+            } catch (error) {
+              nativeRejectionHandled = error?.code === "insufficient_permission";
+            }
+            if (!nativeRejectionHandled) throw new Error("packed native Promise rejection escaped");
+
             const largePermissions = new Array(100000);
             for (let index = 0; index < largePermissions.length; index += 1) {
               const resource = "resource_" + index.toString(36);
@@ -1645,6 +1770,81 @@ describe("Task 3 PostgreSQL migrations", () => {
               URLSearchParams.prototype.keys = accessorOriginalKeys;
               accessorIteratorPrototype.next = accessorOriginalNext;
               restoreDescriptor(globalThis, "URL", globalURLDescriptor);
+            }
+
+            const responseRequests = [
+              { request: new Request("https://project.example.com/user/permissions"), subject: user },
+              { request: new Request("https://project.example.com/user/permissions?unknown=grant"), subject: user },
+              { request: new Request("https://project.example.com/user/permissions", { method: "POST" }), subject: user },
+              { request: new Request("https://project.example.com/user/permissions"), subject: undefined },
+            ];
+            async function runResponseSet() {
+              const results = [];
+              for (let index = 0; index < responseRequests.length; index += 1) {
+                const entry = responseRequests[index];
+                try {
+                  const response = await server.permissionsRoute(routeService, entry.request, entry.subject);
+                  results.push({ status: response.status, text: await response.text() });
+                } catch (error) {
+                  results.push({ error });
+                }
+              }
+              return results;
+            }
+            function assertResponseSet(results) {
+              if (results.length !== 4) throw new Error("packed response count changed");
+              for (let index = 0; index < results.length; index += 1) {
+                if (results[index].error !== undefined) throw new Error("packed response primitive escaped");
+              }
+              if (results[0].status !== 200 || results[1].status !== 400 || results[2].status !== 405 || results[3].status !== 401) {
+                throw new Error("packed response status changed");
+              }
+              const successBody = JSON.parse(results[0].text);
+              if (successBody.data?.permissions?.length !== 1 || successBody.data.permissions[0] !== "invoice.read" || successBody.error !== null) {
+                throw new Error("packed success response body was forged");
+              }
+              const invalidBody = JSON.parse(results[1].text);
+              const methodBody = JSON.parse(results[2].text);
+              const unauthorizedBody = JSON.parse(results[3].text);
+              if (invalidBody.error?.code !== "invalid_request" || methodBody.error?.code !== "invalid_request" || unauthorizedBody.error?.code !== "unauthorized") {
+                throw new Error("packed error response body was forged");
+              }
+            }
+            const responseDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Response");
+            const stringify = JSON.stringify;
+            try {
+              Object.defineProperty(globalThis, "Response", {
+                configurable: true,
+                writable: true,
+                value: class ForgedResponse {
+                  constructor() { throw new Error("packed global Response was used"); }
+                },
+              });
+              let responseResults = await runResponseSet();
+              restoreDescriptor(globalThis, "Response", responseDescriptor);
+              assertResponseSet(responseResults);
+
+              JSON.stringify = () => { throw new Error("packed global JSON.stringify was used"); };
+              responseResults = await runResponseSet();
+              JSON.stringify = stringify;
+              assertResponseSet(responseResults);
+
+              responseResults = await withObjectPrototypeProperty("toJSON", {
+                configurable: true,
+                enumerable: false,
+                value: () => "forged packed response",
+                writable: true,
+              }, runResponseSet);
+              assertResponseSet(responseResults);
+              responseResults = await withObjectPrototypeProperty("toJSON", {
+                configurable: true,
+                enumerable: false,
+                get() { throw new Error("packed Object.prototype.toJSON was used"); },
+              }, runResponseSet);
+              assertResponseSet(responseResults);
+            } finally {
+              restoreDescriptor(globalThis, "Response", responseDescriptor);
+              JSON.stringify = stringify;
             }
 
             let invalidRouteThrew = false;

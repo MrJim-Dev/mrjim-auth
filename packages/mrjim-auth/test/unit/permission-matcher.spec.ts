@@ -372,6 +372,96 @@ describe("authorization permission matching", () => {
     expect(await arrayService.getPermissions(USER_ID)).toEqual([]);
   });
 
+  it("rejects non-native adapter thenables and polluted then properties", async () => {
+    const valid = permission("invoice.read");
+    const resolvingThenable = {
+      then(resolve: (value: unknown) => void) {
+        resolve([valid]);
+      },
+    };
+    const directThenableService = serviceFor(() => resolvingThenable);
+    await expectInsufficient(directThenableService.authorize(subject(), { all: ["invoice.read"] }));
+
+    let getterReads = 0;
+    const getterThenable = {} as Record<string, unknown>;
+    Object.defineProperty(getterThenable, "then", {
+      configurable: true,
+      get() {
+        getterReads += 1;
+        return (resolve: (value: unknown) => void) => resolve([valid]);
+      },
+    });
+    await expectInsufficient(serviceFor(() => getterThenable).authorize(subject(), { all: ["invoice.read"] }));
+    expect(getterReads).toBe(0);
+
+    const originalThen = Object.getOwnPropertyDescriptor(Object.prototype, "then");
+    let pollutedThenRejected = false;
+    Object.defineProperty(Object.prototype, "then", {
+      configurable: true,
+      enumerable: false,
+      value(resolve: (value: unknown) => void) {
+        resolve([valid]);
+      },
+      writable: true,
+    });
+    try {
+      try {
+        await serviceFor(() => [valid]).authorize(subject(), { all: ["invoice.read"] });
+      } catch (error) {
+        pollutedThenRejected = (error as { readonly code?: unknown }).code === "insufficient_permission";
+      }
+    } finally {
+      if (originalThen === undefined) Reflect.deleteProperty(Object.prototype, "then");
+      else Object.defineProperty(Object.prototype, "then", originalThen);
+    }
+    expect(pollutedThenRejected).toBe(true);
+
+    const rejectedThenable = {
+      then(_resolve: (value: unknown) => void, reject: (reason: unknown) => void) {
+        reject(new Error("thenable rejection"));
+      },
+    };
+    await expectInsufficient(serviceFor(() => rejectedThenable).authorize(subject(), { all: ["invoice.read"] }));
+
+    await expect(
+      serviceFor(() => Promise.resolve([valid])).authorize(subject(), { all: ["invoice.read"] }),
+    ).resolves.toMatchObject({ user_id: USER_ID });
+
+    let speciesReads = 0;
+    class ForgedPromise extends Promise<unknown> {
+      static get [Symbol.species](): PromiseConstructor {
+        speciesReads += 1;
+        return Promise;
+      }
+    }
+    const subclassPromise = new ForgedPromise((resolve) => resolve([valid]));
+    await expectInsufficient(
+      serviceFor(() => subclassPromise).authorize(subject(), { all: ["invoice.read"] }),
+    );
+    expect(speciesReads).toBe(0);
+
+    let constructorReads = 0;
+    const constructorPromise = Promise.resolve([valid]);
+    Object.defineProperty(constructorPromise, "constructor", {
+      configurable: true,
+      get() {
+        constructorReads += 1;
+        return Promise;
+      },
+    });
+    await expectInsufficient(
+      serviceFor(() => constructorPromise).authorize(subject(), { all: ["invoice.read"] }),
+    );
+    expect(constructorReads).toBe(0);
+
+    await expectInsufficient(
+      serviceFor(() => Promise.reject(new Error("native rejection"))).authorize(
+        subject(),
+        { all: ["invoice.read"] },
+      ),
+    );
+  });
+
   it("rejects descriptor accessors when Object.prototype.value is polluted", async () => {
     const service = serviceFor(() => [permission("invoice.read")]);
 
@@ -919,6 +1009,104 @@ describe("authorization permission matching", () => {
       iteratorPrototype.next = originalNext;
       if (globalURL === undefined) Reflect.deleteProperty(globalThis, "URL");
       else Object.defineProperty(globalThis, "URL", globalURL);
+    }
+  });
+
+  it("uses captured response and serialization primitives for safe route bodies", async () => {
+    const service = serviceFor(() => [permission("invoice.read")]);
+    const requests = [
+      { request: new Request("https://project.example.com/user/permissions"), subject: subject() },
+      { request: new Request("https://project.example.com/user/permissions?unknown=grant"), subject: subject() },
+      { request: new Request("https://project.example.com/user/permissions", { method: "POST" }), subject: subject() },
+      { request: new Request("https://project.example.com/user/permissions"), subject: undefined },
+    ] as const;
+
+    const runRequests = async (): Promise<readonly { readonly status?: number; readonly text?: string; readonly error?: unknown }[]> => {
+      const results: { status?: number; text?: string; error?: unknown }[] = [];
+      for (let index = 0; index < requests.length; index += 1) {
+        const entry = requests[index];
+        if (entry === undefined) continue;
+        try {
+          const response = await permissionsRoute(service, entry.request, entry.subject);
+          results.push({ status: response.status, text: await response.text() });
+        } catch (error) {
+          results.push({ error });
+        }
+      }
+      return results;
+    };
+
+    const assertSafeResponses = (results: readonly { readonly status?: number; readonly text?: string; readonly error?: unknown }[]) => {
+      expect(results).toHaveLength(4);
+      expect(results.every((result) => result.error === undefined)).toBe(true);
+      expect(results[0]?.status).toBe(200);
+      expect(JSON.parse(results[0]?.text ?? "")).toEqual({
+        data: { permissions: ["invoice.read"] },
+        error: null,
+      });
+      expect(results[1]?.status).toBe(400);
+      expect((JSON.parse(results[1]?.text ?? "") as { error?: { code?: string } }).error?.code).toBe("invalid_request");
+      expect(results[2]?.status).toBe(405);
+      expect((JSON.parse(results[2]?.text ?? "") as { error?: { code?: string } }).error?.code).toBe("invalid_request");
+      expect(results[3]?.status).toBe(401);
+      expect((JSON.parse(results[3]?.text ?? "") as { error?: { code?: string } }).error?.code).toBe("unauthorized");
+    };
+
+    const originalResponseDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Response");
+    const originalStringify = JSON.stringify;
+    const restoreGlobals = () => {
+      if (originalResponseDescriptor === undefined) Reflect.deleteProperty(globalThis, "Response");
+      else Object.defineProperty(globalThis, "Response", originalResponseDescriptor);
+      JSON.stringify = originalStringify;
+    };
+
+    try {
+      Object.defineProperty(globalThis, "Response", {
+        configurable: true,
+        writable: true,
+        value: class ForgedResponse {
+          constructor() {
+            throw new Error("global Response was used");
+          }
+        },
+      });
+      let results = await runRequests();
+      restoreGlobals();
+      assertSafeResponses(results);
+
+      JSON.stringify = (() => {
+        throw new Error("global JSON.stringify was used");
+      }) as typeof JSON.stringify;
+      results = await runRequests();
+      restoreGlobals();
+      assertSafeResponses(results);
+
+      results = await withPrototypeProperty(
+        "toJSON",
+        {
+          configurable: true,
+          enumerable: false,
+          value: () => "forged response",
+          writable: true,
+        },
+        runRequests,
+      );
+      assertSafeResponses(results);
+
+      results = await withPrototypeProperty(
+        "toJSON",
+        {
+          configurable: true,
+          enumerable: false,
+          get() {
+            throw new Error("Object.prototype.toJSON was used");
+          },
+        },
+        runRequests,
+      );
+      assertSafeResponses(results);
+    } finally {
+      restoreGlobals();
     }
   });
 

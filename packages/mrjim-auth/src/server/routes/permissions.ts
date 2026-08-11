@@ -13,6 +13,8 @@ import {
 const objectDefineProperty = Object.defineProperty;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectCreate = Object.create;
+const objectSetPrototypeOf = Object.setPrototypeOf;
 const objectHasOwnProperty = Object.prototype.hasOwnProperty;
 const reflectApply = Reflect.apply;
 const arrayIsArray = Array.isArray;
@@ -21,6 +23,9 @@ const nativeHeaders = Headers;
 const nativeRequest = Request;
 const nativeURL = URL;
 const nativeURLSearchParams = URLSearchParams;
+const nativeResponse = Response;
+const jsonStringify = JSON.stringify;
+const MAX_RESPONSE_PERMISSION_KEYS = 100_000;
 const requestHeadersGetter = captureGetter(nativeRequest.prototype, "headers", "Request.headers");
 const requestMethodGetter = captureGetter(nativeRequest.prototype, "method", "Request.method");
 const requestUrlGetter = captureGetter(nativeRequest.prototype, "url", "Request.url");
@@ -79,6 +84,12 @@ function ownDataProperty(value: object, key: PropertyKey): DataProperty {
 
 function invoke<T>(method: Function, receiver: unknown, args: readonly unknown[]): T {
   return reflectApply(method, receiver, args as unknown[]) as T;
+}
+
+function newNullPrototypeArray<T>(): T[] {
+  const values: T[] = [];
+  invoke<object>(objectSetPrototypeOf, undefined, [values, null]);
+  return values;
 }
 
 function containsNul(value: string): boolean {
@@ -203,18 +214,153 @@ function hasOnlyAllowedScopeKeys(params: unknown): boolean {
   }
 }
 
-function json(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
+function defineSafeProperty(target: object, key: PropertyKey, value: unknown): void {
+  objectDefineProperty(target, key, {
+    configurable: false,
+    enumerable: true,
+    value,
+    writable: false,
+  });
+}
+
+function safeStatus(value: unknown, fallback: number): number {
+  return typeof value === "number" && numberIsSafeInteger(value) && value >= 100 && value <= 599
+    ? value
+    : fallback;
+}
+
+function snapshotResponsePermissions(value: unknown): string[] {
+  const snapshot = newNullPrototypeArray<string>();
+  if (!arrayIsArray(value)) return snapshot;
+
+  const lengthProperty = ownDataProperty(value, "length");
+  if (
+    !lengthProperty.valid ||
+    !lengthProperty.present ||
+    typeof lengthProperty.value !== "number" ||
+    !numberIsSafeInteger(lengthProperty.value) ||
+    lengthProperty.value < 0 ||
+    lengthProperty.value > MAX_RESPONSE_PERMISSION_KEYS
+  ) {
+    return snapshot;
+  }
+  for (let index = 0; index < lengthProperty.value; index += 1) {
+    const item = ownDataProperty(value, `${index}`);
+    if (!item.valid || !item.present || typeof item.value !== "string") {
+      return newNullPrototypeArray<string>();
+    }
+    defineSafeProperty(snapshot, `${index}`, item.value);
+  }
+  return snapshot;
+}
+
+function snapshotSuccessData(value: unknown): object {
+  const data = objectCreate(null) as Record<string, unknown>;
+  if (value !== null && (typeof value === "object" || typeof value === "function")) {
+    const permissions = ownDataProperty(value, "permissions");
+    if (permissions.valid && permissions.present) {
+      defineSafeProperty(data, "permissions", snapshotResponsePermissions(permissions.value));
+      return data;
+    }
+  }
+  defineSafeProperty(data, "permissions", snapshotResponsePermissions(undefined));
+  return data;
+}
+
+function safeResponseCode(value: unknown): string {
+  if (
+    value === "invalid_request" ||
+    value === "unauthorized" ||
+    value === "forbidden" ||
+    value === "insufficient_permission"
+  ) {
+    return value;
+  }
+  return "invalid_request";
+}
+
+function snapshotError(error: unknown, fallbackStatus: number): object {
+  const output = objectCreate(null) as Record<string, unknown>;
+  const name = "AuthError";
+  let message = "Authentication request failed";
+  let status = fallbackStatus;
+  let code = "invalid_request";
+  let requestId: string | undefined;
+
+  if (error !== null && (typeof error === "object" || typeof error === "function")) {
+    const messageProperty = ownDataProperty(error, "message");
+    const statusProperty = ownDataProperty(error, "status");
+    const codeProperty = ownDataProperty(error, "code");
+    const requestIdProperty = ownDataProperty(error, "request_id");
+    if (messageProperty.valid && messageProperty.present && typeof messageProperty.value === "string") {
+      message = messageProperty.value;
+    }
+    if (statusProperty.valid && statusProperty.present) {
+      status = safeStatus(statusProperty.value, fallbackStatus);
+    }
+    if (codeProperty.valid && codeProperty.present) {
+      code = safeResponseCode(codeProperty.value);
+    }
+    if (
+      requestIdProperty.valid &&
+      requestIdProperty.present &&
+      isRequestId(requestIdProperty.value)
+    ) {
+      requestId = requestIdProperty.value;
+    }
+  }
+
+  defineSafeProperty(output, "name", name);
+  defineSafeProperty(output, "message", message);
+  defineSafeProperty(output, "status", status);
+  defineSafeProperty(output, "code", code);
+  if (requestId !== undefined) defineSafeProperty(output, "request_id", requestId);
+  return output;
+}
+
+function snapshotResult<T>(result: AuthResult<T>): { readonly body: object; readonly status: number } {
+  const body = objectCreate(null) as Record<string, unknown>;
+  const dataProperty = ownDataProperty(result as unknown as object, "data");
+  const errorProperty = ownDataProperty(result as unknown as object, "error");
+  if (!dataProperty.valid || !errorProperty.valid || !errorProperty.present) {
+    defineSafeProperty(body, "data", null);
+    defineSafeProperty(body, "error", snapshotError(undefined, 500));
+    return { body, status: 500 };
+  }
+
+  if (errorProperty.value === null) {
+    defineSafeProperty(body, "data", snapshotSuccessData(dataProperty.present ? dataProperty.value : undefined));
+    defineSafeProperty(body, "error", null);
+    return { body, status: 200 };
+  }
+
+  const errorObject = errorProperty.value;
+  const statusProperty =
+    errorObject !== null && (typeof errorObject === "object" || typeof errorObject === "function")
+      ? ownDataProperty(errorObject, "status")
+      : { valid: false, present: false } as const;
+  const status = statusProperty.valid && statusProperty.present
+    ? safeStatus(statusProperty.value, 500)
+    : 500;
+  defineSafeProperty(body, "data", null);
+  defineSafeProperty(body, "error", snapshotError(errorObject, status));
+  return { body, status };
+}
+
+function json(value: object, status = 200): Response {
+  const serialized = invoke<string>(jsonStringify, undefined, [value]);
+  const headers = objectCreate(null) as Record<string, string>;
+  defineSafeProperty(headers, "content-type", "application/json; charset=utf-8");
+  defineSafeProperty(headers, "cache-control", "no-store");
+  return new nativeResponse(serialized, {
     status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    },
+    headers,
   });
 }
 
 function resultResponse<T>(result: AuthResult<T>): Response {
-  return json(result, result.error === null ? 200 : result.error.status);
+  const snapshot = snapshotResult(result);
+  return json(snapshot.body, snapshot.status);
 }
 
 function invalidRequest(requestIdValue?: string): Response {
@@ -289,7 +435,7 @@ export async function permissionsRoute(
     )));
   }
   const permissions = await service.getPermissions(context.subject.user_id, scope, context);
-  const safePermissions: string[] = [];
+  const safePermissions = newNullPrototypeArray<string>();
   for (let index = 0; index < permissions.length; index += 1) {
     objectDefineProperty(safePermissions, `${index}`, {
       configurable: true,
