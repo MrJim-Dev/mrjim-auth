@@ -319,7 +319,7 @@ changed. The scan-recorder blocker remains exactly
 not a pass. Raman’s same-reviewer re-review of the exact implementation commit
 is `APPROVED`, with zero Critical, zero Important, and zero Minor findings.
 Task 9 is complete and independently approved; Tasks 10-14 remain pending and
-Task 10 has not started.
+Task 10's current in-progress status is recorded below.
 
 Task 9 remediation round 7 was the preceding bounded round from clean reviewed
 baseline `bb1138800879f55fc8e4b8a10dcd841991196dad`. Raman’s same-reviewer
@@ -350,6 +350,20 @@ scan-recorder blocker remains exactly
 `scan.target.snapshotDigest: expected a non-empty string`; it is tooling-only,
 not a pass. Task 9 remains awaiting same-reviewer round-7 re-review and is not
 approved; Tasks 10-14 remain pending and Task 10 has not started.
+
+Task 10 is in progress from clean approved baseline
+`305de41f4d2420ed14cbac4d533141da4d9bd3d2`. Its implementation brief is
+`.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-10-brief.md`. The bounded scope
+is the browser/isomorphic package-root client, strict HTTP transport, safe
+sync/async storage, ordered lifecycle events, cross-tab notification and
+refresh locking, PKCE URL initialization, auto-refresh, every public
+`client.auth` method, browser lifecycle tests, and continuously maintained
+Task 10 evidence. Task 9 server/OpenAPI behavior, migrations, SSR/framework
+adapters, administration, and full documentation/examples remain unchanged
+and belong to later tasks. No paid or hosted application is required; any new
+browser-test dependency must be exact-pinned, free/open-source, and run only
+against local project fixtures. Implementation RED/GREEN evidence and
+independent review are pending.
 
 Task 9 remediation round 6 is the preceding bounded round from clean reviewed
 baseline `0f672f7ec2e08ab8f2f03510b775d07396ecc745`. Raman’s same-reviewer
@@ -440,7 +454,7 @@ database, external network, or paid SaaS service is required.
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Complete — round 8 independently approved | Raman approved `916d615ca8627d200e9261688bbbb5d8903d541e` with zero Critical, Important, or Minor findings after round-8 error-prototype, OIDC, HTTP, provider allowlist, `Set.delete`, packed, OpenAPI, migration, export, and full 318-test verification; evidence is recorded in the Task 9 report |
-| 10. Browser client | Pending | Not run |
+| 10. Browser client | In progress | Task 10 brief committed from approved Task 9 baseline; method-shape and local browser lifecycle RED/GREEN evidence pending |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
 | 13. Documentation and examples | Pending | Not run |
@@ -477,10 +491,17 @@ earlier independent scan recorder remains a tooling-evidence blocker with the
 exact `scan.target.snapshotDigest: expected a non-empty string` failure; it is
 not a clean scan and was not the source of approval.
 
+Task 10 product blockers: none identified at kickoff. The plan calls for a
+real local browser lifecycle suite; an exact-pinned free/open-source Playwright
+test dependency is permitted if required, but no paid browser grid, hosted
+application, remote database, live OAuth provider, or generic `DATABASE_URL`
+may be used.
+
 ## Remaining work
 
 Task 8's third post-pass route-boundary hardening resolution and Task 9 are
-complete and independently approved. Tasks 10-14 remain,
+complete and independently approved. Task 10 is in progress; Tasks 11-14
+remain,
 with independent review after each task, followed by the whole-branch review
 and release handoff. In particular, later work must use the clean `auth`
 schema and explicit migration CLI from Task 3 for the browser/SSR surface,
