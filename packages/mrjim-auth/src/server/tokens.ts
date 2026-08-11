@@ -32,6 +32,12 @@ import {
   optionalBoundaryOption,
   requiredBoundaryOption,
 } from "./callback-boundary.js";
+import {
+  safeNumberIsFinite,
+  safeNumberIsInteger,
+  safeNumberIsSafeInteger,
+  safeStringTrim,
+} from "../shared/safe-intrinsics.js";
 
 /** The verified claims required from every Task 5 access token. */
 export interface AccessTokenClaims extends JWTPayload {
@@ -61,9 +67,9 @@ export interface TokenServiceOptions {
 }
 
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 900;
-const tokenNumberIsFinite = Number.isFinite;
-const tokenNumberIsInteger = Number.isInteger;
-const tokenNumberIsSafeInteger = Number.isSafeInteger;
+const tokenNumberIsFinite = safeNumberIsFinite;
+const tokenNumberIsInteger = safeNumberIsInteger;
+const tokenNumberIsSafeInteger = safeNumberIsSafeInteger;
 const tokenUint8ArrayFrom = Uint8Array.from.bind(Uint8Array) as (value: ArrayLike<number> | Iterable<number>) => Uint8Array;
 const tokenTextEncoder = TextEncoder;
 
@@ -80,7 +86,7 @@ function validClock(clock: () => Date): Date {
 }
 
 function validString(value: string, label: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
+  if (typeof value !== "string" || safeStringTrim(value) === null || safeStringTrim(value) === "") {
     throw new AuthConfigurationError(`${label} must be non-empty`);
   }
   return value;
@@ -105,7 +111,7 @@ function validClaims(payload: JWTPayload): payload is AccessTokenClaims {
   const audience = payload.aud;
   let audienceValid = false;
   if (typeof audience === "string") {
-    audienceValid = audience.trim() !== "";
+    audienceValid = safeStringTrim(audience) !== null && safeStringTrim(audience) !== "";
   } else {
     try {
       captureBoundaryStringArray(audience, "access-token audience", 1, 128);
@@ -116,12 +122,12 @@ function validClaims(payload: JWTPayload): payload is AccessTokenClaims {
   }
   return (
     typeof payload.iss === "string" &&
-    payload.iss.trim() !== "" &&
+    safeStringTrim(payload.iss) !== null && safeStringTrim(payload.iss) !== "" &&
     audienceValid &&
     typeof payload.sub === "string" &&
-    payload.sub.trim() !== "" &&
+    safeStringTrim(payload.sub) !== null && safeStringTrim(payload.sub) !== "" &&
     typeof payload.sid === "string" &&
-    payload.sid.trim() !== "" &&
+    safeStringTrim(payload.sid) !== null && safeStringTrim(payload.sid) !== "" &&
     typeof payload.aal === "number" &&
     tokenNumberIsInteger(payload.aal) &&
     payload.aal >= 1 &&
@@ -173,7 +179,7 @@ export class TokenService {
     const audience = typeof audienceValue === "string"
       ? audienceValue
       : captureBoundaryStringArray(audienceValue, "token audience", 1, 128);
-    if (typeof audience === "string" && audience.trim() === "") {
+    if (typeof audience === "string" && (safeStringTrim(audience) === null || safeStringTrim(audience) === "")) {
       throw new AuthConfigurationError("token audience must be non-empty");
     }
     this.audience = typeof audience === "string" ? audience : audience as string[];
@@ -269,12 +275,12 @@ export class TokenService {
    */
   async verifyAccessToken(jwt: string): Promise<AuthResult<AccessTokenClaims>> {
     try {
-      if (typeof jwt !== "string" || jwt.trim() === "") return invalidToken();
+      if (typeof jwt !== "string" || safeStringTrim(jwt) === null || safeStringTrim(jwt) === "") return invalidToken();
       const protectedHeader = decodeProtectedHeader(jwt);
       if (
         protectedHeader.alg !== ES256_ALGORITHM ||
         typeof protectedHeader.kid !== "string" ||
-        protectedHeader.kid.trim() === ""
+        safeStringTrim(protectedHeader.kid) === null || safeStringTrim(protectedHeader.kid) === ""
       ) {
         return invalidToken();
       }

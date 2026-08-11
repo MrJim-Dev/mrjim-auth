@@ -114,7 +114,8 @@ function hasThenProperty(value: object): boolean {
   let current: object | null = value;
   for (let depth = 0; current !== null && depth < 8; depth += 1) {
     try {
-      if (objectGetOwnPropertyDescriptor(current, "then") !== undefined) return true;
+      const descriptor = objectGetOwnPropertyDescriptor(current, "then");
+      if (descriptor !== undefined && (!("value" in descriptor) || typeof descriptor.value === "function")) return true;
       current = objectGetPrototypeOf(current);
     } catch {
       return true;

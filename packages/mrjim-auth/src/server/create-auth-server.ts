@@ -36,6 +36,7 @@ import {
   type AuthServerRuntimeOptions,
 } from "./auth-server.js";
 import type { AuthServerServices } from "./routes/contracts.js";
+import { safeStringReplace } from "../shared/safe-intrinsics.js";
 
 /** Optional service seams used by tests and by projects that compose services themselves. */
 export type AuthServerServiceOverrides = Partial<AuthServerServices>;
@@ -337,7 +338,8 @@ function parseAbsoluteUrl(value: string, label: string): URL {
 }
 
 function normalizedBasePath(baseUrl: URL): string {
-  const path = baseUrl.pathname.replace(/\/+$/u, "");
+  const path = safeStringReplace(baseUrl.pathname, /\/+$/u, "");
+  if (path === null) throw new AuthConfigurationError("baseUrl path is invalid");
   return path === "" || path === "/" ? "/auth/v1" : path;
 }
 

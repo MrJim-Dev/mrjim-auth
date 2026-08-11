@@ -19,6 +19,7 @@ import {
   invokeBoundaryResult,
   sortBoundaryArray,
 } from "./callback-boundary.js";
+import { safeStringTrim } from "../shared/safe-intrinsics.js";
 
 /** The only signing algorithm accepted by the Task 5 token boundary. */
 export const ES256_ALGORITHM = "ES256" as const;
@@ -48,6 +49,7 @@ const jwksTextDecoder = TextDecoder;
 const jwksJsonParse = JSON.parse;
 const jwksStringIncludes = String.prototype.includes;
 const jwksStringTrim = String.prototype.trim;
+const jwksStringStartsWith = String.prototype.startsWith;
 const jwksReflectApply = Reflect.apply;
 
 function materialText(material: string | Uint8Array): string {
@@ -67,7 +69,7 @@ function materialJwk(material: KeyMaterial): JWK | null {
   }
 
   const text = jwksReflectApply(jwksStringTrim, materialText(snapshot as string | Uint8Array), []) as string;
-  if (!text.startsWith("{")) return null;
+  if (!jwksReflectApply(jwksStringStartsWith, text, ["{"])) return null;
   try {
     const parsed: unknown = jwksReflectApply(jwksJsonParse, undefined, [text]);
     if (typeof parsed !== "object" || parsed === null || boundaryIsArray(parsed, "ES256 JWK")) return null;
@@ -77,7 +79,7 @@ function materialJwk(material: KeyMaterial): JWK | null {
   }
 }
 
-function assertEs256Jwk(jwk: JWK, keyId: string): asserts jwk is ValidEs256Jwk {
+function assertEs256Jwk(jwk: JWK, _keyId: string): asserts jwk is ValidEs256Jwk {
   if (
     jwk.kty !== "EC" ||
     jwk.crv !== "P-256" ||
@@ -86,9 +88,7 @@ function assertEs256Jwk(jwk: JWK, keyId: string): asserts jwk is ValidEs256Jwk {
     (jwk.alg !== undefined && jwk.alg !== ES256_ALGORITHM) ||
     (jwk.use !== undefined && jwk.use !== "sig")
   ) {
-    throw new AuthConfigurationError(
-      `key '${keyId}' must be an EC P-256 key for ES256`,
-    );
+    throw new AuthConfigurationError("ES256 key material is invalid");
   }
 }
 
@@ -104,13 +104,11 @@ function publicJwkMaterial(jwk: JWK, keyId: string): ValidEs256Jwk {
   };
 }
 
-async function exportJwk(key: Es256Key, keyId: string): Promise<JWK> {
+async function exportJwk(key: Es256Key, _keyId: string): Promise<JWK> {
   try {
     return await exportJWK(key);
-  } catch (error) {
-    throw new AuthConfigurationError(`key '${keyId}' cannot be exported as a public JWK`, {
-      cause: error,
-    });
+  } catch {
+    throw new AuthConfigurationError("ES256 public key export failed");
   }
 }
 
@@ -125,28 +123,26 @@ export async function importEs256Key(
   keyId: string,
   purpose: "signing" | "verification" | "jwks",
 ): Promise<Es256Key> {
-  if (typeof keyId !== "string" || keyId.trim() === "") {
-    throw new AuthConfigurationError("ES256 key identifiers must be non-empty");
+  if (typeof keyId !== "string" || safeStringTrim(keyId) === null || safeStringTrim(keyId) === "") {
+    throw new AuthConfigurationError("ES256 key identifier is invalid");
   }
 
-  const safeMaterial = captureBoundaryKeyMaterial(material, `key '${keyId}'`);
+  const safeMaterial = captureBoundaryKeyMaterial(material, "ES256 key material");
   const jwk = materialJwk(safeMaterial);
   if (jwk !== null) {
     assertEs256Jwk(jwk, keyId);
     if (purpose === "signing" && typeof jwk.d !== "string") {
-      throw new AuthConfigurationError(`signing key '${keyId}' must contain private material`);
+      throw new AuthConfigurationError("ES256 signing key material is invalid");
     }
     try {
       return await importJWK(jwk, ES256_ALGORITHM);
-    } catch (error) {
-      throw new AuthConfigurationError(`key '${keyId}' is not a valid ES256 JWK`, {
-        cause: error,
-      });
+    } catch {
+      throw new AuthConfigurationError("ES256 JWK import failed");
     }
   }
 
-  if (typeof safeMaterial !== "string" && !boundaryIsUint8Array(safeMaterial, `key '${keyId}'`)) {
-    throw new AuthConfigurationError(`key '${keyId}' uses unsupported key material`);
+  if (typeof safeMaterial !== "string" && !boundaryIsUint8Array(safeMaterial, "ES256 key material")) {
+    throw new AuthConfigurationError("ES256 key material is invalid");
   }
 
   const pem = jwksReflectApply(jwksStringTrim, materialText(safeMaterial as string | Uint8Array), []) as string;
@@ -159,15 +155,11 @@ export async function importEs256Key(
     if (jwksReflectApply(jwksStringIncludes, pem, ["PUBLIC KEY"])) {
       return await importSPKI(pem, ES256_ALGORITHM, { extractable: true });
     }
-  } catch (error) {
-    throw new AuthConfigurationError(`key '${keyId}' is not a valid ES256 PEM key`, {
-      cause: error,
-    });
+  } catch {
+    throw new AuthConfigurationError("ES256 PEM import failed");
   }
 
-  throw new AuthConfigurationError(
-    `key '${keyId}' must be an ES256 PKCS#8/SPKI PEM or JWK object`,
-  );
+  throw new AuthConfigurationError("ES256 key material is invalid");
 }
 
 /** Converts one configured verification key to a public, non-sensitive JWK. */
@@ -192,7 +184,7 @@ export async function publicEs256Jwk(
     jwk = await exportJwk(key, keyId);
   }
 
-  jwk = captureBoundaryKeyMaterial(jwk, `exported key '${keyId}'`) as JWK;
+  jwk = captureBoundaryKeyMaterial(jwk, "exported ES256 key material") as JWK;
   assertEs256Jwk(jwk, keyId);
   return {
     kid: keyId,
@@ -222,10 +214,10 @@ export async function buildPublicJwks(provider: KeyProvider): Promise<JSONWebKey
   const entries: Array<readonly [string, KeyMaterial]> = [];
   for (let index = 0; index < rawEntries.length; index += 1) {
     const entry = rawEntries[index];
-    if (entry === undefined || typeof entry[0] !== "string" || entry[0].trim() === "") {
-      throw new AuthConfigurationError("verification key identifiers must be non-empty strings");
+    if (entry === undefined || typeof entry[0] !== "string" || safeStringTrim(entry[0]) === null || safeStringTrim(entry[0]) === "") {
+      throw new AuthConfigurationError("verification key identifiers are invalid");
     }
-    defineBoundaryArrayValue(entries, index, [entry[0], captureBoundaryKeyMaterial(entry[1], `verification key '${entry[0]}'`)], "verification key entries");
+    defineBoundaryArrayValue(entries, index, [entry[0], captureBoundaryKeyMaterial(entry[1], "verification key material")], "verification key entries");
   }
   sortBoundaryArray(entries, (left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0, "verification key entries");
   if (entries.length === 0) {

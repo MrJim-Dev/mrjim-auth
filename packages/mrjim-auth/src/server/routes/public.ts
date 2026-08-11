@@ -23,6 +23,7 @@ import {
   signupRequestSchema,
   verifyRequestSchema,
 } from "./contracts.js";
+import { safeStringSlice, safeStringStartsWith } from "../../shared/safe-intrinsics.js";
 
 function service(
   result: unknown,
@@ -198,8 +199,8 @@ export async function handlePublicRoute(
     return service(result, mapAuthorize, authorizeSchema);
   }
 
-  if (path.startsWith("/callback/")) {
-    const provider = path.slice("/callback/".length);
+  if (safeStringStartsWith(path, "/callback/")) {
+    const provider = safeStringSlice(path, "/callback/".length) ?? "";
     const oauth = requiredOauth(context);
     const result = await context.invoke(() => oauth.callback({
       provider,

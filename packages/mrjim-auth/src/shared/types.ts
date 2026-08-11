@@ -1,4 +1,42 @@
 import { z } from "zod";
+import {
+  safeArrayIsArray,
+  safeDefineData,
+  safeDefineArrayValue,
+  safeGetPrototypeOf,
+  safeOwnDataEntries,
+  safeOwnDataProperty,
+  safeObjectPrototype,
+  safeSetAddValue,
+  safeSetHasValue,
+  safeStringIncludes,
+  safeStringReplace,
+  safeStringSlice,
+  safeStringSplit,
+  safeStringStartsWith,
+  safeStringToLowerCase,
+  safeStringTrim,
+  safeCreateRecord,
+} from "./safe-intrinsics.js";
+
+const typesURL = URL;
+const typesURLSearchParams = URLSearchParams;
+const typesReflectApply = Reflect.apply;
+const typesObjectGetPrototypeOf = Object.getPrototypeOf;
+const typesObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const typesObjectHasOwnProperty = Object.prototype.hasOwnProperty;
+const typesSearchParamsEntries = URLSearchParams.prototype.entries;
+const typesSearchParamsIteratorNext = (() => {
+  const iterator = typesReflectApply(typesSearchParamsEntries, new typesURLSearchParams(), []) as object;
+  const prototype = typesObjectGetPrototypeOf(iterator);
+  if (prototype === null) throw new Error("URLSearchParams iterator is unavailable");
+  const descriptor = typesObjectGetOwnPropertyDescriptor(prototype, "next");
+  if (descriptor === undefined || !typesReflectApply(typesObjectHasOwnProperty, descriptor, ["value"]) || typeof descriptor.value !== "function") {
+    throw new Error("URLSearchParams iterator is unavailable");
+  }
+  return descriptor.value as Function;
+})();
+const typesSetConstructor = Set;
 
 /** A JSON primitive suitable for redacted metadata and safe claims. */
 export type JsonPrimitive = string | number | boolean | null;
@@ -37,7 +75,7 @@ export const lowercaseKeySchema = z
   .string()
   .min(1)
   .regex(/^[a-z0-9_.*-]+$/, "authorization keys must use lowercase characters")
-  .refine((value) => value === value.toLowerCase(), "authorization keys must be lowercase")
+  .refine((value) => value === (safeStringToLowerCase(value) ?? ""), "authorization keys must be lowercase")
   .transform((value) => value as LowercaseKey);
 
 declare const scopeIdentifierBrand: unique symbol;
@@ -48,10 +86,10 @@ export type ScopeIdentifier = string & {
 };
 
 /** Validates and brands a non-empty project-defined scope identifier. */
-export const scopeIdentifierSchema = z
-  .string()
-  .trim()
-  .min(1, "scope identifiers must not be empty")
+const typesSafeTrimmedStringSchema = z.string().transform((value) => safeStringTrim(value) ?? "");
+
+export const scopeIdentifierSchema = typesSafeTrimmedStringSchema
+  .pipe(z.string().min(1, "scope identifiers must not be empty"))
   .transform((value) => value as ScopeIdentifier);
 
 /** Validates a simple lowercase role key. */
@@ -131,35 +169,56 @@ const credentialBearingLinkPrefixes = new Set([
 ]);
 
 function keySegments(key: string): readonly string[] {
-  return key
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/[^a-zA-Z0-9]+/g, "_")
-    .toLowerCase()
-    .split("_")
-    .filter(Boolean);
+  const first = safeStringReplace(key, /([A-Z]+)([A-Z][a-z])/g, "$1_$2");
+  const second = first === null ? null : safeStringReplace(first, /([a-z0-9])([A-Z])/g, "$1_$2");
+  const third = second === null ? null : safeStringReplace(second, /[^a-zA-Z0-9]+/g, "_");
+  const lowered = third === null ? null : safeStringToLowerCase(third);
+  const pieces = lowered === null ? null : safeStringSplit(lowered, "_");
+  if (pieces === null) return [];
+  const result: string[] = [];
+  for (let index = 0; index < pieces.length; index += 1) {
+    const segment = pieces[index];
+    if (segment !== undefined && segment !== "") safeDefineArrayValue(result, result.length, segment);
+  }
+  return result;
 }
 
 /** Returns true for credential-bearing key names, including style variants. */
 export function isSensitiveKeyName(key: string): boolean {
   const segments = keySegments(key);
-  const normalizedKey = key.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  const replaced = safeStringReplace(key, /[^a-zA-Z0-9]/g, "");
+  const normalizedKey = replaced === null ? "" : safeStringToLowerCase(replaced) ?? "";
   const isExplicitSessionIdentifier =
     normalizedKey === "sessionid";
+  let sensitiveSegment = false;
+  let one = false;
+  let time = false;
+  let raw = false;
+  let link = false;
+  let linkPrefix = false;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    if (segment === undefined) continue;
+    if (safeSetHasValue(sensitiveKeySegments, segment)) sensitiveSegment = true;
+    if (segment === "one") one = true;
+    if (segment === "time") time = true;
+    if (segment === "raw") raw = true;
+    if (segment === "link") link = true;
+    if (safeSetHasValue(credentialBearingLinkPrefixes, segment)) linkPrefix = true;
+  }
   return (
     !isExplicitSessionIdentifier &&
     (normalizedKey === "session" ||
-      segments.some((segment) => sensitiveKeySegments.has(segment)) ||
-      (segments.includes("one") && segments.includes("time")) ||
-      (segments.includes("raw") && segments.includes("link")) ||
-      (segments.includes("link") &&
-        segments.some((segment) => credentialBearingLinkPrefixes.has(segment))))
+      sensitiveSegment ||
+      (one && time) ||
+      (raw && link) ||
+      (link && linkPrefix))
   );
 }
 
 function parseUrlSafely(value: string): URL | null {
   try {
-    return new URL(value);
+    return new typesURL(value);
   } catch {
     return null;
   }
@@ -167,7 +226,7 @@ function parseUrlSafely(value: string): URL | null {
 
 function isRawCredentialString(value: string): boolean {
   return (
-    value.includes("-----BEGIN ") ||
+    safeStringIncludes(value, "-----BEGIN ") ||
     /^Bearer\s+\S+/i.test(value) ||
     /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)
   );
@@ -179,45 +238,66 @@ function hasCredentialBearingUrl(value: string): boolean {
     return false;
   }
 
-  const entries = [...parsed.searchParams.entries()];
-  const hash = parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash;
+  const entries: [string, string][] = [];
+  const appendParams = (params: URLSearchParams): boolean => {
+    let iterator: object;
+    try {
+      iterator = typesReflectApply(typesSearchParamsEntries, params, []) as object;
+      for (;;) {
+        const step = typesReflectApply(typesSearchParamsIteratorNext, iterator, []) as unknown;
+        if (step === null || typeof step !== "object") return false;
+        const done = safeOwnDataProperty(step, "done");
+        const value = safeOwnDataProperty(step, "value");
+        if (!done.valid || !done.present || typeof done.value !== "boolean" || !value.valid || !value.present) return false;
+        if (done.value) return true;
+        if (!safeArrayIsArray(value.value)) return false;
+        const tuple = value.value as unknown[];
+        if (tuple.length !== 2) return false;
+        const key = safeOwnDataProperty(tuple, "0");
+        const nestedValue = safeOwnDataProperty(tuple, "1");
+        if (!key.valid || !key.present || typeof key.value !== "string" || !nestedValue.valid || !nestedValue.present || typeof nestedValue.value !== "string") return false;
+        if (!safeDefineArrayValue(entries, entries.length, [key.value, nestedValue.value])) return false;
+      }
+    } catch {
+      return false;
+    }
+  };
+  if (!appendParams(parsed.searchParams)) return false;
+  const hash = safeStringStartsWith(parsed.hash, "#")
+    ? safeStringSlice(parsed.hash, 1) ?? ""
+    : parsed.hash;
   if (hash !== "") {
-    const hashParams = new URLSearchParams(hash);
-    if (hash.includes("=") || hash.includes("&")) {
-      entries.push(...hashParams.entries());
+    const hashParams = new typesURLSearchParams(hash);
+    if (safeStringIncludes(hash, "=") || safeStringIncludes(hash, "&")) {
+      if (!appendParams(hashParams)) return false;
     } else {
-      entries.push([hash, ""]);
+      if (!safeDefineArrayValue(entries, entries.length, [hash, ""])) return false;
     }
   }
 
-  return entries.some(
-    ([key, nestedValue]) => isSensitiveKeyName(key) || isRawCredentialString(nestedValue),
-  );
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry !== undefined && (isSensitiveKeyName(entry[0]) || isRawCredentialString(entry[1]))) return true;
+  }
+  return false;
 }
 
 function isSensitiveString(value: string): boolean {
   return isRawCredentialString(value) || hasCredentialBearingUrl(value);
 }
 
-const nonEmptyIdentityStringSchema = z.string().trim().min(1);
-const safeIdentityUrlSchema = z.string().trim().url().superRefine((value, context) => {
-  const parsed = parseUrlSafely(value);
-  if (parsed === null) {
-    return;
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    context.addIssue({
-      code: "custom",
-      message: "identity URLs must use http or https",
-    });
-  }
-  if (hasCredentialBearingUrl(value)) {
-    context.addIssue({
-      code: "custom",
-      message: "identity URLs must not contain credential-bearing query or fragment data",
-    });
-  }
-});
+const nonEmptyIdentityStringSchema = typesSafeTrimmedStringSchema.pipe(z.string().min(1));
+const safeIdentityUrlSchema = z
+  .custom<string>((value) => {
+    if (typeof value !== "string") return false;
+    const trimmed = safeStringTrim(value);
+    if (trimmed === null || trimmed === "") return false;
+    const parsed = parseUrlSafely(trimmed);
+    return parsed !== null
+      && (parsed.protocol === "http:" || parsed.protocol === "https:")
+      && !hasCredentialBearingUrl(trimmed);
+  }, "identity URL is invalid")
+  .transform((value) => safeStringTrim(value) ?? "");
 
 const publicIdentityDataShape = {
   sub: nonEmptyIdentityStringSchema.optional(),
@@ -267,34 +347,71 @@ export const safeIdentityDataSchema = publicIdentityDataObjectSchema.transform(
 export const publicIdentityDataSchema = safeIdentityDataSchema;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (typeof value !== "object" || value === null || safeArrayIsArray(value)) {
     return false;
   }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  const prototype = safeGetPrototypeOf(value);
+  return prototype === safeObjectPrototype || prototype === null;
 }
 
-function containsForbiddenValue(value: unknown, seen = new Set<object>()): boolean {
+function isPublicIdentityKey(key: string): boolean {
+  switch (key) {
+    case "sub":
+    case "email":
+    case "email_verified":
+    case "name":
+    case "given_name":
+    case "family_name":
+    case "picture":
+    case "avatar_url":
+    case "locale":
+    case "hd":
+    case "preferred_username":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function safeIdentityUrl(value: string): string | null {
+  const trimmed = safeStringTrim(value);
+  if (trimmed === null || trimmed === "") return null;
+  const parsed = parseUrlSafely(trimmed);
+  if (parsed === null || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) return null;
+  return hasCredentialBearingUrl(trimmed) ? null : trimmed;
+}
+
+function containsForbiddenValue(value: unknown, seen = new typesSetConstructor<object>()): boolean {
   if (typeof value === "string") {
     return isSensitiveString(value);
   }
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  if (seen.has(value)) {
+  if (safeSetHasValue(seen, value)) {
     return true;
   }
-  seen.add(value);
+  if (!safeSetAddValue(seen, value)) return true;
 
-  if (Array.isArray(value)) {
-    return value.some((item) => containsForbiddenValue(item, seen));
+  if (safeArrayIsArray(value)) {
+    const entries = safeOwnDataEntries(value);
+    if (entries === null) return true;
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (entry !== undefined && entry[0] !== "length" && containsForbiddenValue(entry[1], seen)) return true;
+    }
+    return false;
   }
   if (!isPlainRecord(value)) {
     return true;
   }
-  return Object.entries(value).some(
-    ([key, nested]) => isSensitiveKeyName(key) || containsForbiddenValue(nested, seen),
-  );
+  const entries = safeOwnDataEntries(value);
+  if (entries === null) return true;
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry !== undefined && (isSensitiveKeyName(entry[0]) || containsForbiddenValue(entry[1], seen))) return true;
+  }
+  return false;
 }
 
 /**
@@ -319,30 +436,36 @@ function containsForbiddenValue(value: unknown, seen = new Set<object>()): boole
  */
 export function sanitizeIdentityData(input: unknown): SafeIdentityData {
   if (!isPlainRecord(input)) {
-    return safeIdentityDataSchema.parse({});
+    return safeCreateRecord() as SafeIdentityData;
   }
 
-  const output: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input)) {
+  const output = safeCreateRecord();
+  const entries = safeOwnDataEntries(input);
+  if (entries === null) return safeCreateRecord() as SafeIdentityData;
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === undefined) continue;
+    const key = entry[0];
+    const value = entry[1];
     if (
-      !(key in publicIdentityDataShape) ||
+      !isPublicIdentityKey(key) ||
       isSensitiveKeyName(key) ||
-      !(
-        typeof value === "string" ||
-        typeof value === "boolean" ||
-        value === undefined
-      ) ||
+      !(typeof value === "string" || typeof value === "boolean" || value === undefined) ||
       containsForbiddenValue(value) ||
-      ((key === "picture" || key === "avatar_url") &&
-        !safeIdentityUrlSchema.safeParse(value).success) ||
-      (typeof value === "string" && value.trim() === "")
+      (typeof value === "string" && (safeStringTrim(value) ?? "") === "")
     ) {
       continue;
     }
-    output[key] = value;
+    if (typeof value === "string") {
+      const trimmed = key === "picture" || key === "avatar_url"
+        ? safeIdentityUrl(value)
+        : safeStringTrim(value);
+      if (trimmed === null || trimmed === "") continue;
+      if (!safeDefineData(output, key, trimmed)) continue;
+    } else if (!safeDefineData(output, key, value)) continue;
   }
 
-  return safeIdentityDataSchema.parse(output);
+  return output as SafeIdentityData;
 }
 
 declare const redactedMetadataBrand: unique symbol;
@@ -369,37 +492,52 @@ function isJsonPrimitive(value: unknown): value is JsonPrimitive {
 
 function sanitizeMetadataValue(
   value: unknown,
-  seen = new Set<object>(),
+  seen = new typesSetConstructor<object>(),
 ): JsonValue | undefined {
   if (isJsonPrimitive(value)) {
     return typeof value === "string" && isSensitiveString(value) ? undefined : value;
   }
-  if (typeof value !== "object" || value === null || seen.has(value)) {
+  if (typeof value !== "object" || value === null || safeSetHasValue(seen, value)) {
     return undefined;
   }
-  seen.add(value);
+  if (!safeSetAddValue(seen, value)) return undefined;
 
-  if (Array.isArray(value)) {
-    const items = value
-      .map((item) => sanitizeMetadataValue(item, seen))
-      .filter((item): item is JsonValue => item !== undefined);
+  if (safeArrayIsArray(value)) {
+    const entries = safeOwnDataEntries(value);
+    if (entries === null) return undefined;
+    const items: JsonValue[] = [];
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (entry === undefined || entry[0] === "length") continue;
+      const item = sanitizeMetadataValue(entry[1], seen);
+      if (item !== undefined) safeDefineArrayValue(items, items.length, item);
+    }
     return items;
   }
   if (!isPlainRecord(value)) {
     return undefined;
   }
 
-  const output: Record<string, JsonValue> = {};
-  for (const [key, nested] of Object.entries(value)) {
+  const output = safeCreateRecord() as Record<string, JsonValue>;
+  const entries = safeOwnDataEntries(value);
+  if (entries === null) return undefined;
+  let inputCount = 0;
+  let outputCount = 0;
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === undefined) continue;
+    inputCount += 1;
+    const key = entry[0];
+    const nested = entry[1];
     if (isSensitiveKeyName(key)) {
       continue;
     }
     const sanitized = sanitizeMetadataValue(nested, seen);
     if (sanitized !== undefined) {
-      output[key] = sanitized;
+      if (safeDefineData(output, key, sanitized)) outputCount += 1;
     }
   }
-  if (Object.keys(value).length > 0 && Object.keys(output).length === 0) {
+  if (inputCount > 0 && outputCount === 0) {
     return undefined;
   }
   return output;
@@ -585,7 +723,7 @@ export interface Permission {
 export const roleSchema = z.object({
   id: uuidSchema,
   key: roleKeySchema,
-  name: z.string().trim().min(1),
+  name: typesSafeTrimmedStringSchema.pipe(z.string().min(1)),
   description: z.string().nullable(),
   rank: z.number().int().nonnegative(),
   is_system: z.boolean(),

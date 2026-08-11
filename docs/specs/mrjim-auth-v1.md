@@ -119,7 +119,9 @@ details, recipient identifiers, tokens, codes, or provider secrets. For
 hardened public boundaries, the SDK captures the JavaScript intrinsics used
 for those decisions at module initialization. A callback cannot change those
 captured decisions by temporarily replacing the corresponding mutable
-prototype methods while it executes.
+prototype methods while it executes. This protection begins when the SDK
+module graph initializes; pre-import realm pollution remains outside the SDK’s
+trust-boundary claim.
 
 Synchronous server construction accepts only descriptor-readable own data for
 SDK-owned configuration records and dense own-data arrays; accessors,

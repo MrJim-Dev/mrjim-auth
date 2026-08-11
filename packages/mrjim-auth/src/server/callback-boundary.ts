@@ -207,7 +207,12 @@ export function boundaryHasThen(value: object, allowObjectPrototypeThen = false)
     boundaryReflectApply(boundarySetAdd, seen, [current]);
     if (allowObjectPrototypeThen && current === boundaryObjectPrototype) return false;
     try {
-      if (boundaryObjectGetOwnPropertyDescriptor(current, "then") !== undefined) return true;
+      const descriptor = boundaryObjectGetOwnPropertyDescriptor(current, "then");
+      if (descriptor !== undefined) {
+        // Result objects deliberately install an own data `then: undefined`
+        // shield. Accessors and callable values remain hostile thenables.
+        if (!("value" in descriptor) || typeof descriptor.value === "function") return true;
+      }
       current = boundaryObjectGetPrototypeOf(current);
     } catch {
       return true;
@@ -390,7 +395,9 @@ export function captureBoundaryDenseArray(
 ): readonly unknown[] {
   if (!boundaryIsArray(value, label)) throw new AuthConfigurationError(`${label} must be a data array`);
   const candidate = value as object;
-  if (boundaryHasThen(candidate)) throw new AuthConfigurationError(`${label} must not be thenable`);
+  // Ignore a polluted ambient Object.prototype.then for data snapshots while
+  // still rejecting own and custom-prototype thenables.
+  if (boundaryHasThen(candidate, true)) throw new AuthConfigurationError(`${label} must not be thenable`);
   const lengthProperty = boundaryOwnDataProperty(candidate, "length");
   if (
     !lengthProperty.valid || !lengthProperty.present || typeof lengthProperty.value !== "number"
@@ -447,6 +454,7 @@ export function captureBoundaryBytes(value: unknown, label: string, minimum = 0)
   if (typeof value !== "object" || value === null) {
     throw new AuthConfigurationError(`${label} must be a Uint8Array`);
   }
+  if (boundaryHasThen(value, true)) throw new AuthConfigurationError(`${label} must not be thenable`);
   let tag: unknown;
   let byteLength: unknown;
   try {
@@ -500,7 +508,9 @@ export function captureBoundaryDataValue(
     }
     return boundaryObjectFreeze(copy);
   }
-  assertBoundaryObject(value, label);
+  // Provider/service result snapshots may inherit a polluted ambient
+  // Object.prototype.then. It is never read or assimilated.
+  assertBoundaryObject(value, label, true);
   let prototype: object | null;
   try {
     prototype = boundaryObjectGetPrototypeOf(value);
@@ -603,7 +613,7 @@ export function captureBoundaryMapEntries(
 ): readonly (readonly [unknown, unknown])[] {
   if (!boundaryIsMap(value, label)) throw new AuthConfigurationError(`${label} must be a data map`);
   const map = value as Map<unknown, unknown>;
-  if (boundaryHasThen(map)) throw new AuthConfigurationError(`${label} must not be thenable`);
+  if (boundaryHasThen(map, true)) throw new AuthConfigurationError(`${label} must not be thenable`);
   let iterator: object;
   try {
     iterator = boundaryReflectApply(boundaryMapEntries, map, []) as object;

@@ -25,6 +25,8 @@ const openapiMapSet = Map.prototype.set;
 const openapiReflectApply = Reflect.apply;
 const openapiRegExpExec = RegExp.prototype.exec;
 const openapiStringReplace = String.prototype.replace;
+const openapiStringStartsWith = String.prototype.startsWith;
+const openapiStringToLowerCase = String.prototype.toLowerCase;
 const openapiURL = URL;
 const openapiSchemaCache: Array<{ readonly schema: object; readonly value: Record<string, JsonValue> }> = [];
 
@@ -241,7 +243,7 @@ function operation(contract: RouteContract): Record<string, JsonValue> {
     operationId: contract.operationId,
     summary: contract.operationId,
     description: `Authentication operation ${contract.operationId}.`,
-    tags: [contract.path.startsWith("/user") ? "current-user" : "public"],
+    tags: [openapiReflectApply(openapiStringStartsWith, contract.path, ["/user"]) ? "current-user" : "public"],
     security: securityFor(contract),
     parameters: [],
     responses: {},
@@ -311,7 +313,7 @@ export function generateOpenApiDocument(input?: OpenApiDocumentInput): Record<st
     if (contract === undefined) throw new AuthConfigurationError("OpenAPI route contracts are malformed");
     if (paths[contract.path] === undefined) paths[contract.path] = {};
     const path = paths[contract.path] as Record<string, JsonValue>;
-    path[contract.method.toLowerCase()] = operation(contract);
+    path[openapiReflectApply(openapiStringToLowerCase, contract.method, [])] = operation(contract);
     if (contract.body !== undefined) addSchemaComponent(schemas, `Request_${contract.operationId}`, contract.body);
     addSchemaComponent(schemas, `Response_${contract.operationId}`, contract.response);
   }

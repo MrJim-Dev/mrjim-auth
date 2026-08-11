@@ -49,6 +49,7 @@ const nativeTextDecoder = TextDecoder;
 const nativePromise = Promise;
 const nativePromisePrototype = Promise.prototype;
 const nativePromiseThen = Promise.prototype.then;
+const nativeString = String;
 const nativeObjectPrototype = Object.prototype;
 const nativeArrayIsArray = Array.isArray;
 const nativeArrayPush = Array.prototype.push;
@@ -91,6 +92,7 @@ const typedArrayLengthGetter = (() => {
   }
   return descriptor.get;
 })();
+const typedArraySet = captureMethod(typedArrayPrototype, "set");
 const dateGetTime = Function.prototype.call.bind(Date.prototype.getTime) as (value: Date) => number;
 const apiKeyRecordSchema = z.object({
   id: z.string().uuid(),
@@ -168,7 +170,7 @@ class RequestBoundaryError extends Error {
 function captureGetter(target: object, key: PropertyKey): Function {
   const descriptor = objectGetOwnPropertyDescriptor(target, key);
   if (descriptor === undefined || typeof descriptor.get !== "function") {
-    throw new AuthConfigurationError(`required Web API getter is unavailable: ${String(key)}`);
+    throw new AuthConfigurationError(`required Web API getter is unavailable: ${nativeString(key)}`);
   }
   return descriptor.get;
 }
@@ -176,7 +178,7 @@ function captureGetter(target: object, key: PropertyKey): Function {
 function captureMethod(target: object, key: PropertyKey): Function {
   const descriptor = objectGetOwnPropertyDescriptor(target, key);
   if (descriptor === undefined || typeof descriptor.value !== "function") {
-    throw new AuthConfigurationError(`required Web API method is unavailable: ${String(key)}`);
+    throw new AuthConfigurationError(`required Web API method is unavailable: ${nativeString(key)}`);
   }
   return descriptor.value;
 }
@@ -226,9 +228,9 @@ function readHeaderValue(headers: object, name: string): HeaderValue {
   if (
     typeof value !== "string"
     || value.length === 0
-    || value.includes(",")
-    || value.includes("\r")
-    || value.includes("\n")
+    || runtimeStringIncludes(value, ",")
+    || runtimeStringIncludes(value, "\r")
+    || runtimeStringIncludes(value, "\n")
   ) return { state: "invalid" };
   return { state: "valid", value };
 }
@@ -241,7 +243,7 @@ function readListHeaderValue(headers: object, name: string): HeaderValue {
     return { state: "invalid" };
   }
   if (value === null) return { state: "absent" };
-  if (typeof value !== "string" || value.length === 0 || value.includes("\r") || value.includes("\n")) {
+  if (typeof value !== "string" || value.length === 0 || runtimeStringIncludes(value, "\r") || runtimeStringIncludes(value, "\n")) {
     return { state: "invalid" };
   }
   return { state: "valid", value };
@@ -355,7 +357,7 @@ function readFetchMetadata(headers: object): FetchMetadataState {
     if (header.state === "invalid") return "invalid";
     if (header.state === "absent") continue;
     present = true;
-    if (header.value.trim() !== header.value || !containsExact(allowed, header.value)) return "invalid";
+    if (runtimeStringTrim(header.value) !== header.value || !containsExact(allowed, header.value)) return "invalid";
   }
   return present ? "present" : "absent";
 }
@@ -727,7 +729,7 @@ function readQueryKeys(params: URLSearchParams): string[] | null {
 function decodeSegment(value: string): string | null {
   try {
     const decoded = decodeURIComponent(value);
-    if (decoded === "" || decoded.includes("/") || decoded.includes("\\") || decoded.includes("\u0000")) return null;
+    if (decoded === "" || runtimeStringIncludes(decoded, "/") || runtimeStringIncludes(decoded, "\\") || runtimeStringIncludes(decoded, "\u0000")) return null;
     return decoded;
   } catch {
     return null;
@@ -735,23 +737,23 @@ function decodeSegment(value: string): string | null {
 }
 
 function exactPath(path: string, basePath: string): { readonly path: string; readonly callbackProvider?: string } | null {
-  if (!path.startsWith(`${basePath}/`)) return null;
-  const relative = path.slice(basePath.length);
+  if (!runtimeStringStartsWith(path, `${basePath}/`)) return null;
+  const relative = runtimeStringSlice(path, basePath.length);
   if (relative === "/callback" || relative === "/callback/") return null;
-  if (relative.startsWith("/callback/")) {
-    const providerPart = relative.slice("/callback/".length);
-    if (providerPart.includes("/")) return null;
+  if (runtimeStringStartsWith(relative, "/callback/")) {
+    const providerPart = runtimeStringSlice(relative, "/callback/".length);
+    if (runtimeStringIncludes(providerPart, "/")) return null;
     const provider = decodeSegment(providerPart);
     return provider === null ? null : { path: "/callback/{provider}", callbackProvider: provider };
   }
-  if (relative.startsWith("/user/identities/")) {
-    const identityPart = relative.slice("/user/identities/".length);
-    if (identityPart.includes("/")) return null;
+  if (runtimeStringStartsWith(relative, "/user/identities/")) {
+    const identityPart = runtimeStringSlice(relative, "/user/identities/".length);
+    if (runtimeStringIncludes(identityPart, "/")) return null;
     const identityId = decodeSegment(identityPart);
     if (identityId === null || !uuidSchema.safeParse(identityId).success) return null;
     return { path: "/user/identities/{id}", callbackProvider: identityId };
   }
-  if (relative.endsWith("/")) return null;
+  if (runtimeStringEndsWith(relative, "/")) return null;
   return { path: relative };
 }
 
@@ -765,11 +767,17 @@ function routeContract(path: string, method?: string): RouteContract | undefined
 
 function isJsonContentType(value: string | null): boolean {
   if (value === null) return false;
-  const normalized = value.trim().toLowerCase();
+  const normalized = runtimeStringToLowerCase(runtimeStringTrim(value));
   return normalized === "application/json" || normalized === "application/json; charset=utf-8";
 }
 
 const runtimeStringTrim = Function.prototype.call.bind(String.prototype.trim) as (value: string) => string;
+const runtimeStringIncludes = Function.prototype.call.bind(String.prototype.includes) as (value: string, search: string) => boolean;
+const runtimeStringToLowerCase = Function.prototype.call.bind(String.prototype.toLowerCase) as (value: string) => string;
+const runtimeStringSplit = Function.prototype.call.bind(String.prototype.split) as (value: string, separator: string) => string[];
+const runtimeStringStartsWith = Function.prototype.call.bind(String.prototype.startsWith) as (value: string, search: string) => boolean;
+const runtimeStringSlice = Function.prototype.call.bind(String.prototype.slice) as (value: string, start: number, end?: number) => string;
+const runtimeStringEndsWith = Function.prototype.call.bind(String.prototype.endsWith) as (value: string, search: string) => boolean;
 
 function captureRuntimeOrigin(value: unknown, label: string): string {
   if (value !== null && typeof value === "object") assertBoundaryObject(value, label);
@@ -907,7 +915,7 @@ export class AuthServer {
         invoke: <T>(operation: () => unknown) => invokeUntrusted<T>(operation),
       };
       let output: RouteOutput | null;
-      if (routed.path.startsWith("/user") || routed.path === "/logout") {
+      if (runtimeStringStartsWith(routed.path, "/user") || routed.path === "/logout") {
         output = await handleUserRoute(
           routed.path === "/user/identities/{id}" ? `/user/identities/${routed.callbackProvider}` : routed.path,
           context,
@@ -1047,11 +1055,11 @@ export class AuthServer {
     if (requestedMethod === null || !containsExact(["GET", "POST", "PUT", "DELETE"], requestedMethod)) return this.errorResponse(meta, "invalid_request", 400);
     if (routeContract(routed.path, requestedMethod) === undefined) return this.errorResponse(meta, "invalid_request", 405);
     if (requestedHeaders !== null) {
-      const rawHeaders = requestedHeaders.split(",");
+      const rawHeaders = runtimeStringSplit(requestedHeaders, ",");
       for (let headerIndex = 0; headerIndex < rawHeaders.length; headerIndex += 1) {
         const rawHeader = rawHeaders[headerIndex];
         if (rawHeader === undefined) return this.errorResponse(meta, "invalid_request", 400);
-        const header = rawHeader.trim().toLowerCase();
+        const header = runtimeStringToLowerCase(runtimeStringTrim(rawHeader));
         if (header === "" || !/^[!#$%&'*+.^_`|~0-9a-z-]+$/u.test(header)) {
           return this.errorResponse(meta, "invalid_request", 400);
         }
@@ -1189,7 +1197,7 @@ export class AuthServer {
     const output = new nativeUint8Array(total);
     let offset = 0;
     for (const chunk of chunks) {
-      output.set(chunk, offset);
+      invoke(typedArraySet, output, [chunk, offset]);
       offset += chunk.byteLength;
     }
     return output;
@@ -1207,7 +1215,7 @@ export class AuthServer {
       throw new AuthApiError("unauthorized", 401, "API key is required", meta.requestId);
     }
     const rawApiKey = meta.apiKey.value;
-    if (rawApiKey.trim() !== rawApiKey || rawApiKey.length < 8 || rawApiKey.length > 512) {
+    if (runtimeStringTrim(rawApiKey) !== rawApiKey || rawApiKey.length < 8 || rawApiKey.length > 512) {
       throw new AuthApiError("unauthorized", 401, "API key is required", meta.requestId);
     }
     const expectedHash = nativeUint8ArrayFrom(createHmac("sha256", this.apiKeyHashKey).update(`apikey\0${rawApiKey}`, "utf8").digest());
@@ -1219,7 +1227,7 @@ export class AuthServer {
     let bearer: string | null = null;
     if (meta.authorization.state === "valid") {
       if (!isValidBearer(meta.authorization.value)) throw new AuthApiError("invalid_request", 400, "Invalid bearer authorization", meta.requestId);
-      bearer = meta.authorization.value.slice("Bearer ".length);
+      bearer = runtimeStringSlice(meta.authorization.value, "Bearer ".length);
     }
     const requiresBearer = forceBearer || contract?.security === "user" || (contract?.path === "/authorize" && invoke<string | null>(searchParamsGet, query, ["flow"]) === "link_identity");
     if (requiresBearer && bearer === null) throw new AuthApiError("unauthorized", 401, "Authenticated session is required", meta.requestId);

@@ -1,3 +1,5 @@
+import { safeNumberIsInteger, safeOwnDataProperty, safeSetHasValue } from "./safe-intrinsics.js";
+
 /** Stable public error codes returned by expected SDK/API failures. */
 export const AUTH_ERROR_CODES = {
   invalid_request: "invalid_request",
@@ -52,11 +54,33 @@ export type InternalAuthErrorCode =
 /** Backwards-compatible name for the constrained public code union. */
 export type AuthErrorCode = PublicAuthErrorCode;
 
-const publicCodeSet = new Set<string>(Object.values(PUBLIC_AUTH_ERROR_CODES));
+const publicCodeSet = new Set<string>([
+  AUTH_ERROR_CODES.invalid_request,
+  AUTH_ERROR_CODES.invalid_credentials,
+  AUTH_ERROR_CODES.unauthorized,
+  AUTH_ERROR_CODES.forbidden,
+  AUTH_ERROR_CODES.insufficient_permission,
+  AUTH_ERROR_CODES.not_found,
+  AUTH_ERROR_CODES.conflict,
+  AUTH_ERROR_CODES.invalid_token,
+  AUTH_ERROR_CODES.token_expired,
+  AUTH_ERROR_CODES.refresh_token_reused,
+  AUTH_ERROR_CODES.session_expired,
+  AUTH_ERROR_CODES.otp_invalid,
+  AUTH_ERROR_CODES.otp_expired,
+  AUTH_ERROR_CODES.otp_attempts_exceeded,
+  AUTH_ERROR_CODES.rate_limit_exceeded,
+  AUTH_ERROR_CODES.redirect_not_allowed,
+  AUTH_ERROR_CODES.oauth_state_invalid,
+  AUTH_ERROR_CODES.oauth_provider_error,
+  AUTH_ERROR_CODES.identity_already_linked,
+  AUTH_ERROR_CODES.identity_unlink_not_allowed,
+  AUTH_ERROR_CODES.internal_error,
+]);
 
 /** Returns whether a value is a supported public error code. */
 export function isPublicAuthErrorCode(value: unknown): value is PublicAuthErrorCode {
-  return typeof value === "string" && publicCodeSet.has(value);
+  return typeof value === "string" && safeSetHasValue(publicCodeSet, value);
 }
 
 /**
@@ -148,17 +172,15 @@ export function isAuthError(value: unknown): value is AuthError {
     return false;
   }
 
-  const candidate = value as Partial<AuthError>;
-  const status = candidate.status;
-  return (
-    candidate.name === "AuthError" &&
-    typeof candidate.message === "string" &&
-    typeof status === "number" &&
-    Number.isInteger(status) &&
-    status >= 100 &&
-    status <= 599 &&
-    isPublicAuthErrorCode(candidate.code)
-  );
+  const name = safeOwnDataProperty(value, "name");
+  const message = safeOwnDataProperty(value, "message");
+  const status = safeOwnDataProperty(value, "status");
+  const code = safeOwnDataProperty(value, "code");
+  return name.valid && name.present && name.value === "AuthError"
+    && message.valid && message.present && typeof message.value === "string"
+    && status.valid && status.present && typeof status.value === "number"
+    && safeNumberIsInteger(status.value) && status.value >= 100 && status.value <= 599
+    && code.valid && code.present && isPublicAuthErrorCode(code.value);
 }
 
 /** Throws when a value cannot safely be returned as a public auth error. */
@@ -197,7 +219,7 @@ export class AuthApiError extends Error implements AuthError {
     if (!isPublicAuthErrorCode(code)) {
       throw new AuthProgrammingError("AuthApiError requires a stable public error code");
     }
-    if (!Number.isInteger(status) || status < 100 || status > 599) {
+    if (!safeNumberIsInteger(status) || status < 100 || status > 599) {
       throw new AuthProgrammingError("AuthApiError requires an HTTP-compatible status");
     }
     super(message);

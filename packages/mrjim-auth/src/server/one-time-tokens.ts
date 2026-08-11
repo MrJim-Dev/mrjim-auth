@@ -24,6 +24,14 @@ import {
   optionalBoundaryOption,
   requiredBoundaryOption,
 } from "./callback-boundary.js";
+import {
+  safeNumberIsFinite,
+  safeNumberIsSafeInteger,
+  safeSetHasValue,
+  safeStringToLowerCase,
+  safeStringTrim,
+  safeUint8ArrayFrom,
+} from "../shared/safe-intrinsics.js";
 
 /** Public mail-delivery one-time flows; OAuth callback codes use OAuthService. */
 export type OneTimeTokenPurpose = Exclude<OneTimeTokenInput["purpose"], "oauth_callback">;
@@ -95,14 +103,14 @@ const tokenPurposeSet = new Set<OneTimeTokenPurpose>([
 
 function validNow(clock: () => Date): Date {
   const now = clock();
-  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+  if (!(now instanceof Date) || !safeNumberIsFinite(now.getTime())) {
     throw new AuthConfigurationError("one-time-token clock must return a valid Date");
   }
   return now;
 }
 
 function validPurpose(value: unknown): OneTimeTokenPurpose {
-  if (typeof value !== "string" || !tokenPurposeSet.has(value as OneTimeTokenPurpose)) {
+  if (typeof value !== "string" || !safeSetHasValue(tokenPurposeSet, value as OneTimeTokenPurpose)) {
     throw new AuthProgrammingError("unsupported one-time-token purpose");
   }
   return value as OneTimeTokenPurpose;
@@ -134,8 +142,9 @@ function auditContext(context: OneTimeTokenContext | undefined): {
   readonly ip_address: string | null;
   readonly user_agent: string | null;
 } {
-  const ip = typeof context?.ip_address === "string" ? context.ip_address.trim() : "";
-  const ip_address = ip !== "" && ip.length <= 45 && isIP(ip) !== 0 ? ip.toLowerCase() : null;
+  const trimmedIp = typeof context?.ip_address === "string" ? safeStringTrim(context.ip_address) : null;
+  const ip = trimmedIp ?? "";
+  const ip_address = ip !== "" && ip.length <= 45 && isIP(ip) !== 0 ? safeStringToLowerCase(ip) : null;
   const userAgent = context?.user_agent;
   const user_agent = typeof userAgent === "string" && userAgent.length > 0
     ? `ua-sha256:${createHash("sha256").update(userAgent, "utf8").digest("hex")}`
@@ -237,7 +246,7 @@ export class OneTimeTokenService {
       : purpose === "signup"
         ? DEFAULT_SIGNUP_TTL_SECONDS
         : DEFAULT_SHORT_TTL_SECONDS;
-    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > maximumTtl) {
+  if (!safeNumberIsSafeInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > maximumTtl) {
       throw new AuthApiError("invalid_request", 400, "Invalid one-time-token expiry");
     }
     const expiresAt = new Date(now.getTime() + ttlSeconds * 1000);
@@ -374,7 +383,7 @@ export class OneTimeTokenService {
   }
 
   private hash(rawToken: string): Uint8Array {
-    return Uint8Array.from(createHmac("sha256", this.tokenHashKey).update(rawToken, "utf8").digest());
+    return safeUint8ArrayFrom(createHmac("sha256", this.tokenHashKey).update(rawToken, "utf8").digest());
   }
 
   private verificationFromConsumed(
@@ -434,7 +443,7 @@ export class OneTimeTokenService {
 
 function nowFrom(clock: () => Date): Date {
   const now = clock();
-  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+  if (!(now instanceof Date) || !safeNumberIsFinite(now.getTime())) {
     throw new AuthConfigurationError("one-time-token clock must return a valid Date");
   }
   return now;

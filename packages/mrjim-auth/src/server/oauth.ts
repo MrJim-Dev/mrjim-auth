@@ -61,6 +61,11 @@ import {
 } from "./callback-boundary.js";
 import { isCodeVerifier } from "../client/pkce.js";
 import { SessionService, type AuthenticatedSession, type SessionContext } from "./sessions.js";
+import {
+  safeStringIncludes,
+  safeStringToLowerCase,
+  safeStringTrim,
+} from "../shared/safe-intrinsics.js";
 
 const OAUTH_STATE_TTL_SECONDS = 10 * 60;
 const OAUTH_CALLBACK_TTL_SECONDS = 60;
@@ -340,7 +345,8 @@ function validNow(clock: () => Date): Date {
 function validKey(value: string | Uint8Array, label: string): Buffer {
   let bytes: Buffer;
   if (typeof value === "string") {
-    if (value !== value.trim() || !/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) {
+    const trimmed = safeStringTrim(value);
+    if (trimmed === null || value !== trimmed || !/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) {
       throw new AuthConfigurationError(`${label} must be unpadded base64url key material`);
     }
     bytes = copyOAuthBuffer(value, "base64url");
@@ -359,10 +365,12 @@ function deriveEncryptionKey(value: string | Uint8Array): Buffer {
 }
 
 function normalizeProvider(value: unknown): string {
-  if (typeof value !== "string" || value.trim() === "") {
+  const trimmed = typeof value === "string" ? safeStringTrim(value) : null;
+  if (typeof value !== "string" || trimmed === null || trimmed === "") {
     throw new AuthProgrammingError("OAuth provider must be non-empty");
   }
-  const provider = value.trim().toLowerCase();
+  const providerTrimmed = safeStringTrim(value);
+  const provider = providerTrimmed === null ? "" : safeStringToLowerCase(providerTrimmed) ?? "";
   if (!/^[a-z][a-z0-9_.:-]{0,31}$/.test(provider)) {
     throw new AuthProgrammingError("OAuth provider must be a stable identifier");
   }
@@ -378,10 +386,11 @@ function parsePublicProvider(value: unknown): string {
 }
 
 function normalizeRedirect(value: unknown): string {
-  if (typeof value !== "string" || value.trim() === "") {
+  const trimmed = typeof value === "string" ? safeStringTrim(value) : null;
+  if (typeof value !== "string" || trimmed === null || trimmed === "") {
     throw new AuthConfigurationError("OAuth redirect must be non-empty");
   }
-  const redirect = value.trim();
+  const redirect = trimmed;
   let parsed: URL;
   try {
     parsed = new URL(redirect);
@@ -547,8 +556,8 @@ function safeProfile(provider: OAuthProvider, profile: OAuthProviderProfile): OA
   }
   if (profileProvider !== providerName) throw providerFailure();
   if (provider.issuer !== undefined && profile.issuer !== provider.issuer) throw providerFailure();
-  if (typeof profile.issuer !== "string" || profile.issuer.trim() === "") throw providerFailure();
-  if (typeof profile.subject !== "string" || profile.subject.trim() === "" || profile.subject.length > PROVIDER_SUBJECT_MAX_LENGTH) {
+  if (typeof profile.issuer !== "string" || safeStringTrim(profile.issuer) === null || safeStringTrim(profile.issuer) === "") throw providerFailure();
+  if (typeof profile.subject !== "string" || safeStringTrim(profile.subject) === null || safeStringTrim(profile.subject) === "" || profile.subject.length > PROVIDER_SUBJECT_MAX_LENGTH) {
     throw providerFailure();
   }
   let claims: ReturnType<typeof sanitizeIdentityData>;
@@ -692,7 +701,8 @@ function safeRepositoryIdentity(value: unknown, expected: IdentityBinding = {}):
   }
   if (
     typeof providerSubjectValue !== "string"
-    || providerSubjectValue.trim() === ""
+    || safeStringTrim(providerSubjectValue) === null
+    || safeStringTrim(providerSubjectValue) === ""
     || providerSubjectValue.length > PROVIDER_SUBJECT_MAX_LENGTH
     || (emailValue !== null && typeof emailValue !== "string")
     || typeof createdAtValue !== "string"
@@ -817,11 +827,11 @@ export class OAuthService {
       const name = normalizeProvider(key);
       if (boundaryMapHasValue(providers, name, "OAuth providers")) throw new AuthConfigurationError(`duplicate OAuth provider: ${name}`);
       if (normalizeProvider(provider.name) !== name) throw new AuthConfigurationError("OAuth provider map key does not match adapter name");
-      if (typeof provider.clientId !== "string" || provider.clientId.trim() === "") throw new AuthConfigurationError("OAuth provider client ID is required");
+      if (typeof provider.clientId !== "string" || safeStringTrim(provider.clientId) === null || safeStringTrim(provider.clientId) === "") throw new AuthConfigurationError("OAuth provider client ID is required");
       const scopes = captureBoundaryStringArray(provider.scopes, "OAuth provider scopes", 1, 128);
       for (let scopeIndex = 0; scopeIndex < scopes.length; scopeIndex += 1) {
         const scope = scopes[scopeIndex];
-        if (scope === undefined || scope.trim() === "") throw new AuthConfigurationError("OAuth provider scopes are required");
+        if (scope === undefined || safeStringTrim(scope) === null || safeStringTrim(scope) === "") throw new AuthConfigurationError("OAuth provider scopes are required");
       }
       if (scopes.length === 0) {
         throw new AuthConfigurationError("OAuth provider scopes are required");
@@ -934,7 +944,7 @@ export class OAuthService {
           codeChallenge: providerChallenge,
           codeChallengeMethod: "S256",
         });
-        if (typeof value !== "string" || value.trim() === "") throw new TypeError("invalid provider authorization URL");
+        if (typeof value !== "string" || safeStringTrim(value) === null || safeStringTrim(value) === "") throw new TypeError("invalid provider authorization URL");
         return value;
       });
       await this.runTransaction(async (transaction) => {
@@ -983,7 +993,7 @@ export class OAuthService {
         ? this.allowedRedirects
         : [this.resolveRedirect(input.redirectTo)];
       if (typeof input.state !== "string" || input.state.length < 43 || input.state.length > 128) return authFailure(oauthStateInvalid());
-      if (typeof input.code !== "string" || input.code.trim() === "" || input.code.length > 2048) return authFailure(providerFailure());
+      if (typeof input.code !== "string" || safeStringTrim(input.code) === null || safeStringTrim(input.code) === "" || input.code.length > 2048) return authFailure(providerFailure());
       const now = validNow(this.clock);
       let consumed: OAuthStateRecord | null = null;
       let redirect: string | null = null;

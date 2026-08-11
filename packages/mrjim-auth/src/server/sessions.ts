@@ -24,6 +24,13 @@ import {
   optionalBoundaryOption,
   requiredBoundaryOption,
 } from "./callback-boundary.js";
+import {
+  safeNumberIsFinite,
+  safeNumberIsInteger,
+  safeNumberIsSafeInteger,
+  safeStringToLowerCase,
+  safeStringTrim,
+} from "../shared/safe-intrinsics.js";
 
 /** Context attached to a session operation; raw user-agent values are never persisted. */
 export interface SessionContext {
@@ -82,7 +89,7 @@ type NormalizedSessionContext = {
 
 function nowFrom(clock: () => Date): Date {
   const now = clock();
-  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+  if (!(now instanceof Date) || !safeNumberIsFinite(now.getTime())) {
     throw new AuthConfigurationError("session clock must return a valid Date");
   }
   return now;
@@ -98,9 +105,10 @@ function isOpaqueRefreshToken(value: string): boolean {
 
 export function normalizeIpAddress(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const normalized = value.trim();
+  const normalized = safeStringTrim(value);
+  if (normalized === null) return null;
   if (normalized === "" || normalized.length > 45 || isIP(normalized) === 0) return null;
-  return normalized.toLowerCase();
+  return safeStringToLowerCase(normalized);
 }
 
 function userAgentFingerprint(value: unknown): string | null {
@@ -123,7 +131,7 @@ function normalizeSessionContext(
 
 function sessionAal(context: SessionContext): number {
   const aal = context.aal ?? 1;
-  if (!Number.isInteger(aal) || aal < 1 || aal > 3) {
+  if (!safeNumberIsInteger(aal) || aal < 1 || aal > 3) {
     throw new AuthConfigurationError("session AAL must be an integer from 1 to 3");
   }
   return aal;
@@ -180,8 +188,8 @@ function publicSession(user: User, accessToken: string, refreshToken: string): S
   if (
     typeof claims.iat !== "number" ||
     typeof claims.exp !== "number" ||
-    !Number.isSafeInteger(claims.iat) ||
-    !Number.isSafeInteger(claims.exp) ||
+    !safeNumberIsSafeInteger(claims.iat) ||
+    !safeNumberIsSafeInteger(claims.exp) ||
     claims.exp <= claims.iat
   ) {
     throw new AuthConfigurationError("issued access token does not contain valid lifetime claims");
@@ -249,7 +257,7 @@ export class SessionService {
     this.refreshTokenTtlSeconds =
       (refreshTokenTtlValue as number | undefined) ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
     if (
-      !Number.isSafeInteger(this.refreshTokenTtlSeconds) ||
+      !safeNumberIsSafeInteger(this.refreshTokenTtlSeconds) ||
       this.refreshTokenTtlSeconds < 3_600 ||
       this.refreshTokenTtlSeconds > 90 * 24 * 60 * 60
     ) {

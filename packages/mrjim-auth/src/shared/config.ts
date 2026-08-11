@@ -11,6 +11,12 @@ import type {
   LockFunction,
   SupportedStorage,
 } from "./types.js";
+import {
+  safeStringIncludes,
+  safeStringPadEnd,
+  safeStringReplace,
+  safeStringTrim,
+} from "./safe-intrinsics.js";
 
 // Configuration validation is also a construction boundary. Capture the
 // intrinsics used by its predicates before caller-controlled values can be
@@ -42,7 +48,8 @@ function configByteLength(value: unknown): number | null {
  */
 export type AuthEnvironment = "development" | "test" | "production";
 
-const nonEmptyStringSchema = z.string().trim().min(1);
+const safeTrimmedStringSchema = z.string().transform((value) => safeStringTrim(value) ?? "");
+const nonEmptyStringSchema = safeTrimmedStringSchema.pipe(z.string().min(1));
 
 function parseUrlSafely(value: string): URL | null {
   try {
@@ -52,18 +59,15 @@ function parseUrlSafely(value: string): URL | null {
   }
 }
 
-const httpHttpsUrlSchema = z.string().trim().url().superRefine((value, context) => {
-  const parsed = parseUrlSafely(value);
-  if (parsed === null) {
-    return;
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    context.addIssue({
-      code: "custom",
-      message: "URL scheme must be http or https",
-    });
-  }
-});
+const httpHttpsUrlSchema = z
+  .custom<string>((value) => {
+    if (typeof value !== "string") return false;
+    const trimmed = safeStringTrim(value);
+    if (trimmed === null || trimmed === "") return false;
+    const parsed = parseUrlSafely(trimmed);
+    return parsed !== null && (parsed.protocol === "http:" || parsed.protocol === "https:");
+  }, "Invalid URL")
+  .transform((value) => safeStringTrim(value) ?? "");
 
 /**
  * Validates the client base URL in every runtime environment.
@@ -150,7 +154,7 @@ export type ClientOptions = z.infer<typeof clientOptionsSchema>;
 const keyMaterialSchema = z.custom<KeyMaterial>(
   (value) => {
     if (typeof value === "string") {
-      return value.trim().length > 0;
+      return (safeStringTrim(value) ?? "").length > 0;
     }
     const byteLength = configByteLength(value);
     if (byteLength !== null) return byteLength > 0;
@@ -167,19 +171,28 @@ const keyMaterialSchema = z.custom<KeyMaterial>(
 const opaqueSecretSchema = z.custom<string | Uint8Array>(
   (value) => {
     const byteLength = configByteLength(value);
-    return (typeof value === "string" && value.trim().length > 0) || (byteLength !== null && byteLength > 0);
+    return (typeof value === "string" && (safeStringTrim(value) ?? "").length > 0) || (byteLength !== null && byteLength > 0);
   },
   "opaque secret material must be non-empty",
 );
 
 function decodedBase64urlLength(value: string): number | null {
-  if (value !== value.trim()) return null;
+  const trimmed = safeStringTrim(value);
+  if (trimmed === null || value !== trimmed) return null;
   const encoded = value;
   if (encoded === "" || !/^[A-Za-z0-9_-]+$/.test(encoded) || encoded.length % 4 === 1) return null;
   try {
-    const standard = encoded.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = atob(standard.padEnd(Math.ceil(standard.length / 4) * 4, "="));
-    const canonical = btoa(decoded).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    const first = safeStringReplace(encoded, /-/g, "+");
+    const standard = first === null ? null : safeStringReplace(first, /_/g, "/");
+    if (standard === null) return null;
+    const padded = safeStringPadEnd(standard, Math.ceil(standard.length / 4) * 4, "=");
+    if (padded === null) return null;
+    const decoded = atob(padded);
+    const encodedCanonical = btoa(decoded);
+    const firstCanonical = safeStringReplace(encodedCanonical, /\+/g, "-");
+    const secondCanonical = firstCanonical === null ? null : safeStringReplace(firstCanonical, /\//g, "_");
+    const canonical = secondCanonical === null ? null : safeStringReplace(secondCanonical, /=/g, "");
+    if (canonical === null) return null;
     return canonical === encoded ? decoded.length : null;
   } catch {
     return null;
@@ -357,7 +370,7 @@ const authorizationSchema = z.object({
 });
 
 const redirectSchema = httpHttpsUrlSchema.superRefine((value, context) => {
-  if (value.includes("*")) {
+  if (safeStringIncludes(value, "*")) {
     context.addIssue({ code: "custom", message: "redirects must be exact URLs" });
   }
 

@@ -4,6 +4,7 @@ import {
   assertBoundaryObject,
   optionalBoundaryOption,
 } from "./callback-boundary.js";
+import { safeNumberIsSafeInteger, safeStringReplace } from "../shared/safe-intrinsics.js";
 
 /** The minimum Argon2id password policy required by the auth schema. */
 export const ARGON2ID_PASSWORD_POLICY = Object.freeze({
@@ -46,10 +47,12 @@ function validatePassword(password: unknown): asserts password is string {
 }
 function validPhcBase64(value: string, minimumBytes: number, maximumBytes: number): boolean {
   if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(value)) return false;
-  const unpadded = value.replace(/=+$/u, "");
+  const unpadded = safeStringReplace(value, /=+$/u, "");
+  if (unpadded === null) return false;
   const decoded = Buffer.from(value, "base64");
   if (decoded.byteLength < minimumBytes || decoded.byteLength > maximumBytes) return false;
-  return decoded.toString("base64").replace(/=+$/u, "") === unpadded;
+  const canonical = safeStringReplace(decoded.toString("base64"), /=+$/u, "");
+  return canonical !== null && canonical === unpadded;
 }
 
 function parseParams(encodedHash: string): { memoryCost: number; timeCost: number; parallelism: number; version: number } | null {
@@ -62,7 +65,12 @@ function parseParams(encodedHash: string): { memoryCost: number; timeCost: numbe
   const memoryCost = Number(match[2]);
   const timeCost = Number(match[3]);
   const parallelism = Number(match[4]);
-  if (![version, memoryCost, timeCost, parallelism].every(Number.isSafeInteger)) return null;
+  if (
+    !safeNumberIsSafeInteger(version) ||
+    !safeNumberIsSafeInteger(memoryCost) ||
+    !safeNumberIsSafeInteger(timeCost) ||
+    !safeNumberIsSafeInteger(parallelism)
+  ) return null;
   if (
     version !== ARGON2ID_PASSWORD_POLICY.version ||
     memoryCost < 8 ||
@@ -93,11 +101,11 @@ function normalizedPolicy(policy: PasswordPolicy = {}): Required<PasswordPolicy>
     version: version ?? ARGON2ID_PASSWORD_POLICY.version,
   };
   if (
-    !Number.isSafeInteger(result.memoryCost) ||
+    !safeNumberIsSafeInteger(result.memoryCost) ||
     result.memoryCost < ARGON2ID_PASSWORD_POLICY.memoryCost ||
-    !Number.isSafeInteger(result.timeCost) ||
+    !safeNumberIsSafeInteger(result.timeCost) ||
     result.timeCost < ARGON2ID_PASSWORD_POLICY.timeCost ||
-    !Number.isSafeInteger(result.parallelism) ||
+    !safeNumberIsSafeInteger(result.parallelism) ||
     result.parallelism !== ARGON2ID_PASSWORD_POLICY.parallelism ||
     result.version !== ARGON2ID_PASSWORD_POLICY.version
   ) {

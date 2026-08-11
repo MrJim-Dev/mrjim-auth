@@ -18,6 +18,10 @@ import {
   optionalBoundaryOption,
   requiredBoundaryOption,
 } from "./callback-boundary.js";
+import {
+  safeStringToLowerCase,
+  safeStringTrim,
+} from "../shared/safe-intrinsics.js";
 
 const oauthArrayIsArray = Array.isArray;
 
@@ -83,8 +87,8 @@ export interface OAuthProvider {
 export class OAuthProviderError extends Error {
   readonly name = "OAuthProviderError" as const;
 
-  constructor(message = "OAuth provider exchange failed", options?: ErrorOptions) {
-    super(message, options);
+  constructor(_message = "OAuth provider exchange failed", _options?: ErrorOptions) {
+    super("OAuth provider exchange failed");
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -112,7 +116,7 @@ function captureGoogleOptions(value: unknown): { readonly clientId: unknown; rea
 }
 
 function validString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
+  if (typeof value !== "string" || safeStringTrim(value) === null || safeStringTrim(value) === "") {
     throw new TypeError(`${label} must be non-empty`);
   }
   return value;
@@ -136,7 +140,9 @@ function asIssuer(value: unknown): string {
 }
 
 function safeEmail(value: unknown): string | null {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+  if (typeof value !== "string") return null;
+  const trimmed = safeStringTrim(value);
+  return trimmed === null || trimmed === "" ? null : trimmed;
 }
 
 function containsString(values: readonly string[], candidate: string): boolean {
@@ -155,7 +161,7 @@ function profileFromClaims(
   const issuer = claims.iss;
   const subject = claims.sub;
   const audience = claims.aud;
-  if (issuer !== expectedIssuer || typeof subject !== "string" || subject.trim() === "") {
+  if (issuer !== expectedIssuer || typeof subject !== "string" || safeStringTrim(subject) === null || safeStringTrim(subject) === "") {
     throw new OAuthProviderError("OIDC issuer or subject validation failed");
   }
   const audiences = typeof audience === "string" ? [audience] : oauthArrayIsArray(audience) ? audience as string[] : [];
@@ -217,7 +223,10 @@ export class OidcOAuthProvider implements OAuthProvider {
     const issuerValue = requiredBoundaryOption(source, "issuer", "OIDC issuer");
     const scopesValue = optionalBoundaryOption(source, "scopes", "OIDC scopes");
     const customFetchValue = optionalBoundaryOption(source, "customFetch", "OIDC custom fetch");
-    this.name = validString(nameValue, "OIDC provider name").trim().toLowerCase();
+    const normalizedName = safeStringTrim(validString(nameValue, "OIDC provider name"));
+    const lowerName = normalizedName === null ? null : safeStringToLowerCase(normalizedName);
+    if (lowerName === null) throw new TypeError("OIDC provider name must be non-empty");
+    this.name = lowerName;
     this.clientId = validString(clientIdValue, "OIDC client ID");
     this.clientSecret = validString(clientSecretValue, "OIDC client secret");
     this.issuer = asIssuer(issuerValue);
@@ -246,35 +255,48 @@ export class OidcOAuthProvider implements OAuthProvider {
   }
 
   async authorizationUrl(input: OAuthProviderAuthorizationInput): Promise<string> {
-    if (input.codeChallengeMethod !== "S256") {
-      throw new OAuthProviderError("Only PKCE S256 is supported");
+    try {
+      if (input.codeChallengeMethod !== "S256") {
+        throw new OAuthProviderError("Only PKCE S256 is supported");
+      }
+      if (input.clientId !== this.clientId) {
+        throw new OAuthProviderError("OAuth client ID does not match provider configuration");
+      }
+      const scopes = captureBoundaryStringArray(input.scopes, "OIDC authorization scopes", 1, 128);
+      let scope = "";
+      for (let index = 0; index < scopes.length; index += 1) {
+        const value = scopes[index];
+        if (value === undefined) throw new OAuthProviderError();
+        if (index > 0) scope += " ";
+        scope += value;
+      }
+      const config = await this.configuration();
+      const url = buildAuthorizationUrl(config, {
+        client_id: this.clientId,
+        redirect_uri: input.redirectUri,
+        response_type: "code",
+        scope,
+        state: input.state,
+        nonce: input.nonce,
+        code_challenge: input.codeChallenge,
+        code_challenge_method: "S256",
+      });
+      return url.toString();
+    } catch (error) {
+      if (error instanceof OAuthProviderError) throw error;
+      throw new OAuthProviderError();
     }
-    if (input.clientId !== this.clientId) {
-      throw new OAuthProviderError("OAuth client ID does not match provider configuration");
-    }
-    const config = await this.configuration();
-    const url = buildAuthorizationUrl(config, {
-      client_id: this.clientId,
-      redirect_uri: input.redirectUri,
-      response_type: "code",
-      scope: input.scopes.join(" "),
-      state: input.state,
-      nonce: input.nonce,
-      code_challenge: input.codeChallenge,
-      code_challenge_method: "S256",
-    });
-    return url.toString();
   }
 
   async exchange(input: OAuthProviderExchangeInput): Promise<OAuthProviderProfile> {
-    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(input.codeVerifier)) {
-      throw new OAuthProviderError("Invalid PKCE verifier");
-    }
-    const config = await this.configuration();
-    const responseUrl = new URL(input.redirectUri);
-    responseUrl.searchParams.set("code", input.code);
-    responseUrl.searchParams.set("state", input.state);
     try {
+      if (!/^[A-Za-z0-9._~-]{43,128}$/.test(input.codeVerifier)) {
+        throw new OAuthProviderError("Invalid PKCE verifier");
+      }
+      const config = await this.configuration();
+      const responseUrl = new URL(input.redirectUri);
+      responseUrl.searchParams.set("code", input.code);
+      responseUrl.searchParams.set("state", input.state);
       const tokens = await authorizationCodeGrant(config, responseUrl, {
         expectedState: input.expectedState,
         expectedNonce: input.nonce,
@@ -286,7 +308,7 @@ export class OidcOAuthProvider implements OAuthProvider {
       return profileFromClaims(this.name, this.issuer, this.clientId, claims as Record<string, unknown>);
     } catch (error) {
       if (error instanceof OAuthProviderError) throw error;
-      throw new OAuthProviderError("OIDC validation failed", { cause: error });
+      throw new OAuthProviderError("OIDC validation failed");
     }
   }
 }

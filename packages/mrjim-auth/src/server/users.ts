@@ -34,6 +34,12 @@ import {
   optionalBoundaryOption,
   requiredBoundaryOption,
 } from "./callback-boundary.js";
+import {
+  safeNumberIsFinite,
+  safeArrayIncludesValue,
+  safeOwnDataEntries,
+  safeOwnDataProperty,
+} from "../shared/safe-intrinsics.js";
 
 export interface UserRequestContext extends SessionContext {
   readonly request_id?: string;
@@ -119,6 +125,7 @@ export interface UserServiceOptions {
 
 const lowerString = Function.prototype.call.bind(String.prototype.toLowerCase) as (value: string) => string;
 const freezeUserValue = Object.freeze as <T>(value: T) => Readonly<T>;
+const allowedUserUpdateKeys = ["email", "user_metadata", "redirectTo"] as const;
 
 export interface PublicAuthData {
   readonly user: User | null;
@@ -127,7 +134,7 @@ export interface PublicAuthData {
 
 function validNow(clock: () => Date): Date {
   const now = clock();
-  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+  if (!(now instanceof Date) || !safeNumberIsFinite(now.getTime())) {
     throw new AuthConfigurationError("user service clock must return a valid Date");
   }
   return now;
@@ -565,9 +572,15 @@ export class UserService {
   async updateUser(subject: AuthenticatedSubject, patch: UpdateUserInput, context?: UserRequestContext): Promise<AuthResult<{ readonly user: User }>> {
     try {
       if (patch === null || typeof patch !== "object") return authFailure(new AuthApiError("invalid_request", 400, "Invalid user update"));
-      if (Object.prototype.hasOwnProperty.call(patch, "app_metadata")) return authFailure(invalidApplicationMetadata());
-      const allowedKeys = new Set(["email", "user_metadata", "redirectTo"]);
-      if (Object.keys(patch).some((key) => !allowedKeys.has(key))) return authFailure(new AuthApiError("invalid_request", 400, "Invalid user update"));
+      const appMetadata = safeOwnDataProperty(patch, "app_metadata");
+      if (!appMetadata.valid) return authFailure(new AuthApiError("invalid_request", 400, "Invalid user update"));
+      if (appMetadata.present) return authFailure(invalidApplicationMetadata());
+      const patchEntries = safeOwnDataEntries(patch);
+      if (patchEntries === null) return authFailure(new AuthApiError("invalid_request", 400, "Invalid user update"));
+      for (let index = 0; index < patchEntries.length; index += 1) {
+        const entry = patchEntries[index];
+        if (entry !== undefined && !safeArrayIncludesValue(allowedUserUpdateKeys, entry[0])) return authFailure(new AuthApiError("invalid_request", 400, "Invalid user update"));
+      }
       if (patch.email !== undefined && typeof patch.email !== "string") return authFailure(new AuthApiError("invalid_request", 400, "Invalid email address"));
       if (patch.email === undefined && patch.redirectTo !== undefined) return authFailure(new AuthApiError("invalid_request", 400, "Invalid user update"));
       const pendingEmail = patch.email === undefined ? undefined : trustedValidation(() => normalizeAndValidateEmail(patch.email));
@@ -581,7 +594,8 @@ export class UserService {
         const current = await this.lockAuthorizedUser(transaction, authenticated.data, now);
         const input: Parameters<AuthRepository["users"]["update"]>[1] = {};
         if (patch.user_metadata !== undefined) input.user_metadata = patch.user_metadata;
-        return Object.keys(input).length === 0
+        const inputEntries = safeOwnDataEntries(input);
+        return inputEntries !== null && inputEntries.length === 0
           ? current
           : transaction.users.update(current.id, input, { now });
       }), rethrowTrusted);

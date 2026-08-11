@@ -2,7 +2,7 @@
 
 **Plan:** `docs/superpowers/plans/2026-08-10-mrjim-auth-v1.md`  
 **Branch:** `feat/mrjim-auth-v1`  
-**Last updated:** 2026-08-11
+**Last updated:** 2026-08-12
 
 ## Current state
 
@@ -288,6 +288,29 @@ creates a fresh request-local authorization context. OAuth callback redirects,
 JWKS/provider discovery, refresh-token logout, identities, permissions, and all
 other Task 9 routes are included; Task 10 browser behavior, Task 11 adapters,
 and Task 12 administration remain untouched.
+
+Task 9 remediation round 6 is the current bounded round from clean reviewed
+baseline `0f672f7ec2e08ab8f2f03510b775d07396ecc745`. Raman’s same-reviewer
+verdict is `CHANGES_REQUIRED` (`019ff09f-5cc5-7870-b429-e651cb71ac1d`) with
+zero Critical, five Important, and zero Minor findings. Exact RED was
+captured before production edits: the focused round-6 file was 1 failed file
+with 9 failed tests, and the added discovery-failure regression was 1 failed
+with 9 skipped. GREEN is focused 10/10, HTTP 31/31, OpenAPI 3/3,
+OAuth-provider 14/14, OAuth integration 32/32, constructor/route/token/
+permission coverage 59/59, unit plus contract 203/203, full `pnpm test`
+22 files/308 tests, migration state 1/1, disposable local PostgreSQL
+migrations 23/23, and package export/browser 12/12. The round uses the
+shared captured-intrinsic and descriptor-only result boundary for trim,
+numeric and collection operations, OTP hashing, base-path normalization,
+provider error redaction, and OAuth/permission route shielding. The checked-in
+OpenAPI artifact remains byte-parity unchanged at 16 paths/17 operations/241
+references/0 unresolved/two path parameters. Frozen install, build, typecheck,
+lint, docs, deterministic OpenAPI, packed-consumer, protected-hash, diff, and
+clean-status gates passed. No
+dependency, package manifest, lockfile, migration, paid/hosted service,
+remote database, or generic `DATABASE_URL` changed. Task 9 remains awaiting
+same-reviewer re-review and is not approved; Tasks 10-14 remain pending and
+Task 10 has not started.
 
 The current Task 9 remediation round is round 5 after the same reviewer’s
 `CHANGES_REQUIRED` verdict (Raman `019ff09f-5cc5-7870-b429-e651cb71ac1d`, zero

@@ -1,4 +1,5 @@
 import { assertPublicAuthError, type AuthError } from "./errors.js";
+import { safeDefineHiddenData } from "./safe-intrinsics.js";
 
 /**
  * The mutually exclusive result returned by expected SDK operations.
@@ -24,7 +25,9 @@ export type AuthResult<T> =
  * @since 0.1.0
  */
 export function authSuccess<T>(data: T): AuthResult<T> {
-  return { data, error: null };
+  const result = { data, error: null } as AuthResult<T> & { then?: undefined };
+  safeDefineHiddenData(result, "then", undefined);
+  return result;
 }
 
 /**
@@ -49,5 +52,7 @@ export function authSuccess<T>(data: T): AuthResult<T> {
  */
 export function authFailure(error: AuthError): AuthResult<never> {
   assertPublicAuthError(error);
-  return { data: null, error };
+  const result = { data: null, error } as AuthResult<never> & { then?: undefined };
+  safeDefineHiddenData(result, "then", undefined);
+  return result;
 }

@@ -5,11 +5,24 @@ import {
   optionalBoundaryOption,
   requiredBoundaryOption,
 } from "./callback-boundary.js";
+import {
+  safeStringEndsWith,
+  safeStringIncludes,
+  safeStringNormalize,
+  safeStringSplit,
+  safeStringStartsWith,
+  safeStringToLowerCase,
+  safeStringTrim,
+} from "../shared/safe-intrinsics.js";
 
 /** The only normalization applied to an email address. */
 export function normalizeEmail(value: string): string {
   if (typeof value !== "string") throw new TypeError("email must be a string");
-  return value.normalize("NFKC").trim().toLowerCase();
+  const normalized = safeStringNormalize(value);
+  const trimmed = normalized === null ? null : safeStringTrim(normalized);
+  const lowered = trimmed === null ? null : safeStringToLowerCase(trimmed);
+  if (lowered === null) throw new TypeError("email must be a string");
+  return lowered;
 }
 
 /** A display value and its internal normalized lookup value. */
@@ -24,8 +37,10 @@ export function normalizeEmailParts(value: string | null | undefined): {
   readonly normalized: string | null;
 } {
   if (value === undefined || value === null) return { display: null, normalized: null };
-  const display = value.normalize("NFKC").trim();
-  return { display: display === "" ? null : display, normalized: display === "" ? null : display.toLowerCase() };
+  const normalized = safeStringNormalize(value);
+  const display = normalized === null ? null : safeStringTrim(normalized);
+  const lower = display === null ? null : safeStringToLowerCase(display);
+  return { display: display === null || display === "" ? null : display, normalized: display === null || display === "" ? null : lower };
 }
 
 /** Normalizes and validates an email without returning it from an auth error. */
@@ -33,9 +48,9 @@ export function normalizeAndValidateEmail(value: unknown): NormalizedEmail {
   if (typeof value !== "string") {
     throw new AuthApiError("invalid_request", 400, "Invalid email address");
   }
-  const parts = normalizeEmailParts(value);
-  const display = parts.display ?? "";
-  const normalized = parts.normalized ?? "";
+  const normalizedParts = normalizeEmailParts(value);
+  const display = normalizedParts.display ?? "";
+  const normalized = normalizedParts.normalized ?? "";
   const utf8Length = new TextEncoder().encode(normalized).byteLength;
   if (
     display.length === 0 ||
@@ -43,13 +58,15 @@ export function normalizeAndValidateEmail(value: unknown): NormalizedEmail {
     display.length > 320 ||
     /[\u0000-\u001f\u007f-\u009f\s]/u.test(display) ||
     !/^[^@]+@[^@]+$/u.test(display) ||
-    normalized.startsWith(".") ||
-    normalized.endsWith(".") ||
-    normalized.includes("..")
+    safeStringStartsWith(normalized, ".") ||
+    safeStringEndsWith(normalized, ".") ||
+    safeStringIncludes(normalized, "..")
   ) {
     throw new AuthApiError("invalid_request", 400, "Invalid email address");
   }
-  const [local, domain] = normalized.split("@");
+  const parts = safeStringSplit(normalized, "@");
+  const local = parts?.[0];
+  const domain = parts?.[1];
   if (
     local === undefined ||
     domain === undefined ||
@@ -57,9 +74,9 @@ export function normalizeAndValidateEmail(value: unknown): NormalizedEmail {
     local.length > 64 ||
     domain.length === 0 ||
     domain.length > 255 ||
-    domain.startsWith(".") ||
-    domain.endsWith(".") ||
-    domain.includes("..")
+    safeStringStartsWith(domain, ".") ||
+    safeStringEndsWith(domain, ".") ||
+    safeStringIncludes(domain, "..")
   ) {
     throw new AuthApiError("invalid_request", 400, "Invalid email address");
   }
@@ -117,7 +134,8 @@ export class EmailService {
 }
 
 function validateConfiguredRedirect(value: string): void {
-  if (typeof value !== "string" || value.trim() !== value || value.length === 0 || value.includes("*")) {
+  const trimmed = typeof value === "string" ? safeStringTrim(value) : null;
+  if (typeof value !== "string" || trimmed === null || trimmed !== value || value.length === 0 || safeStringIncludes(value, "*")) {
     throw new AuthConfigurationError("email redirects must be exact URLs");
   }
   let parsed: URL;

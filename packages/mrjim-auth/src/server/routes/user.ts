@@ -10,6 +10,12 @@ import {
   updateUserRequestSchema,
   userDataSchema,
 } from "./contracts.js";
+import {
+  safeStringIncludes,
+  safeStringSlice,
+  safeStringStartsWith,
+  safeStringTrim,
+} from "../../shared/safe-intrinsics.js";
 
 function service(
   result: unknown,
@@ -40,6 +46,21 @@ function requireAuth(context: RouteContext) {
     throw new AuthApiError("unauthorized", 401, "Authenticated session is required");
   }
   return context.auth;
+}
+
+function validScopeType(value: string): boolean {
+  if (value.length < 1 || value.length > 64) return false;
+  const first = value[0];
+  if (first === undefined || first < "a" || first > "z") return false;
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === undefined || !(
+      (character >= "a" && character <= "z") ||
+      (character >= "0" && character <= "9") ||
+      character === "_" || character === "-"
+    )) return false;
+  }
+  return true;
 }
 
 /** Handles all authenticated current-user routes. */
@@ -87,8 +108,8 @@ export async function handleUserRoute(
     return service(result, mapIdentities, identitiesDataSchema);
   }
 
-  if (path.startsWith("/user/identities/") && context.request.method === "DELETE") {
-    const identityId = path.slice("/user/identities/".length);
+  if (safeStringStartsWith(path, "/user/identities/") && context.request.method === "DELETE") {
+    const identityId = safeStringSlice(path, "/user/identities/".length) ?? "";
     const oauth = context.services.oauth;
     if (oauth === undefined) throw new AuthApiError("not_found", 404, "Identity not found");
     const result = await context.invoke(() => oauth.unlinkIdentity(auth.subject!, identityId));
@@ -103,7 +124,7 @@ export async function handleUserRoute(
     }
     if (
       scopeType !== null &&
-      (!/^[a-z][a-z0-9_-]{0,63}$/u.test(scopeType) || scopeId === null || scopeId.length === 0 || scopeId.trim() !== scopeId || scopeId.includes("\u0000"))
+      (!validScopeType(scopeType) || scopeId === null || scopeId.length === 0 || safeStringTrim(scopeId) !== scopeId || safeStringIncludes(scopeId, "\u0000"))
     ) {
       throw new AuthApiError("invalid_request", 400, "Invalid permission scope");
     }
