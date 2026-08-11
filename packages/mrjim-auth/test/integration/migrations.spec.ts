@@ -1332,6 +1332,45 @@ describe("Task 3 PostgreSQL migrations", () => {
             if (typeof server.AuthorizationService !== "function") throw new Error("packed server import failed");
             if (typeof browser.generateCodeVerifier !== "function") throw new Error("packed browser import failed");
 
+            const packedOidcProvider = new server.OidcOAuthProvider({
+              name: "oidc",
+              clientId: "client",
+              clientSecret: "secret",
+              issuer: "https://issuer.example",
+            });
+            const originalPackedSetPrototypeOf = Object.setPrototypeOf;
+            let packedPrototypeSetterCalls = 0;
+            try {
+              Object.setPrototypeOf = (..._args) => {
+                packedPrototypeSetterCalls += 1;
+                throw new Error("packed-round8-setPrototypeOf-sentinel");
+              };
+              const packedProviderError = new server.OAuthProviderError("provider failure");
+              if (!(packedProviderError instanceof Error) || !(packedProviderError instanceof server.OAuthProviderError)) {
+                throw new Error("packed OAuthProviderError prototype repair failed");
+              }
+              let packedOidcError;
+              try {
+                await packedOidcProvider.authorizationUrl({
+                  clientId: "client",
+                  redirectUri: "https://project.example.com/auth/callback",
+                  state: "provider-state-sentinel",
+                  nonce: "provider-nonce-sentinel",
+                  scopes: ["openid"],
+                  codeChallenge: "client-challenge",
+                  codeChallengeMethod: "plain",
+                });
+              } catch (error) {
+                packedOidcError = error;
+              }
+              if (!(packedOidcError instanceof server.OAuthProviderError) || String(packedOidcError).includes("packed-round8-setPrototypeOf-sentinel")) {
+                throw new Error("packed OIDC error boundary failed");
+              }
+            } finally {
+              Object.setPrototypeOf = originalPackedSetPrototypeOf;
+            }
+            if (packedPrototypeSetterCalls !== 0) throw new Error("packed prototype setter was consulted");
+
             const packedProviderService = {
               listProviders: () => [{
                 name: "google",
@@ -1422,6 +1461,27 @@ describe("Task 3 PostgreSQL migrations", () => {
             });
             const packedBaselineResponse = await packedServer.handle(new Request("https://project.example.com/auth/v1/providers", { headers: { apikey: packedApiKey } }));
             if (packedBaselineResponse.status !== 200) throw new Error("packed AuthServer baseline failed: " + packedBaselineResponse.status);
+            const originalPackedRouteSetPrototypeOf = Object.setPrototypeOf;
+            let packedRouteSetterCalls = 0;
+            let packedInvalidOidcResponse;
+            try {
+              Object.setPrototypeOf = (..._args) => {
+                packedRouteSetterCalls += 1;
+                throw new Error("packed-round8-http-setPrototypeOf-sentinel");
+              };
+              packedInvalidOidcResponse = await packedServer.handle(new Request("https://project.example.com/auth/v1/authorize?provider=google&code_challenge=client-challenge&code_challenge_method=plain", {
+                headers: { apikey: packedApiKey, "x-request-id": "packed-round8-request" },
+              }));
+            } finally {
+              Object.setPrototypeOf = originalPackedRouteSetPrototypeOf;
+            }
+            const packedInvalidOidcBody = await packedInvalidOidcResponse.text();
+            if (packedRouteSetterCalls !== 0 || packedInvalidOidcResponse.status !== 400 ||
+                !packedInvalidOidcBody.includes('"code":"invalid_request"') ||
+                !packedInvalidOidcBody.includes('"request_id":"packed-round8-request"') ||
+                packedInvalidOidcBody.includes("packed-round8-http-setPrototypeOf-sentinel")) {
+              throw new Error("packed AuthServer prototype-setting error boundary failed");
+            }
             const originalPackedSetDelete = Set.prototype.delete;
             let packedServerResponse;
             try {

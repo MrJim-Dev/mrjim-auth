@@ -21,6 +21,7 @@ import {
 import {
   safeStringToLowerCase,
   safeStringTrim,
+  safeSetPrototypeOf,
 } from "../shared/safe-intrinsics.js";
 
 const oauthArrayIsArray = Array.isArray;
@@ -89,7 +90,7 @@ export class OAuthProviderError extends Error {
 
   constructor(_message = "OAuth provider exchange failed", _options?: ErrorOptions) {
     super("OAuth provider exchange failed");
-    Object.setPrototypeOf(this, new.target.prototype);
+    safeSetPrototypeOf(this, new.target.prototype);
   }
 }
 

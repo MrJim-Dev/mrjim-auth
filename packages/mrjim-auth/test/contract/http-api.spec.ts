@@ -784,6 +784,40 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     }
   });
 
+  it("keeps invalid OIDC requests on the stable redacted error envelope when Object.setPrototypeOf is poisoned", async () => {
+    const auth = serverModule.createAuthServer(makeOptions([]));
+    const descriptor = Object.getOwnPropertyDescriptor(Object, "setPrototypeOf");
+    if (descriptor === undefined) throw new Error("Object.setPrototypeOf is unavailable");
+    let setterCalls = 0;
+    Object.defineProperty(Object, "setPrototypeOf", {
+      configurable: descriptor.configurable ?? true,
+      enumerable: descriptor.enumerable ?? false,
+      writable: true,
+      value: (..._args: unknown[]) => {
+        setterCalls += 1;
+        throw new Error("round8-http-setPrototypeOf-sentinel");
+      },
+    });
+    let response: Response;
+    try {
+      response = await auth.handle(request("/authorize?provider=google&code_challenge=client-challenge&code_challenge_method=plain", {
+        headers: { "x-request-id": "round8-http-request" },
+      }));
+    } finally {
+      Object.defineProperty(Object, "setPrototypeOf", descriptor);
+    }
+    const responseBody = await body(response);
+    expect(setterCalls).toBe(0);
+    expect(response.status).toBe(400);
+    expect(responseBody.error).toEqual({
+      code: "invalid_request",
+      message: "Invalid authentication request",
+      request_id: "round8-http-request",
+    });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(JSON.stringify(responseBody)).not.toContain("round8-http-setPrototypeOf-sentinel");
+  });
+
   it("captures every service and repository callback at construction", async () => {
     const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
     const options = makeOptions(calls) as any;

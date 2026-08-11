@@ -1,4 +1,4 @@
-import { safeNumberIsInteger, safeOwnDataProperty, safeSetHasValue } from "./safe-intrinsics.js";
+import { safeNumberIsInteger, safeOwnDataProperty, safeSetHasValue, safeSetPrototypeOf } from "./safe-intrinsics.js";
 
 /** Stable public error codes returned by expected SDK/API failures. */
 export const AUTH_ERROR_CODES = {
@@ -152,7 +152,7 @@ export class AuthConfigurationError extends Error {
 
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
-    Object.setPrototypeOf(this, new.target.prototype);
+    safeSetPrototypeOf(this, new.target.prototype);
   }
 }
 
@@ -162,7 +162,7 @@ export class AuthProgrammingError extends Error {
 
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
-    Object.setPrototypeOf(this, new.target.prototype);
+    safeSetPrototypeOf(this, new.target.prototype);
   }
 }
 
@@ -226,7 +226,7 @@ export class AuthApiError extends Error implements AuthError {
     if (requestId !== undefined) {
       this.request_id = requestId;
     }
-    Object.setPrototypeOf(this, new.target.prototype);
+    safeSetPrototypeOf(this, new.target.prototype);
   }
 
   /** The request correlation identifier, when supplied by the API. */
