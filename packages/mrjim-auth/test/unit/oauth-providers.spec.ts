@@ -376,6 +376,33 @@ describe("OAuth provider adapters with a local HTTPS OIDC server", () => {
       .rejects.toBeInstanceOf(OAuthProviderError);
   });
 
+  it("accepts a valid array audience claim without ambient array membership", async () => {
+    const current = await flow();
+    const code = fixture.issue({
+      challenge: current.challenge,
+      redirect: CALLBACK,
+      nonce: current.nonce,
+      scenario: { audience: [CLIENT_ID] },
+    });
+    const originalIncludes = Array.prototype.includes;
+    let thrown: unknown;
+    try {
+      Array.prototype.includes = function (this: unknown[], candidate: unknown): boolean {
+        const stack = new Error().stack ?? "";
+        if (stack.includes("profileFromClaims") && candidate === CLIENT_ID) {
+          throw new Error("provider-audience-includes-sentinel");
+        }
+        return originalIncludes.call(this, candidate);
+      } as typeof Array.prototype.includes;
+      await current.provider.exchange(exchangeInput({ code, state: current.state, nonce: current.nonce }));
+    } catch (error) {
+      thrown = error;
+    } finally {
+      Array.prototype.includes = originalIncludes;
+    }
+    expect(thrown).toBeUndefined();
+  });
+
   it("rejects an ID token signed by a key absent from discovered JWKS", async () => {
     const rogue = await generateKeyPair("ES256");
     const current = await flow();

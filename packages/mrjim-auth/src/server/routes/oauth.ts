@@ -10,6 +10,21 @@ import {
   type OAuthSessionResult,
   type OAuthSubject,
 } from "../oauth.js";
+import { captureBoundaryMethodGroup } from "../callback-boundary.js";
+
+const OAUTH_ROUTE_METHODS = ["listProviders", "authorize", "callback", "exchangeCode", "listIdentities", "unlinkIdentity"] as const;
+
+function captureOAuthRouteService(service: OAuthService): OAuthService {
+  return captureBoundaryMethodGroup(
+    service,
+    "OAuth route service",
+    OAUTH_ROUTE_METHODS,
+    [],
+    {},
+    "source",
+    true,
+  ) as unknown as OAuthService;
+}
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -50,8 +65,9 @@ function safeAuthorizeResult(result: AuthResult<OAuthAuthorizeResult>): AuthResu
 
 /** Serves the public enabled-provider discovery endpoint. */
 export function providersRoute(service: OAuthService, request?: Request): Response {
+  const capturedService = captureOAuthRouteService(service);
   if (request !== undefined && request.method !== "GET") return methodNotAllowed();
-  return resultResponse(authSuccess(service.listProviders()));
+  return resultResponse(authSuccess(capturedService.listProviders()));
 }
 
 /** Serves the authorization endpoint; authenticated subjects are supplied by the caller. */
@@ -60,6 +76,7 @@ export async function authorizeRoute(
   request: Request,
   subject?: OAuthSubject,
 ): Promise<Response> {
+  const capturedService = captureOAuthRouteService(service);
   if (request.method !== "GET") return methodNotAllowed();
   const flow = query(request, "flow");
   const codeChallengeMethod = query(request, "code_challenge_method");
@@ -73,13 +90,14 @@ export async function authorizeRoute(
     ...(flow === null ? {} : { flow: flow as "sign_in" | "link_identity" }),
     ...(subject === undefined ? {} : { subject }),
   };
-  return resultResponse(safeAuthorizeResult(await service.authorize(input)));
+  return resultResponse(safeAuthorizeResult(await capturedService.authorize(input)));
 }
 
 /** Consumes a provider callback and returns a redirect carrying only an internal code. */
 export async function callbackRoute(service: OAuthService, provider: string, request: Request): Promise<Response> {
+  const capturedService = captureOAuthRouteService(service);
   if (request.method !== "GET") return methodNotAllowed();
-  const callback = await service.callback({
+  const callback = await capturedService.callback({
     provider,
     code: query(request, "code") ?? "",
     state: query(request, "state") ?? "",
@@ -96,6 +114,7 @@ export async function callbackRoute(service: OAuthService, provider: string, req
 
 /** Exchanges a one-use callback code for the project session. */
 export async function exchangeRoute(service: OAuthService, request: Request): Promise<Response> {
+  const capturedService = captureOAuthRouteService(service);
   if (request.method !== "POST") return methodNotAllowed();
   let body: unknown;
   try {
@@ -112,7 +131,7 @@ export async function exchangeRoute(service: OAuthService, request: Request): Pr
     codeVerifier: typeof value.code_verifier === "string" ? value.code_verifier : "",
     ...(typeof value.redirect_to === "string" ? { redirectTo: value.redirect_to } : {}),
   };
-  return resultResponse(await service.exchangeCode(input));
+  return resultResponse(await capturedService.exchangeCode(input));
 }
 
 /** Creates the four framework-neutral OAuth route handlers used by later HTTP adapters. */
@@ -122,11 +141,12 @@ export function createOAuthRoutes(service: OAuthService): {
   readonly callback: (provider: string, request: Request) => Promise<Response>;
   readonly exchange: (request: Request) => Promise<Response>;
 } {
+  const capturedService = captureOAuthRouteService(service);
   return {
-    providers: (request) => providersRoute(service, request),
-    authorize: (request, subject) => authorizeRoute(service, request, subject),
-    callback: (provider, request) => callbackRoute(service, provider, request),
-    exchange: (request) => exchangeRoute(service, request),
+    providers: (request) => providersRoute(capturedService, request),
+    authorize: (request, subject) => authorizeRoute(capturedService, request, subject),
+    callback: (provider, request) => callbackRoute(capturedService, provider, request),
+    exchange: (request) => exchangeRoute(capturedService, request),
   };
 }
 

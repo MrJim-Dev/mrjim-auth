@@ -187,6 +187,53 @@ describe("TokenService", () => {
     }
   });
 
+  it("captures provider maps and redacts hostile provider-returned values", async () => {
+    const key = generateEs256Key();
+    const service = makeService(makeProvider(new Map([["active", key]])));
+    const originalEntries = Map.prototype.entries;
+    let mapThrown: unknown;
+    try {
+      Map.prototype.entries = (() => { throw new Error("provider-map-entries-sentinel"); }) as typeof Map.prototype.entries;
+      await service.jwks();
+    } catch (error) {
+      mapThrown = error;
+    } finally {
+      Map.prototype.entries = originalEntries;
+    }
+    expect(mapThrown).toBeUndefined();
+
+    const privateJwk = await exportJWK(await importPKCS8(key.privateKey, "ES256", { extractable: true }));
+    Object.defineProperty(privateJwk, "kty", {
+      configurable: true,
+      enumerable: true,
+      get: () => { throw new Error("provider-jwk-sentinel"); },
+    });
+    const hostileJwkProvider: KeyProvider = {
+      getActiveKeyId: () => "active",
+      getSigningKey: () => key.privateKey,
+      getVerificationKeys: () => new Map([["active", privateJwk]]),
+    };
+    await expect(makeService(hostileJwkProvider).jwks()).rejects.toSatisfy((error: unknown) =>
+      error instanceof AuthConfigurationError && !String(error).includes("provider-jwk-sentinel"));
+
+    const rejectingThenable = { then: (_resolve: unknown, reject: (error: Error) => void) => reject(new Error("provider-thenable-sentinel")) };
+    const hostileActiveProvider: KeyProvider = {
+      getActiveKeyId: () => rejectingThenable as never,
+      getSigningKey: () => key.privateKey,
+      getVerificationKeys: () => new Map([["active", key.publicKey]]),
+    };
+    await expect(makeService(hostileActiveProvider).issueAccessToken(makeUser(), makeSession())).rejects.toSatisfy((error: unknown) =>
+      error instanceof AuthConfigurationError && !String(error).includes("provider-thenable-sentinel"));
+
+    const hostileSigningProvider: KeyProvider = {
+      getActiveKeyId: () => "active",
+      getSigningKey: () => rejectingThenable as never,
+      getVerificationKeys: () => new Map([["active", key.publicKey]]),
+    };
+    await expect(makeService(hostileSigningProvider).issueAccessToken(makeUser(), makeSession())).rejects.toSatisfy((error: unknown) =>
+      error instanceof AuthConfigurationError && !String(error).includes("provider-thenable-sentinel"));
+  });
+
   it("rejects mismatched, expired, revoked, and malformed session records before signing", async () => {
     const key = generateEs256Key();
     const service = makeService(makeProvider(new Map([["active", key]])));

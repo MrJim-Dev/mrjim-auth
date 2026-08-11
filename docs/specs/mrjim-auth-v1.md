@@ -115,10 +115,11 @@ the realm before the SDK module is initialized.
 Values returned or thrown by an adapter are nevertheless untrusted data. The
 server boundary validates returned values, maps arbitrary thrown values to
 fixed public errors, and never exposes adapter messages, stacks, causes,
-details, recipient identifiers, tokens, codes, or provider secrets. Security-
-sensitive identity bookkeeping captures the required JavaScript intrinsics at
-module initialization so a callback cannot change those decisions by
-temporarily replacing mutable prototype methods while it executes.
+details, recipient identifiers, tokens, codes, or provider secrets. For
+hardened public boundaries, the SDK captures the JavaScript intrinsics used
+for those decisions at module initialization. A callback cannot change those
+captured decisions by temporarily replacing the corresponding mutable
+prototype methods while it executes.
 
 Synchronous server construction accepts only descriptor-readable own data for
 SDK-owned configuration records and dense own-data arrays; accessors,

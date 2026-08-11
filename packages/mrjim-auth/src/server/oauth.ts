@@ -56,6 +56,8 @@ import {
   captureBoundaryStringArray,
   captureBoundaryUniqueStringArray,
   createBoundaryMap,
+  defineBoundaryArrayValue,
+  boundaryMapGetValue,
 } from "./callback-boundary.js";
 import { isCodeVerifier } from "../client/pkce.js";
 import { SessionService, type AuthenticatedSession, type SessionContext } from "./sessions.js";
@@ -91,6 +93,13 @@ const copyOAuthArray = Function.prototype.call.bind(Array.prototype.slice) as <T
   value: readonly T[],
 ) => T[];
 const constantTimeEqualBytes = timingSafeEqual;
+
+function containsOAuthString(values: readonly string[], candidate: string): boolean {
+  for (let index = 0; index < values.length; index += 1) {
+    if (values[index] === candidate) return true;
+  }
+  return false;
+}
 
 const oauthTransactionValues = new WeakMap<object, unknown>();
 const transactionValueSet = Function.prototype.call.bind(WeakMap.prototype.set) as <K extends object, V>(
@@ -186,7 +195,7 @@ function captureOAuthProviders(value: unknown): readonly (readonly [string, OAut
     for (let index = 0; index < providers.length; index += 1) {
       const providerValue = providers[index];
       const provider = captureOAuthProvider(providerValue, `OAuth provider ${index}`);
-      entries[index] = [provider.name, provider];
+      defineBoundaryArrayValue(entries, index, [provider.name, provider], "OAuth provider entries");
     }
     return freezeOAuthValue(entries);
   }
@@ -196,7 +205,7 @@ function captureOAuthProviders(value: unknown): readonly (readonly [string, OAut
       const entry = mapEntries[index];
       if (entry === undefined || typeof entry[0] !== "string") throw new AuthConfigurationError("OAuth providers must be a provider array or map");
       const provider = captureOAuthProvider(entry[1], "OAuth provider");
-      entries[index] = [entry[0], provider];
+      defineBoundaryArrayValue(entries, index, [entry[0], provider], "OAuth provider entries");
     }
     return freezeOAuthValue(entries);
   }
@@ -626,7 +635,7 @@ function safeOAuthStateRecord(value: unknown, expected: OAuthStateBinding): OAut
   if (
     provider !== expected.provider
     || flowValue !== expected.flow
-    || !OAUTH_FLOW_VALUES.includes(flowValue as OAuthFlow)
+    || !containsOAuthString(OAUTH_FLOW_VALUES, flowValue as OAuthFlow)
     || redirectValue !== expected.redirect
     || typeof pkceChallengeValue !== "string"
   ) throw new TypeError("invalid OAuth state adapter value");
@@ -726,7 +735,7 @@ function safeRepositoryIdentities(value: unknown, expectedUserId: UUID): readonl
   const length = value.length;
   if (!numberIsSafeInteger(length) || length < 0) throw new TypeError("invalid identity-list adapter value");
   const elements: unknown[] = [];
-  for (let index = 0; index < length; index += 1) elements[index] = value[index];
+  for (let index = 0; index < length; index += 1) defineBoundaryArrayValue(elements, index, value[index], "OAuth identity list");
   const identities = mapOAuthArray(elements, (identity) =>
     safeRepositoryIdentity(identity, { userId: expectedUserId }));
   return freezeOAuthValue(copyOAuthArray(identities));
@@ -758,6 +767,7 @@ export class OAuthService {
   private readonly repository: AuthRepository;
   private readonly sessions: SessionService;
   private readonly providers: ReadonlyMap<string, OAuthProvider>;
+  private readonly providerDiscovery: readonly OAuthProviderDiscovery[];
   private readonly tokenHashKey: Buffer;
   private readonly encryptionKey: Buffer;
   private readonly allowedRedirects: readonly string[];
@@ -824,7 +834,7 @@ export class OAuthService {
     for (let index = 0; index < redirectValues.length; index += 1) {
       const redirect = redirectValues[index];
       if (redirect === undefined) throw new AuthConfigurationError("OAuth redirects are malformed");
-      allowed[index] = normalizeRedirect(redirect);
+      defineBoundaryArrayValue(allowed, index, normalizeRedirect(redirect), "OAuth redirects");
       for (let previous = 0; previous < index; previous += 1) {
         if (allowed[previous] === allowed[index]) throw new AuthConfigurationError("OAuth redirects must be non-empty and unique");
       }
@@ -834,7 +844,7 @@ export class OAuthService {
     for (let index = 0; index < allowed.length; index += 1) if (allowed[index] === defaultRedirect) defaultAllowed = true;
     if (!defaultAllowed) throw new AuthConfigurationError("OAuth default redirect must be exactly allowlisted");
     const freshAge = (freshSessionMaxAgeValue as number | undefined) ?? 5 * 60;
-    if (!Number.isSafeInteger(freshAge) || freshAge <= 0 || freshAge > 15 * 60) throw new AuthConfigurationError("OAuth fresh-session age is invalid");
+    if (!numberIsSafeInteger(freshAge) || freshAge <= 0 || freshAge > 15 * 60) throw new AuthConfigurationError("OAuth fresh-session age is invalid");
     const configuredRoleKeys = defaultRoleKeysValue === undefined ? [] : oauthStringArray(defaultRoleKeysValue, "OAuth default roles", 0);
     const defaultRoleKeys: string[] = [];
     for (let index = 0; index < configuredRoleKeys.length; index += 1) {
@@ -842,11 +852,32 @@ export class OAuthService {
       if (key === undefined || !roleKeySchema.safeParse(key).success) throw new AuthConfigurationError("OAuth default role keys are invalid");
       let duplicate = false;
       for (let previous = 0; previous < defaultRoleKeys.length; previous += 1) if (defaultRoleKeys[previous] === key) duplicate = true;
-      if (!duplicate) defaultRoleKeys[defaultRoleKeys.length] = key;
+      if (!duplicate) defineBoundaryArrayValue(defaultRoleKeys, defaultRoleKeys.length, key, "OAuth default roles");
     }
     this.repository = repository;
     this.sessions = sessions;
     this.providers = providers;
+    const discovery: OAuthProviderDiscovery[] = [];
+    for (let index = 0; index < providerEntries.length; index += 1) {
+      const entry = providerEntries[index];
+      if (entry === undefined) throw new AuthConfigurationError("OAuth providers are malformed");
+      const provider = entry[1];
+      const scopes: string[] = [];
+      for (let scopeIndex = 0; scopeIndex < provider.scopes.length; scopeIndex += 1) {
+        const scope = provider.scopes[scopeIndex];
+        if (scope !== undefined) defineBoundaryArrayValue(scopes, scopeIndex, scope, "OAuth provider scopes");
+      }
+      defineBoundaryArrayValue(discovery, index, {
+        name: normalizeProvider(provider.name),
+        scopes: freezeOAuthValue(scopes),
+        capabilities: freezeOAuthValue({
+          authorization_code: true,
+          pkce: true,
+          identity_linking: true,
+        }),
+      }, "OAuth provider discovery");
+    }
+    this.providerDiscovery = freezeOAuthValue(discovery);
     this.tokenHashKey = validKey(tokenHashKey as string | Uint8Array, "OAuth token hash key");
     this.encryptionKey = deriveEncryptionKey(encryptionKey as string | Uint8Array);
     this.allowedRedirects = captureBoundaryStringArray(allowed, "OAuth redirects", 1, 128);
@@ -860,26 +891,7 @@ export class OAuthService {
 
   /** Lists enabled provider names and public capabilities without credentials. */
   listProviders(): readonly OAuthProviderDiscovery[] {
-    const values: OAuthProviderDiscovery[] = [];
-    let index = 0;
-    for (const provider of this.providers.values()) {
-      const scopes: string[] = [];
-      for (let scopeIndex = 0; scopeIndex < provider.scopes.length; scopeIndex += 1) {
-        const scope = provider.scopes[scopeIndex];
-        if (scope !== undefined) scopes[scopeIndex] = scope;
-      }
-      values[index] = {
-      name: normalizeProvider(provider.name),
-      scopes: freezeOAuthValue(scopes),
-      capabilities: freezeOAuthValue({
-        authorization_code: true,
-        pkce: true,
-        identity_linking: true,
-      }),
-      };
-      index += 1;
-    }
-    return freezeOAuthValue(values);
+    return this.providerDiscovery;
   }
 
   /** Compatibility alias for HTTP provider-discovery handlers. */
@@ -891,11 +903,11 @@ export class OAuthService {
   async authorize(input: OAuthAuthorizeInput): Promise<AuthResult<OAuthAuthorizeResult>> {
     try {
       const providerName = parsePublicProvider(input.provider);
-      const provider = this.providers.get(providerName);
+      const provider = boundaryMapGetValue(this.providers, providerName, "OAuth providers");
       if (provider === undefined) return authFailure(new AuthApiError("not_found", 404, "OAuth provider is not enabled"));
       const redirect = this.resolveRedirect(input.redirectTo);
       const flow = input.flow ?? "sign_in";
-      if (!OAUTH_FLOW_VALUES.includes(flow)) return authFailure(new AuthApiError("invalid_request", 400, "Invalid OAuth flow"));
+      if (!containsOAuthString(OAUTH_FLOW_VALUES, flow)) return authFailure(new AuthApiError("invalid_request", 400, "Invalid OAuth flow"));
       let linkingSubject: AuthenticatedSession | null = null;
       if (flow === "link_identity") {
         if (input.subject === undefined) return authFailure(unauthorized());
@@ -964,7 +976,7 @@ export class OAuthService {
   async callback(input: OAuthCallbackInput): Promise<AuthResult<OAuthCallbackResult>> {
     try {
       const providerName = parsePublicProvider(input.provider);
-      const provider = this.providers.get(providerName);
+      const provider = boundaryMapGetValue(this.providers, providerName, "OAuth providers");
       if (provider === undefined) return authFailure(new AuthApiError("not_found", 404, "OAuth provider is not enabled"));
       if (input.codeChallengeMethod !== undefined && input.codeChallengeMethod !== "S256") return authFailure(oauthStateInvalid());
       const redirectCandidates = input.redirectTo === undefined || input.redirectTo === null
@@ -1156,7 +1168,7 @@ export class OAuthService {
       const providerName = parsePublicProvider(
         typeof profile === "object" && profile !== null ? profile.provider : undefined,
       );
-      const provider = this.providers.get(providerName);
+      const provider = boundaryMapGetValue(this.providers, providerName, "OAuth providers");
       if (provider === undefined) return authFailure(new AuthApiError("not_found", 404, "OAuth provider is not enabled"));
       const safe = await providerCall(async () => safeProfile(provider, profile));
       const now = validNow(this.clock);
@@ -1195,7 +1207,7 @@ export class OAuthService {
     const authorized = await this.authorizeSubject(subject);
     if (authorized.error !== null || authorized.data === null) return authFailure(authorized.error ?? unauthorized());
     try {
-      const provider = this.providers.get(parsePublicProvider(input.provider));
+      const provider = boundaryMapGetValue(this.providers, parsePublicProvider(input.provider), "OAuth providers");
       if (provider === undefined) return authFailure(new AuthApiError("not_found", 404, "OAuth provider is not enabled"));
       const safe = await providerCall(async () => safeProfile(provider, input));
       const now = validNow(this.clock);
@@ -1288,7 +1300,7 @@ export class OAuthService {
 
   private resolveRedirect(value: string | null | undefined): string {
     const candidate = value ?? this.defaultRedirect;
-    if (!this.allowedRedirects.includes(candidate)) throw new AuthApiError("redirect_not_allowed", 400, "Redirect URL is not allowed");
+    if (!containsOAuthString(this.allowedRedirects, candidate)) throw new AuthApiError("redirect_not_allowed", 400, "Redirect URL is not allowed");
     return candidate;
   }
 

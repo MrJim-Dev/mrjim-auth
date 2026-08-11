@@ -9,6 +9,7 @@ import {
   createAuthorizationRequestContext,
   type AuthorizationSubject,
 } from "../authorization.js";
+import { captureBoundaryMethodGroup } from "../callback-boundary.js";
 
 const objectDefineProperty = Object.defineProperty;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
@@ -257,6 +258,18 @@ function safeStatus(value: unknown, fallback: number): number {
   return typeof value === "number" && numberIsSafeInteger(value) && value >= 100 && value <= 599
     ? value
     : fallback;
+}
+
+function capturePermissionRouteService(service: AuthorizationService): AuthorizationService {
+  return captureBoundaryMethodGroup(
+    service,
+    "permission route service",
+    ["getPermissions"],
+    [],
+    {},
+    "source",
+    true,
+  ) as unknown as AuthorizationService;
 }
 
 function samePropertyDescriptor(
@@ -590,6 +603,7 @@ export async function permissionsRoute(
   request: Request,
   subject?: AuthorizationSubject,
 ): Promise<Response> {
+  const capturedService = capturePermissionRouteService(service);
   const requestSnapshot = snapshotRequest(request);
   if (requestSnapshot === null) return invalidRequest();
   if (requestSnapshot.method !== "GET") return methodNotAllowed(requestSnapshot.requestId);
@@ -606,9 +620,9 @@ export async function permissionsRoute(
     )));
   }
   try {
-    const getPermissions = service.getPermissions;
+    const getPermissions = capturedService.getPermissions;
     if (typeof getPermissions !== "function") return internalErrorResponse(requestSnapshot.requestId);
-    const rawPermissions = invoke<unknown>(getPermissions, service, [context.subject.user_id, scope, context]);
+    const rawPermissions = invoke<unknown>(getPermissions, capturedService, [context.subject.user_id, scope, context]);
     let safePermissions: string[] | null;
     if (arrayIsArray(rawPermissions)) {
       safePermissions = snapshotDirectResponsePermissions(rawPermissions);
@@ -635,7 +649,8 @@ export function createPermissionRoutes(service: AuthorizationService): {
     subject?: AuthorizationSubject,
   ) => Promise<Response>;
 } {
+  const capturedService = capturePermissionRouteService(service);
   return {
-    permissions: (request, subject) => permissionsRoute(service, request, subject),
+    permissions: (request, subject) => permissionsRoute(capturedService, request, subject),
   };
 }

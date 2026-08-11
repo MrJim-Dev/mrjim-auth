@@ -26,6 +26,8 @@ import {
   captureBoundaryBytes,
   captureBoundaryClock,
   captureBoundaryKeyProvider,
+  captureBoundaryMapEntries,
+  invokeBoundaryResult,
   captureBoundaryStringArray,
   optionalBoundaryOption,
   requiredBoundaryOption,
@@ -59,6 +61,11 @@ export interface TokenServiceOptions {
 }
 
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 900;
+const tokenNumberIsFinite = Number.isFinite;
+const tokenNumberIsInteger = Number.isInteger;
+const tokenNumberIsSafeInteger = Number.isSafeInteger;
+const tokenUint8ArrayFrom = Uint8Array.from.bind(Uint8Array) as (value: ArrayLike<number> | Iterable<number>) => Uint8Array;
+const tokenTextEncoder = TextEncoder;
 
 function invalidToken(): AuthResult<never> {
   return authFailure(new AuthApiError("invalid_token", 401, "Invalid access token"));
@@ -66,7 +73,7 @@ function invalidToken(): AuthResult<never> {
 
 function validClock(clock: () => Date): Date {
   const now = clock();
-  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+  if (!(now instanceof Date) || !tokenNumberIsFinite(now.getTime())) {
     throw new AuthConfigurationError("token clock must return a valid Date");
   }
   return now;
@@ -88,7 +95,7 @@ function validUuid(value: unknown, label: string): string {
 }
 
 function validDate(value: unknown, label: string): number {
-  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+  if (!(value instanceof Date) || !tokenNumberIsFinite(value.getTime())) {
     throw new AuthConfigurationError(`${label} must be a valid Date`);
   }
   return value.getTime();
@@ -116,13 +123,13 @@ function validClaims(payload: JWTPayload): payload is AccessTokenClaims {
     typeof payload.sid === "string" &&
     payload.sid.trim() !== "" &&
     typeof payload.aal === "number" &&
-    Number.isInteger(payload.aal) &&
+    tokenNumberIsInteger(payload.aal) &&
     payload.aal >= 1 &&
     payload.aal <= 3 &&
     typeof payload.iat === "number" &&
-    Number.isSafeInteger(payload.iat) &&
+    tokenNumberIsSafeInteger(payload.iat) &&
     typeof payload.exp === "number" &&
-    Number.isSafeInteger(payload.exp) &&
+    tokenNumberIsSafeInteger(payload.exp) &&
     payload.exp > payload.iat
   );
 }
@@ -173,7 +180,7 @@ export class TokenService {
 
     const hashKey =
       typeof tokenHashKeyValue === "string"
-        ? new TextEncoder().encode(tokenHashKeyValue)
+        ? new tokenTextEncoder().encode(tokenHashKeyValue)
         : captureBoundaryBytes(tokenHashKeyValue, "token hash key", 1);
     if (hashKey.byteLength === 0) {
       throw new AuthConfigurationError("token hash key must be non-empty");
@@ -182,7 +189,7 @@ export class TokenService {
 
     const accessTokenTtlSeconds = (accessTokenTtlValue as number | undefined) ?? DEFAULT_ACCESS_TOKEN_TTL_SECONDS;
     if (
-      !Number.isSafeInteger(accessTokenTtlSeconds) ||
+      !tokenNumberIsSafeInteger(accessTokenTtlSeconds) ||
       accessTokenTtlSeconds < 300 ||
       accessTokenTtlSeconds > 3_600
     ) {
@@ -205,7 +212,7 @@ export class TokenService {
     if (user.deleted_at !== null || session.revoked_at !== null) {
       throw new AuthConfigurationError("cannot issue an access token for an inactive subject");
     }
-    if (!Number.isInteger(session.aal) || session.aal < 1 || session.aal > 3) {
+    if (!tokenNumberIsInteger(session.aal) || session.aal < 1 || session.aal > 3) {
       throw new AuthConfigurationError("access-token AAL must be an integer from 1 to 3");
     }
 
@@ -216,8 +223,18 @@ export class TokenService {
       throw new AuthConfigurationError("access-token session timestamps are inconsistent");
     }
 
-    const keyId = validString(await this.keyProvider.getActiveKeyId(), "active signing key id");
-    const material = await this.keyProvider.getSigningKey(keyId);
+    const keyId = validString(await invokeBoundaryResult<string>(
+      this.keyProvider.getActiveKeyId,
+      this.keyProvider,
+      [],
+      "active signing key provider",
+    ), "active signing key id");
+    const material = await invokeBoundaryResult<Parameters<typeof importEs256Key>[0]>(
+      this.keyProvider.getSigningKey,
+      this.keyProvider,
+      [keyId],
+      "signing key provider",
+    );
     const signingKey = await importEs256Key(material, keyId, "signing");
     const now = validClock(this.clock).getTime();
     if (createdAt > now || refreshedAt > now || sessionExpiresAt <= now) {
@@ -262,8 +279,21 @@ export class TokenService {
         return invalidToken();
       }
 
-      const verificationKeys = await this.keyProvider.getVerificationKeys();
-      const material = verificationKeys.get(protectedHeader.kid);
+      const verificationKeys = await invokeBoundaryResult<ReadonlyMap<string, Parameters<typeof importEs256Key>[0]>>(
+        this.keyProvider.getVerificationKeys,
+        this.keyProvider,
+        [],
+        "verification key provider",
+      );
+      const entries = captureBoundaryMapEntries(verificationKeys, "verification key provider", 100_000);
+      let material: Parameters<typeof importEs256Key>[0] | undefined;
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        if (entry !== undefined && entry[0] === protectedHeader.kid) {
+          material = entry[1] as Parameters<typeof importEs256Key>[0];
+          break;
+        }
+      }
       if (material === undefined) return invalidToken();
       const verificationKey = await importEs256Key(
         material,
@@ -290,7 +320,7 @@ export class TokenService {
     if (typeof token !== "string") {
       throw new TypeError("opaque token must be a string");
     }
-    return Uint8Array.from(
+    return tokenUint8ArrayFrom(
       createHmac("sha256", this.tokenHashKey).update(token, "utf8").digest(),
     );
   }

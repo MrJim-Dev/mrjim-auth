@@ -8,6 +8,7 @@ import { PasswordService } from "../../src/server/passwords.js";
 import { SessionService } from "../../src/server/sessions.js";
 import { TokenService } from "../../src/server/tokens.js";
 import { UserService } from "../../src/server/users.js";
+import { captureBoundaryMapEntries } from "../../src/server/callback-boundary.js";
 
 const NOW = new Date("2026-08-11T05:00:00.000Z");
 const TOKEN_HASH_KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
@@ -272,6 +273,79 @@ describe("public server constructor callback boundaries", () => {
       Set.prototype.has = originalSetHas;
       Set.prototype.add = originalSetAdd;
       Object.entries = originalEntries;
+    }
+  });
+
+  it("does not trust post-import Array, Number, String, or Map entry intrinsics", () => {
+    const cases: readonly [string, (operation: () => void) => void, () => void][] = [
+      ["array numeric setter", (operation) => {
+        const descriptor = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+        try {
+          Object.defineProperty(Array.prototype, "0", {
+            configurable: true,
+            set: () => { throw new Error("array-index-sentinel"); },
+          });
+          operation();
+        } finally {
+          if (descriptor === undefined) Reflect.deleteProperty(Array.prototype, "0");
+          else Object.defineProperty(Array.prototype, "0", descriptor);
+        }
+      }, () => new EmailService({ allowedRedirects: [CALLBACK] })],
+      ["number safe integer", (operation) => {
+        const descriptor = Object.getOwnPropertyDescriptor(Number, "isSafeInteger");
+        try {
+          Object.defineProperty(Number, "isSafeInteger", {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: () => { throw new Error("number-sentinel"); },
+          });
+          operation();
+        } finally {
+          if (descriptor === undefined) Reflect.deleteProperty(Number, "isSafeInteger");
+          else Object.defineProperty(Number, "isSafeInteger", descriptor);
+        }
+      }, () => new EmailService({ allowedRedirects: [CALLBACK] })],
+      ["String conversion", (operation) => {
+        const descriptor = Object.getOwnPropertyDescriptor(globalThis, "String");
+        try {
+          Object.defineProperty(globalThis, "String", {
+            configurable: true,
+            enumerable: descriptor?.enumerable ?? false,
+            writable: true,
+            value: () => { throw new Error("string-sentinel"); },
+          });
+          operation();
+        } finally {
+          if (descriptor === undefined) Reflect.deleteProperty(globalThis, "String");
+          else Object.defineProperty(globalThis, "String", descriptor);
+        }
+      }, () => new EmailService({ allowedRedirects: [CALLBACK] })],
+      ["Map entry copy", (operation) => {
+        const descriptor = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+        try {
+          Object.defineProperty(Array.prototype, "0", {
+            configurable: true,
+            set: () => { throw new Error("map-entry-array-sentinel"); },
+          });
+          operation();
+        } finally {
+          if (descriptor === undefined) Reflect.deleteProperty(Array.prototype, "0");
+          else Object.defineProperty(Array.prototype, "0", descriptor);
+        }
+      }, () => {
+        captureBoundaryMapEntries(new Map([["key", "value"]]), "test map");
+      }],
+    ];
+
+    for (const [label, install, operation] of cases) {
+      let thrown: unknown;
+      try {
+        install(operation);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, label).toBeUndefined();
     }
   });
 

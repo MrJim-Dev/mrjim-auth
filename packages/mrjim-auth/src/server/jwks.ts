@@ -9,6 +9,16 @@ import {
 } from "jose";
 import { AuthConfigurationError } from "../shared/errors.js";
 import type { KeyMaterial, KeyProvider } from "../shared/contracts.js";
+import {
+  boundaryIsArray,
+  boundaryIsUint8Array,
+  captureBoundaryKeyMaterial,
+  captureBoundaryMapEntries,
+  captureBoundaryMethodGroup,
+  defineBoundaryArrayValue,
+  invokeBoundaryResult,
+  sortBoundaryArray,
+} from "./callback-boundary.js";
 
 /** The only signing algorithm accepted by the Task 5 token boundary. */
 export const ES256_ALGORITHM = "ES256" as const;
@@ -34,27 +44,34 @@ type ValidEs256Jwk = JWK & {
   readonly y: string;
 };
 
+const jwksTextDecoder = TextDecoder;
+const jwksJsonParse = JSON.parse;
+const jwksStringIncludes = String.prototype.includes;
+const jwksStringTrim = String.prototype.trim;
+const jwksReflectApply = Reflect.apply;
+
 function materialText(material: string | Uint8Array): string {
   return typeof material === "string"
     ? material
-    : new TextDecoder().decode(material);
+    : new jwksTextDecoder().decode(material);
 }
 
 function materialJwk(material: KeyMaterial): JWK | null {
-  if (typeof material === "object" && !(material instanceof Uint8Array)) {
-    return { ...material } as JWK;
+  const snapshot = captureBoundaryKeyMaterial(material, "ES256 key material");
+  if (typeof snapshot === "object" && snapshot !== null && !boundaryIsUint8Array(snapshot, "ES256 key material")) {
+    return snapshot as JWK;
   }
 
-  if (typeof material !== "string" && !(material instanceof Uint8Array)) {
+  if (typeof snapshot !== "string" && !boundaryIsUint8Array(snapshot, "ES256 key material")) {
     return null;
   }
 
-  const text = materialText(material).trim();
+  const text = jwksReflectApply(jwksStringTrim, materialText(snapshot as string | Uint8Array), []) as string;
   if (!text.startsWith("{")) return null;
   try {
-    const parsed: unknown = JSON.parse(text);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-    return parsed as JWK;
+    const parsed: unknown = jwksReflectApply(jwksJsonParse, undefined, [text]);
+    if (typeof parsed !== "object" || parsed === null || boundaryIsArray(parsed, "ES256 JWK")) return null;
+    return captureBoundaryKeyMaterial(parsed, "ES256 JWK") as JWK;
   } catch {
     return null;
   }
@@ -112,7 +129,8 @@ export async function importEs256Key(
     throw new AuthConfigurationError("ES256 key identifiers must be non-empty");
   }
 
-  const jwk = materialJwk(material);
+  const safeMaterial = captureBoundaryKeyMaterial(material, `key '${keyId}'`);
+  const jwk = materialJwk(safeMaterial);
   if (jwk !== null) {
     assertEs256Jwk(jwk, keyId);
     if (purpose === "signing" && typeof jwk.d !== "string") {
@@ -127,18 +145,18 @@ export async function importEs256Key(
     }
   }
 
-  if (typeof material !== "string" && !(material instanceof Uint8Array)) {
+  if (typeof safeMaterial !== "string" && !boundaryIsUint8Array(safeMaterial, `key '${keyId}'`)) {
     throw new AuthConfigurationError(`key '${keyId}' uses unsupported key material`);
   }
 
-  const pem = materialText(material).trim();
+  const pem = jwksReflectApply(jwksStringTrim, materialText(safeMaterial as string | Uint8Array), []) as string;
   try {
-    if (pem.includes("PRIVATE KEY")) {
+    if (jwksReflectApply(jwksStringIncludes, pem, ["PRIVATE KEY"])) {
       return await importPKCS8(pem, ES256_ALGORITHM, {
         extractable: purpose === "jwks",
       });
     }
-    if (pem.includes("PUBLIC KEY")) {
+    if (jwksReflectApply(jwksStringIncludes, pem, ["PUBLIC KEY"])) {
       return await importSPKI(pem, ES256_ALGORITHM, { extractable: true });
     }
   } catch (error) {
@@ -174,13 +192,9 @@ export async function publicEs256Jwk(
     jwk = await exportJwk(key, keyId);
   }
 
+  jwk = captureBoundaryKeyMaterial(jwk, `exported key '${keyId}'`) as JWK;
   assertEs256Jwk(jwk, keyId);
-  const publicJwk: Record<string, unknown> = { ...jwk };
-  for (const privateParameter of ["d", "p", "q", "dp", "dq", "qi", "key_ops", "ext"]) {
-    delete publicJwk[privateParameter];
-  }
   return {
-    ...publicJwk,
     kid: keyId,
     alg: ES256_ALGORITHM,
     use: "sig",
@@ -193,27 +207,36 @@ export async function publicEs256Jwk(
 
 /** Builds the public JWKS from every currently published verification key. */
 export async function buildPublicJwks(provider: KeyProvider): Promise<JSONWebKeySet> {
-  const verificationKeys = await provider.getVerificationKeys();
-  if (
-    verificationKeys === null ||
-    typeof verificationKeys !== "object" ||
-    typeof verificationKeys.get !== "function" ||
-    typeof verificationKeys.entries !== "function"
-  ) {
-    throw new AuthConfigurationError("verification key provider must return a key map");
+  const capturedProvider = captureBoundaryMethodGroup(
+    provider,
+    "verification key provider",
+    ["getVerificationKeys"],
+  ) as unknown as KeyProvider;
+  const verificationKeys = await invokeBoundaryResult<ReadonlyMap<string, KeyMaterial>>(
+    capturedProvider.getVerificationKeys,
+    capturedProvider,
+    [],
+    "verification key provider",
+  );
+  const rawEntries = captureBoundaryMapEntries(verificationKeys, "verification key provider", 100_000);
+  const entries: Array<readonly [string, KeyMaterial]> = [];
+  for (let index = 0; index < rawEntries.length; index += 1) {
+    const entry = rawEntries[index];
+    if (entry === undefined || typeof entry[0] !== "string" || entry[0].trim() === "") {
+      throw new AuthConfigurationError("verification key identifiers must be non-empty strings");
+    }
+    defineBoundaryArrayValue(entries, index, [entry[0], captureBoundaryKeyMaterial(entry[1], `verification key '${entry[0]}'`)], "verification key entries");
   }
-
-  const entries = [...verificationKeys.entries()];
-  if (entries.some(([keyId]) => typeof keyId !== "string" || keyId.trim() === "")) {
-    throw new AuthConfigurationError("verification key identifiers must be non-empty strings");
-  }
-  entries.sort(([left], [right]) => left.localeCompare(right));
+  sortBoundaryArray(entries, (left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0, "verification key entries");
   if (entries.length === 0) {
     throw new AuthConfigurationError("at least one ES256 verification key is required");
   }
 
-  const keys = await Promise.all(
-    entries.map(([keyId, material]) => publicEs256Jwk(material, keyId)),
-  );
+  const keys: PublicEs256Jwk[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === undefined) throw new AuthConfigurationError("verification key entries are malformed");
+    defineBoundaryArrayValue(keys, index, await publicEs256Jwk(entry[1], entry[0]), "public JWKS keys");
+  }
   return { keys };
 }

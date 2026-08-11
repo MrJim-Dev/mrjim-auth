@@ -95,4 +95,36 @@ describe("Task 9 deterministic OpenAPI contract", () => {
       readFileSync(new URL("../../../../docs/reference/openapi.json", import.meta.url), "utf8"),
     );
   });
+
+  it("does not depend on mutable post-import collection and string intrinsics", () => {
+    const expected = JSON.stringify(generateOpenApiDocument());
+    const cases: readonly [string, object, PropertyKey, unknown][] = [
+      ["Array.map", Array.prototype, "map", () => { throw new Error("openapi-map-sentinel"); }],
+      ["Object.keys", Object, "keys", () => { throw new Error("openapi-keys-sentinel"); }],
+      ["Map.set", Map.prototype, "set", () => { throw new Error("openapi-set-sentinel"); }],
+      ["String.replace", String.prototype, "replace", () => { throw new Error("openapi-replace-sentinel"); }],
+      ["Array.sort", Array.prototype, "sort", () => { throw new Error("openapi-sort-sentinel"); }],
+    ];
+    for (const [label, target, key, value] of cases) {
+      const descriptor = Object.getOwnPropertyDescriptor(target, key);
+      let thrown: unknown;
+      try {
+        Object.defineProperty(target, key, {
+          configurable: true,
+          enumerable: descriptor?.enumerable ?? false,
+          writable: true,
+          value,
+        });
+        try {
+          expect(JSON.stringify(generateOpenApiDocument()), label).toBe(expected);
+        } catch (error) {
+          thrown = error;
+        }
+      } finally {
+        if (descriptor === undefined) Reflect.deleteProperty(target, key);
+        else Object.defineProperty(target, key, descriptor);
+      }
+      expect(thrown, label).toBeUndefined();
+    }
+  });
 });

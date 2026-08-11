@@ -19,6 +19,8 @@ import {
   requiredBoundaryOption,
 } from "./callback-boundary.js";
 
+const oauthArrayIsArray = Array.isArray;
+
 /** A stable public capability advertised by provider discovery. */
 export interface OAuthProviderCapabilities {
   readonly authorization_code: true;
@@ -156,8 +158,8 @@ function profileFromClaims(
   if (issuer !== expectedIssuer || typeof subject !== "string" || subject.trim() === "") {
     throw new OAuthProviderError("OIDC issuer or subject validation failed");
   }
-  const audiences = typeof audience === "string" ? [audience] : Array.isArray(audience) ? audience : [];
-  if (!audiences.includes(clientId)) {
+  const audiences = typeof audience === "string" ? [audience] : oauthArrayIsArray(audience) ? audience as string[] : [];
+  if (!containsString(audiences, clientId)) {
     throw new OAuthProviderError("OIDC audience validation failed");
   }
   const email = safeEmail(claims.email);

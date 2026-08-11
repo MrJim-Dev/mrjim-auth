@@ -1,4 +1,4 @@
-import type { AuthRepository, KeyProvider } from "../shared/contracts.js";
+import type { AuthRepository, KeyMaterial, KeyProvider } from "../shared/contracts.js";
 import { AuthConfigurationError } from "../shared/errors.js";
 
 /*
@@ -8,6 +8,7 @@ import { AuthConfigurationError } from "../shared/errors.js";
  */
 const boundaryArrayConstructor = Array;
 const boundaryArrayIsArray = Array.isArray;
+const boundaryArraySort = Array.prototype.sort;
 const boundaryMapConstructor = Map;
 const boundaryMapEntries = Map.prototype.entries;
 const boundaryMapGet = Map.prototype.get;
@@ -25,6 +26,12 @@ const boundaryObjectGetOwnPropertyNames = Object.getOwnPropertyNames;
 const boundaryObjectGetOwnPropertySymbols = Object.getOwnPropertySymbols;
 const boundaryObjectGetPrototypeOf = Object.getPrototypeOf;
 const boundaryReflectApply = Reflect.apply;
+const boundaryNumber = Number;
+const boundaryNumberIsFinite = Number.isFinite;
+const boundaryNumberIsSafeInteger = Number.isSafeInteger;
+const boundaryString = String;
+const boundaryPromise = Promise;
+const boundaryPromisePrototype = Promise.prototype;
 const boundaryUint8Array = Uint8Array;
 const boundaryTypedArrayPrototype = boundaryObjectGetPrototypeOf(boundaryUint8Array.prototype);
 const boundaryTypedArrayByteLengthGetter = (() => {
@@ -60,6 +67,7 @@ const boundaryMapIteratorNext = (() => {
 })();
 const MAX_PROTOTYPE_DEPTH = 32;
 const MAX_BOUNDARY_COLLECTION_LENGTH = 100_000;
+const MAX_BOUNDARY_VALUE_DEPTH = 32;
 
 function configFailure(label: string): never {
   throw new AuthConfigurationError(label);
@@ -106,7 +114,7 @@ export function createBoundaryMap<K, V>(): Map<K, V> {
 }
 
 /** Reads an internally captured Map without dispatching through its prototype. */
-export function boundaryMapHasValue<K, V>(map: Map<K, V>, key: K, label: string): boolean {
+export function boundaryMapHasValue<K, V>(map: ReadonlyMap<K, V>, key: K, label: string): boolean {
   try {
     return boundaryReflectApply(boundaryMapHas, map, [key]);
   } catch {
@@ -124,7 +132,7 @@ export function boundaryMapSetValue<K, V>(map: Map<K, V>, key: K, value: V, labe
 }
 
 /** Reads an internally captured Map value without its mutable prototype. */
-export function boundaryMapGetValue<K, V>(map: Map<K, V>, key: K, label: string): V | undefined {
+export function boundaryMapGetValue<K, V>(map: ReadonlyMap<K, V>, key: K, label: string): V | undefined {
   try {
     return boundaryReflectApply(boundaryMapGet, map, [key]) as V | undefined;
   } catch {
@@ -191,12 +199,13 @@ export function boundaryDataProperty(value: object, key: PropertyKey): BoundaryD
  * Detects own or inherited thenability using descriptors only. A malformed
  * or unwalkable prototype is treated as thenable so construction fails closed.
  */
-export function boundaryHasThen(value: object): boolean {
+export function boundaryHasThen(value: object, allowObjectPrototypeThen = false): boolean {
   let current: object | null = value;
   const seen = new boundarySetConstructor<object>();
   for (let depth = 0; current !== null && depth < MAX_PROTOTYPE_DEPTH; depth += 1) {
     if (boundaryReflectApply(boundarySetHas, seen, [current])) return true;
     boundaryReflectApply(boundarySetAdd, seen, [current]);
+    if (allowObjectPrototypeThen && current === boundaryObjectPrototype) return false;
     try {
       if (boundaryObjectGetOwnPropertyDescriptor(current, "then") !== undefined) return true;
       current = boundaryObjectGetPrototypeOf(current);
@@ -208,18 +217,22 @@ export function boundaryHasThen(value: object): boolean {
 }
 
 /** Validates an object boundary without reading ordinary properties. */
-export function assertBoundaryObject(value: unknown, label: string): asserts value is object {
+export function assertBoundaryObject(
+  value: unknown,
+  label: string,
+  allowObjectPrototypeThen = false,
+): asserts value is object {
   if (value === null || (typeof value !== "object" && typeof value !== "function")) {
     throw new AuthConfigurationError(`${label} must be an object`);
   }
-  if (boundaryHasThen(value as object)) {
+  if (boundaryHasThen(value as object, allowObjectPrototypeThen)) {
     throw new AuthConfigurationError(`${label} must not be thenable`);
   }
 }
 
 /** Captures one configured callback as a data-property function. */
-export function captureBoundaryFunction(value: unknown, label: string): Function {
-  if (typeof value !== "function" || boundaryHasThen(value)) {
+export function captureBoundaryFunction(value: unknown, label: string, allowObjectPrototypeThen = false): Function {
+  if (typeof value !== "function" || boundaryHasThen(value, allowObjectPrototypeThen)) {
     throw new AuthConfigurationError(`${label} must be a non-thenable function`);
   }
   return value;
@@ -249,12 +262,13 @@ export function captureBoundaryMethodGroup(
   optional: readonly string[] = [],
   properties: Readonly<Record<string, unknown>> = {},
   receiver: "source" | "facade" = "source",
+  allowObjectPrototypeThen = false,
 ): Record<string, unknown> {
   if (value === null || (typeof value !== "object" && typeof value !== "function")) {
     throw new AuthConfigurationError(`${label} is incomplete`);
   }
   const source = value as object;
-  assertBoundaryObject(source, label);
+  assertBoundaryObject(source, label, allowObjectPrototypeThen);
   const facade = boundaryObjectCreate(null) as Record<string, unknown>;
   const propertyNames = safeOwnPropertyNames(properties, `${label} properties`);
   if (safeOwnPropertySymbols(properties, `${label} properties`).length !== 0) {
@@ -279,7 +293,7 @@ export function captureBoundaryMethodGroup(
     if (!property.valid || !property.present) {
       throw new AuthConfigurationError(`${label}.${method} must be a data-property function`);
     }
-    const callback = captureBoundaryFunction(property.value, `${label}.${method}`);
+    const callback = captureBoundaryFunction(property.value, `${label}.${method}`, allowObjectPrototypeThen);
     boundaryObjectDefineProperty(facade, method, {
       configurable: false,
       enumerable: true,
@@ -315,6 +329,41 @@ export function captureBoundaryKeyProvider(value: unknown): KeyProvider {
   ) as unknown as KeyProvider;
 }
 
+/** Defines one internal array element without dispatching through its prototype. */
+export function defineBoundaryArrayValue<T>(
+  target: T[],
+  index: number,
+  value: T,
+  label = "boundary array",
+): void {
+  if (!boundaryNumberIsSafeInteger(index) || index < 0 || index > MAX_BOUNDARY_COLLECTION_LENGTH) {
+    throw new AuthConfigurationError(`${label} is malformed`);
+  }
+  try {
+    boundaryObjectDefineProperty(target, boundaryString(index), {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value,
+    });
+  } catch {
+    throw new AuthConfigurationError(`${label} is malformed`);
+  }
+}
+
+/** Uses the captured Array sort method on an internal array only. */
+export function sortBoundaryArray<T>(
+  target: T[],
+  compare: (left: T, right: T) => number,
+  label = "boundary array",
+): T[] {
+  try {
+    return boundaryReflectApply(boundaryArraySort, target, [compare]) as T[];
+  } catch {
+    throw new AuthConfigurationError(`${label} is malformed`);
+  }
+}
+
 /** Copies a bounded dense string array without invoking element accessors. */
 export function captureBoundaryStringArray(
   value: unknown,
@@ -327,7 +376,7 @@ export function captureBoundaryStringArray(
   for (let index = 0; index < values.length; index += 1) {
     const entry = values[index];
     if (typeof entry !== "string") throw new AuthConfigurationError(`${label} must be a dense string array`);
-    copy[index] = entry;
+    defineBoundaryArrayValue(copy, index, entry, label);
   }
   return boundaryObjectFreeze(copy);
 }
@@ -345,7 +394,7 @@ export function captureBoundaryDenseArray(
   const lengthProperty = boundaryOwnDataProperty(candidate, "length");
   if (
     !lengthProperty.valid || !lengthProperty.present || typeof lengthProperty.value !== "number"
-    || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value < minimum || lengthProperty.value > maximum
+    || !boundaryNumberIsSafeInteger(lengthProperty.value) || lengthProperty.value < minimum || lengthProperty.value > maximum
   ) throw new AuthConfigurationError(`${label} must be a bounded dense array`);
   const length = lengthProperty.value as number;
   const names = safeOwnPropertyNames(candidate, label);
@@ -354,17 +403,17 @@ export function captureBoundaryDenseArray(
   }
   for (let nameIndex = 0; nameIndex < names.length; nameIndex += 1) {
     const name = names[nameIndex];
-    if (name === undefined || (name !== "length" && (!/^\d+$/u.test(name) || Number(name) >= length))) {
+    if (name === undefined || (name !== "length" && (!/^\d+$/u.test(name) || boundaryNumber(name) >= length))) {
       throw new AuthConfigurationError(`${label} must be a dense own-data array`);
     }
   }
   const copy = new boundaryArrayConstructor<unknown>(length);
   for (let index = 0; index < length; index += 1) {
-    const property = boundaryOwnDataProperty(candidate, String(index));
+    const property = boundaryOwnDataProperty(candidate, boundaryString(index));
     if (!property.valid || !property.present) {
       throw new AuthConfigurationError(`${label} must be a dense own-data array`);
     }
-    copy[index] = property.value;
+    defineBoundaryArrayValue(copy, index, property.value, label);
   }
   return boundaryObjectFreeze(copy);
 }
@@ -387,7 +436,7 @@ export function captureBoundaryUniqueStringArray(
       throw new AuthConfigurationError(`${label} must not contain duplicate values`);
     }
     boundaryReflectApply(boundarySetAdd, seen, [valueAtIndex]);
-    copy[length] = valueAtIndex;
+    defineBoundaryArrayValue(copy, length, valueAtIndex, label);
     length += 1;
   }
   return boundaryObjectFreeze(copy);
@@ -406,7 +455,7 @@ export function captureBoundaryBytes(value: unknown, label: string, minimum = 0)
   } catch {
     throw new AuthConfigurationError(`${label} must be a Uint8Array`);
   }
-  if (tag !== "Uint8Array" || typeof byteLength !== "number" || !Number.isSafeInteger(byteLength) || byteLength < minimum) {
+  if (tag !== "Uint8Array" || typeof byteLength !== "number" || !boundaryNumberIsSafeInteger(byteLength) || byteLength < minimum) {
     throw new AuthConfigurationError(`${label} must contain valid Uint8Array material`);
   }
   try {
@@ -415,6 +464,134 @@ export function captureBoundaryBytes(value: unknown, label: string, minimum = 0)
     return copy;
   } catch {
     throw new AuthConfigurationError(`${label} must contain valid Uint8Array material`);
+  }
+}
+
+/** Safely identifies a genuine Uint8Array through captured typed-array accessors. */
+export function boundaryIsUint8Array(value: unknown, label: string): boolean {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) return false;
+  try {
+    return boundaryReflectApply(boundaryTypedArrayTagGetter, value, []) === "Uint8Array";
+  } catch {
+    throw new AuthConfigurationError(`${label} must contain valid Uint8Array material`);
+  }
+}
+
+/** Copies JSON-like provider/configuration data without invoking accessors or iterators. */
+export function captureBoundaryDataValue(
+  value: unknown,
+  label: string,
+  depth = 0,
+): unknown {
+  if (depth > MAX_BOUNDARY_VALUE_DEPTH) throw new AuthConfigurationError(`${label} is too deeply nested`);
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!boundaryNumberIsFinite(value)) throw new AuthConfigurationError(`${label} contains an invalid number`);
+    return value;
+  }
+  if (typeof value === "undefined") return undefined;
+  if (typeof value === "function") throw new AuthConfigurationError(`${label} must not be executable`);
+  if (boundaryIsUint8Array(value, label)) return captureBoundaryBytes(value, label);
+  if (boundaryIsArray(value, label)) {
+    const values = captureBoundaryDenseArray(value, label, 0, MAX_BOUNDARY_COLLECTION_LENGTH);
+    const copy = new boundaryArrayConstructor<unknown>(values.length);
+    for (let index = 0; index < values.length; index += 1) {
+      defineBoundaryArrayValue(copy, index, captureBoundaryDataValue(values[index], `${label}[${index}]`, depth + 1), label);
+    }
+    return boundaryObjectFreeze(copy);
+  }
+  assertBoundaryObject(value, label);
+  let prototype: object | null;
+  try {
+    prototype = boundaryObjectGetPrototypeOf(value);
+  } catch {
+    throw new AuthConfigurationError(`${label} must be a plain data record`);
+  }
+  if (prototype !== boundaryObjectPrototype && prototype !== null) {
+    throw new AuthConfigurationError(`${label} must be a plain data record`);
+  }
+  const names = safeOwnPropertyNames(value, label);
+  if (safeOwnPropertySymbols(value, label).length !== 0 || names.length > MAX_BOUNDARY_COLLECTION_LENGTH) {
+    throw new AuthConfigurationError(`${label} must be a bounded data record`);
+  }
+  const copy = boundaryObjectCreate(null) as Record<string, unknown>;
+  for (let index = 0; index < names.length; index += 1) {
+    const name = names[index];
+    if (name === undefined) throw new AuthConfigurationError(`${label} is malformed`);
+    const property = boundaryOwnDataProperty(value, name);
+    if (!property.valid || !property.present) throw new AuthConfigurationError(`${label}.${name} must be a data property`);
+    boundaryObjectDefineProperty(copy, name, {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value: captureBoundaryDataValue(property.value, `${label}.${name}`, depth + 1),
+    });
+  }
+  return boundaryObjectFreeze(copy);
+}
+
+/** Captures a provider key material value before any JWK property is read. */
+export function captureBoundaryKeyMaterial(value: unknown, label: string): KeyMaterial {
+  const snapshot = captureBoundaryDataValue(value, label);
+  if (
+    typeof snapshot === "string" ||
+    boundaryIsUint8Array(snapshot, label) ||
+    (snapshot !== null && typeof snapshot === "object")
+  ) {
+    return snapshot as KeyMaterial;
+  }
+  throw new AuthConfigurationError(`${label} must be valid key material`);
+}
+
+/** Resolves one provider result without assimilating hostile thenables. */
+export async function resolveBoundaryResult<T>(value: unknown, label: string): Promise<T> {
+  try {
+    let isNativePromise = false;
+    if (value !== null && (typeof value === "object" || typeof value === "function")) {
+      try {
+        isNativePromise = boundaryObjectGetPrototypeOf(value) === boundaryPromisePrototype
+          && value instanceof boundaryPromise
+          && boundaryObjectGetOwnPropertyDescriptor(value, "then") === undefined;
+      } catch {
+        throw new AuthConfigurationError(`${label} returned invalid data`);
+      }
+      if (!isNativePromise && boundaryHasThen(value as object)) {
+        throw new AuthConfigurationError(`${label} returned an unsupported thenable`);
+      }
+    }
+    if (isNativePromise) return await value as T;
+    return value as T;
+  } catch (error) {
+    let configurationError = false;
+    try {
+      configurationError = error instanceof AuthConfigurationError;
+    } catch {
+      configurationError = false;
+    }
+    if (configurationError) throw error;
+    throw new AuthConfigurationError(`${label} returned invalid data`);
+  }
+}
+
+/** Invokes one captured provider callback and safely resolves its return value. */
+export async function invokeBoundaryResult<T>(
+  callback: Function,
+  receiver: unknown,
+  args: readonly unknown[],
+  label: string,
+): Promise<T> {
+  try {
+    const value = boundaryReflectApply(callback, receiver, args as unknown[]);
+    return await resolveBoundaryResult<T>(value, label);
+  } catch (error) {
+    let configurationError = false;
+    try {
+      configurationError = error instanceof AuthConfigurationError;
+    } catch {
+      configurationError = false;
+    }
+    if (configurationError) throw error;
+    throw new AuthConfigurationError(`${label} failed`);
   }
 }
 
@@ -450,7 +627,11 @@ export function captureBoundaryMapEntries(
     if (done.value) return boundaryObjectFreeze(entries);
     if (!entry.present) throw new AuthConfigurationError(`${label} must be a bounded data map`);
     const pair = captureBoundaryDenseArray(entry.value, `${label} entry`, 2, 2);
-    entries[index] = [pair[0], pair[1]];
+    const pairCopy = new boundaryArrayConstructor<unknown>(2) as unknown as [unknown, unknown];
+    defineBoundaryArrayValue(pairCopy, 0, pair[0], `${label} entry`);
+    defineBoundaryArrayValue(pairCopy, 1, pair[1], `${label} entry`);
+    boundaryObjectFreeze(pairCopy);
+    defineBoundaryArrayValue(entries, index, pairCopy, label);
   }
   throw new AuthConfigurationError(`${label} exceeds the configured collection limit`);
 }
@@ -488,11 +669,15 @@ export function captureBoundaryRepository(value: unknown): AuthRepository {
       if (typeof callback !== "function") return boundaryReflectApply(transaction, source, args);
       const wrapped = (transactionRepository: unknown, ...callbackArgs: unknown[]) => {
         const callbackArguments: unknown[] = [captureBoundaryRepository(transactionRepository)];
-        for (let index = 0; index < callbackArgs.length; index += 1) callbackArguments[index + 1] = callbackArgs[index];
+        for (let index = 0; index < callbackArgs.length; index += 1) {
+          defineBoundaryArrayValue(callbackArguments, index + 1, callbackArgs[index], "database transaction arguments");
+        }
         return boundaryReflectApply(callback, undefined, callbackArguments);
       };
       const forwarded: unknown[] = [wrapped];
-      for (let index = 1; index < args.length; index += 1) forwarded[index] = args[index];
+      for (let index = 1; index < args.length; index += 1) {
+        defineBoundaryArrayValue(forwarded, index, args[index], "database transaction arguments");
+      }
       return boundaryReflectApply(transaction, source, forwarded);
     },
   });

@@ -8,6 +8,7 @@ import {
   boundaryOwnDataProperty,
   captureBoundaryBytes,
   captureBoundaryDenseArray,
+  defineBoundaryArrayValue,
   createBoundaryMap,
   boundaryMapGetValue,
   boundaryMapSetValue,
@@ -168,7 +169,7 @@ function snapshotOwnedValue(value: unknown, label: string, depth = 0): unknown {
     const values = captureBoundaryDenseArray(value, label, 0, CONFIG_SNAPSHOT_MAX_KEYS);
     const copy: unknown[] = [];
     for (let index = 0; index < values.length; index += 1) {
-      copy[index] = snapshotOwnedValue(values[index], `${label}[${index}]`, depth + 1);
+      defineBoundaryArrayValue(copy, index, snapshotOwnedValue(values[index], `${label}[${index}]`, depth + 1), label);
     }
     return configObjectFreeze(copy);
   }
@@ -195,7 +196,7 @@ function snapshotKeyMaterial(value: unknown, label: string): KeyMaterial {
   const snapshot = snapshotOwnedValue(value, label);
   if (
     typeof snapshot === "string" ||
-    snapshot instanceof Uint8Array ||
+    snapshot instanceof configUint8Array ||
     isOpaqueKeyMaterial(snapshot as object) ||
     isConfigPlainRecord(snapshot)
   ) return snapshot as KeyMaterial;
@@ -384,19 +385,19 @@ function createProviders(options: AuthServerOptions): readonly OAuthProvider[] {
   if (configured === undefined) return [];
   const providers: OAuthProvider[] = [];
   if (configured.google !== undefined) {
-    providers[providers.length] = new GoogleOAuthProvider({
+    defineBoundaryArrayValue(providers, providers.length, new GoogleOAuthProvider({
       clientId: configured.google.clientId,
       clientSecret: secretString(configured.google.clientSecret),
-    });
+    }), "OAuth providers");
   }
   if (configured.oidc !== undefined) {
-    providers[providers.length] = new OidcOAuthProvider({
+    defineBoundaryArrayValue(providers, providers.length, new OidcOAuthProvider({
       name: "oidc",
       clientId: configured.oidc.clientId,
       clientSecret: secretString(configured.oidc.clientSecret),
       issuer: configured.oidc.issuer,
       ...(configured.oidc.scopes === undefined ? {} : { scopes: configured.oidc.scopes }),
-    });
+    }), "OAuth providers");
   }
   return providers;
 }
@@ -502,7 +503,12 @@ export function createAuthServer(input: CreateAuthServerOptions): AuthServer {
   const rawServices = capturedServicesProperty.present
     ? capturedServicesProperty.value as AuthServerServiceOverrides
     : undefined;
-  const parsed = authServerOptionsSchema.parse(capturedInput);
+  let parsed: AuthServerOptions;
+  try {
+    parsed = authServerOptionsSchema.parse(capturedInput);
+  } catch {
+    throw new AuthConfigurationError("auth server configuration is invalid");
+  }
   const baseUrl = parseAbsoluteUrl(parsed.baseUrl, "baseUrl");
   const issuer = parseAbsoluteUrl(parsed.signingKeys.issuer, "signingKeys.issuer");
   if (issuer.href !== baseUrl.href) throw new AuthConfigurationError("baseUrl must exactly match signingKeys.issuer");

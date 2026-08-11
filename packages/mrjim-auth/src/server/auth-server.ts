@@ -44,12 +44,20 @@ const nativeHeaders = Headers;
 const nativeURL = URL;
 const nativeURLSearchParams = URLSearchParams;
 const nativeUint8Array = Uint8Array;
+const nativeUint8ArrayFrom = nativeUint8Array.from.bind(nativeUint8Array);
 const nativeTextDecoder = TextDecoder;
 const nativePromise = Promise;
 const nativePromisePrototype = Promise.prototype;
 const nativePromiseThen = Promise.prototype.then;
 const nativeObjectPrototype = Object.prototype;
 const nativeArrayIsArray = Array.isArray;
+const nativeArrayPush = Array.prototype.push;
+const nativeSet = Set;
+const nativeSetHas = Set.prototype.has;
+const nativeSetAdd = Set.prototype.add;
+const authNumberIsFinite = Number.isFinite;
+const authNumberIsInteger = Number.isInteger;
+const authNumberIsSafeInteger = Number.isSafeInteger;
 const objectDefineProperty = Object.defineProperty;
 const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const objectGetOwnPropertyNames = Object.getOwnPropertyNames;
@@ -105,12 +113,12 @@ const accessClaimsSchema = z.object({
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_SNAPSHOT_DEPTH = 32;
 const MAX_SNAPSHOT_KEYS = 100_000;
-const ALLOWED_REQUEST_HEADERS = new Set(["apikey", "authorization", "content-type", "x-request-id"]);
+const ALLOWED_REQUEST_HEADERS = ["apikey", "authorization", "content-type", "x-request-id"] as const;
 const SAFE_CACHE_CONTROL = "public, max-age=300, must-revalidate";
-const FETCH_SITE_VALUES = new Set(["cross-site", "same-origin", "same-site", "none"]);
-const FETCH_MODE_VALUES = new Set(["cors", "navigate", "no-cors", "same-origin", "websocket"]);
-const FETCH_DEST_VALUES = new Set(["audio", "audioworklet", "document", "embed", "empty", "font", "frame", "iframe", "image", "manifest", "object", "paintworklet", "report", "script", "serviceworker", "sharedworker", "style", "track", "video", "worker", "xslt"]);
-const FETCH_USER_VALUES = new Set(["?0", "?1"]);
+const FETCH_SITE_VALUES = ["cross-site", "same-origin", "same-site", "none"] as const;
+const FETCH_MODE_VALUES = ["cors", "navigate", "no-cors", "same-origin", "websocket"] as const;
+const FETCH_DEST_VALUES = ["audio", "audioworklet", "document", "embed", "empty", "font", "frame", "iframe", "image", "manifest", "object", "paintworklet", "report", "script", "serviceworker", "sharedworker", "style", "track", "video", "worker", "xslt"] as const;
+const FETCH_USER_VALUES = ["?0", "?1"] as const;
 
 type DataProperty =
   | { readonly valid: true; readonly present: false }
@@ -186,6 +194,25 @@ function captureIteratorNext(): Function {
 
 function invoke<T>(method: Function, receiver: unknown, args: readonly unknown[]): T {
   return reflectApply(method, receiver, args as unknown[]) as T;
+}
+
+function containsExact(values: readonly string[], candidate: string): boolean {
+  for (let index = 0; index < values.length; index += 1) {
+    if (values[index] === candidate) return true;
+  }
+  return false;
+}
+
+function appendInternal<T>(values: T[], value: T): void {
+  invoke(nativeArrayPush, values, [value]);
+}
+
+function setHasInternal<T>(set: Set<T>, value: T): boolean {
+  return invoke<boolean>(nativeSetHas, set, [value]);
+}
+
+function setAddInternal<T>(set: Set<T>, value: T): void {
+  invoke(nativeSetAdd, set, [value]);
 }
 
 function readHeaderValue(headers: object, name: string): HeaderValue {
@@ -313,19 +340,22 @@ function validRequestId(value: unknown): value is string {
 }
 
 function readFetchMetadata(headers: object): FetchMetadataState {
-  const fields: readonly [string, ReadonlySet<string>][] = [
+  const fields: readonly [string, readonly string[]][] = [
     ["sec-fetch-site", FETCH_SITE_VALUES],
     ["sec-fetch-mode", FETCH_MODE_VALUES],
     ["sec-fetch-dest", FETCH_DEST_VALUES],
     ["sec-fetch-user", FETCH_USER_VALUES],
   ];
   let present = false;
-  for (const [name, allowed] of fields) {
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index];
+    if (field === undefined) return "invalid";
+    const [name, allowed] = field;
     const header = readHeaderValue(headers, name);
     if (header.state === "invalid") return "invalid";
     if (header.state === "absent") continue;
     present = true;
-    if (header.value.trim() !== header.value || !allowed.has(header.value)) return "invalid";
+    if (header.value.trim() !== header.value || !containsExact(allowed, header.value)) return "invalid";
   }
   return present ? "present" : "absent";
 }
@@ -417,21 +447,21 @@ async function invokeUntrusted<T>(operation: () => unknown): Promise<T> {
   return value as T;
 }
 
-function snapshotValue(value: unknown, depth = 0, seen = new Set<object>()): unknown {
+function snapshotValue(value: unknown, depth = 0, seen = new nativeSet<object>()): unknown {
   if (depth > MAX_SNAPSHOT_DEPTH) throw new RequestBoundaryError("internal_error", 500);
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new RequestBoundaryError("internal_error", 500);
+    if (!authNumberIsFinite(value)) throw new RequestBoundaryError("internal_error", 500);
     return value;
   }
   if (typeof value !== "object") throw new RequestBoundaryError("internal_error", 500);
-  if (seen.has(value)) throw new RequestBoundaryError("internal_error", 500);
-  seen.add(value);
+  if (setHasInternal(seen, value)) throw new RequestBoundaryError("internal_error", 500);
+  setAddInternal(seen, value);
   try {
     if (nativeArrayIsArray(value)) {
       if (hasThenProperty(value)) throw new RequestBoundaryError("internal_error", 500);
       const length = ownDataProperty(value, "length");
-      if (!length.valid || !length.present || typeof length.value !== "number" || !Number.isSafeInteger(length.value) || length.value < 0 || length.value > MAX_SNAPSHOT_KEYS) {
+      if (!length.valid || !length.present || typeof length.value !== "number" || !authNumberIsSafeInteger(length.value) || length.value < 0 || length.value > MAX_SNAPSHOT_KEYS) {
         throw new RequestBoundaryError("internal_error", 500);
       }
       const names = objectGetOwnPropertyNames(value);
@@ -443,7 +473,7 @@ function snapshotValue(value: unknown, depth = 0, seen = new Set<object>()): unk
       for (let index = 0; index < length.value; index += 1) {
         const item = ownDataProperty(value, `${index}`);
         if (!item.valid || !item.present) throw new RequestBoundaryError("internal_error", 500);
-        output.push(snapshotValue(item.value, depth + 1, seen));
+        appendInternal(output, snapshotValue(item.value, depth + 1, seen));
       }
       return output;
     }
@@ -540,7 +570,7 @@ function safeError(value: unknown, fallbackCode: PublicAuthErrorCode = "internal
     ? codeProperty.value
     : fallbackCode;
   const expectedStatus = statusForCode(code);
-  const status = statusProperty.valid && statusProperty.present && typeof statusProperty.value === "number" && Number.isSafeInteger(statusProperty.value)
+  const status = statusProperty.valid && statusProperty.present && typeof statusProperty.value === "number" && authNumberIsSafeInteger(statusProperty.value)
     && (statusProperty.value === expectedStatus || (code === "invalid_request" && (statusProperty.value === 405 || statusProperty.value === 413)) || (code === "oauth_provider_error" && statusProperty.value === 502))
     ? statusProperty.value
     : expectedStatus;
@@ -585,11 +615,11 @@ function copyBytes(value: unknown): Uint8Array | null {
   if (!(value instanceof nativeUint8Array)) return null;
   let length: unknown;
   try { length = invoke(typedArrayLengthGetter, value, []); } catch { return null; }
-  if (typeof length !== "number" || !Number.isSafeInteger(length) || length !== 32) return null;
+  if (typeof length !== "number" || !authNumberIsSafeInteger(length) || length !== 32) return null;
   const output = new nativeUint8Array(length);
   for (let index = 0; index < length; index += 1) {
     const item = ownDataProperty(value, `${index}`);
-    if (!item.valid || !item.present || typeof item.value !== "number" || !Number.isInteger(item.value) || item.value < 0 || item.value > 255) return null;
+    if (!item.valid || !item.present || typeof item.value !== "number" || !authNumberIsInteger(item.value) || item.value < 0 || item.value > 255) return null;
     output[index] = item.value;
   }
   return output;
@@ -599,7 +629,7 @@ function safeDate(value: unknown): Date | null {
   if (!(value instanceof Date)) return null;
   try {
     const time = dateGetTime(value);
-    return Number.isFinite(time) ? new Date(time) : null;
+    return authNumberIsFinite(time) ? new Date(time) : null;
   } catch {
     return null;
   }
@@ -608,7 +638,7 @@ function safeDate(value: unknown): Date | null {
 function safeStringArray(value: unknown): readonly string[] | null {
   if (!nativeArrayIsArray(value) || hasThenProperty(value)) return null;
   const lengthProperty = ownDataProperty(value, "length");
-  if (!lengthProperty.valid || !lengthProperty.present || typeof lengthProperty.value !== "number" || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value < 0 || lengthProperty.value > MAX_SNAPSHOT_KEYS) return null;
+  if (!lengthProperty.valid || !lengthProperty.present || typeof lengthProperty.value !== "number" || !authNumberIsSafeInteger(lengthProperty.value) || lengthProperty.value < 0 || lengthProperty.value > MAX_SNAPSHOT_KEYS) return null;
   for (const name of objectGetOwnPropertyNames(value)) {
     if (name === "length") continue;
     if (!/^\d+$/u.test(name) || Number(name) >= lengthProperty.value) return null;
@@ -617,24 +647,31 @@ function safeStringArray(value: unknown): readonly string[] | null {
   for (let index = 0; index < lengthProperty.value; index += 1) {
     const item = ownDataProperty(value, `${index}`);
     if (!item.valid || !item.present || typeof item.value !== "string" || item.value.length > 256) return null;
-    output.push(item.value);
+    appendInternal(output, item.value);
   }
   return objectFreeze(output);
 }
 
 function safeApiKey(value: unknown, expectedHash: Uint8Array, now: Date): RouteAuthContext["key"] | null {
   if (value === null || (typeof value !== "object" && typeof value !== "function") || hasThenProperty(value)) return null;
-  const allowedNames = new Set(["id", "prefix", "kind", "scopes", "expires_at", "revoked_at", "key_hash"]);
+  const allowedNames = ["id", "prefix", "kind", "scopes", "expires_at", "revoked_at", "key_hash"] as const;
   try {
-    if (objectGetOwnPropertySymbols(value).length !== 0 || objectGetOwnPropertyNames(value).some((name) => !allowedNames.has(name))) return null;
+    const names = objectGetOwnPropertyNames(value);
+    if (objectGetOwnPropertySymbols(value).length !== 0) return null;
+    for (let index = 0; index < names.length; index += 1) {
+      const name = names[index];
+      if (name === undefined || !containsExact(allowedNames, name)) return null;
+    }
   } catch {
     return null;
   }
   const snapshot: Record<string, unknown> = objectCreate(null) as Record<string, unknown>;
-  for (const name of ["id", "prefix", "kind", "scopes", "expires_at", "revoked_at", "key_hash"]) {
+  for (let nameIndex = 0; nameIndex < allowedNames.length; nameIndex += 1) {
+    const name = allowedNames[nameIndex];
+    if (name === undefined) return null;
     const property = ownDataProperty(value, name);
     if (!property.valid || !property.present) return null;
-    snapshot[name] = property.value;
+    objectDefineProperty(snapshot, name, { configurable: true, enumerable: true, writable: true, value: property.value });
   }
   const keyHash = copyBytes(snapshot.key_hash);
   if (keyHash === null || keyHash.byteLength !== expectedHash.byteLength || !timingSafeEqual(Buffer.from(keyHash), Buffer.from(expectedHash))) return null;
@@ -663,7 +700,12 @@ function isValidBearer(value: string): boolean {
 function audienceMatches(value: string | readonly string[], expected: string | readonly string[]): boolean {
   const actual = typeof value === "string" ? [value] : value;
   const configured = typeof expected === "string" ? [expected] : expected;
-  return actual.length === configured.length && actual.every((candidate) => configured.includes(candidate));
+  if (actual.length !== configured.length) return false;
+  for (let index = 0; index < actual.length; index += 1) {
+    const candidate = actual[index];
+    if (candidate === undefined || !containsExact(configured, candidate)) return false;
+  }
+  return true;
 }
 
 function readQueryKeys(params: URLSearchParams): string[] | null {
@@ -677,7 +719,7 @@ function readQueryKeys(params: URLSearchParams): string[] | null {
     if (!done.valid || !done.present || typeof done.value !== "boolean" || !value.valid || !value.present) return null;
     if (done.value) return keys;
     if (typeof value.value !== "string") return null;
-    keys.push(value.value);
+    appendInternal(keys, value.value);
     if (keys.length > 128) return null;
   }
 }
@@ -714,7 +756,11 @@ function exactPath(path: string, basePath: string): { readonly path: string; rea
 }
 
 function routeContract(path: string, method?: string): RouteContract | undefined {
-  return routeContracts.find((candidate) => candidate.path === path && (method === undefined || candidate.method === method));
+  for (let index = 0; index < routeContracts.length; index += 1) {
+    const candidate = routeContracts[index];
+    if (candidate !== undefined && candidate.path === path && (method === undefined || candidate.method === method)) return candidate;
+  }
+  return undefined;
 }
 
 function isJsonContentType(value: string | null): boolean {
@@ -934,8 +980,9 @@ export class AuthServer {
         contentEncoding,
         accessControlRequestMethod,
       ];
-      if (strictHeaders.some((header) => header.state === "invalid")) {
-        throw new RequestBoundaryError("invalid_request", 400);
+      for (let headerIndex = 0; headerIndex < strictHeaders.length; headerIndex += 1) {
+        const header = strictHeaders[headerIndex];
+        if (header !== undefined && header.state === "invalid") throw new RequestBoundaryError("invalid_request", 400);
       }
       if (accessControlRequestHeaders.state === "invalid") {
         throw new RequestBoundaryError("invalid_request", 400);
@@ -949,7 +996,7 @@ export class AuthServer {
       if (contentLength.state === "valid") {
         if (!/^\d+$/u.test(contentLength.value)) throw new RequestBoundaryError("invalid_request", 400);
         const declaredLength = Number(contentLength.value);
-        if (!Number.isSafeInteger(declaredLength)) throw new RequestBoundaryError("invalid_request", 400);
+        if (!authNumberIsSafeInteger(declaredLength)) throw new RequestBoundaryError("invalid_request", 400);
         if (declaredLength > MAX_BODY_BYTES) throw new RequestBoundaryError("invalid_request", 413);
       }
       if (authorization.state === "valid" && !isValidBearer(authorization.value)) {
@@ -985,7 +1032,7 @@ export class AuthServer {
   private checkOrigin(meta: RequestMeta): { readonly code: "forbidden" | "not_found"; readonly status: 403 | 404 } | null {
     if (meta.url.origin !== this.baseOrigin) return { code: "not_found", status: 404 };
     if (meta.origin === null) return null;
-    if (!this.allowedOrigins.includes(meta.origin)) return { code: "forbidden", status: 403 };
+    if (!containsExact(this.allowedOrigins, meta.origin)) return { code: "forbidden", status: 403 };
     return null;
   }
 
@@ -997,15 +1044,18 @@ export class AuthServer {
     const requestedHeaders = meta.accessControlRequestHeaders.state === "valid"
       ? meta.accessControlRequestHeaders.value
       : null;
-    if (requestedMethod === null || !["GET", "POST", "PUT", "DELETE"].includes(requestedMethod)) return this.errorResponse(meta, "invalid_request", 400);
+    if (requestedMethod === null || !containsExact(["GET", "POST", "PUT", "DELETE"], requestedMethod)) return this.errorResponse(meta, "invalid_request", 400);
     if (routeContract(routed.path, requestedMethod) === undefined) return this.errorResponse(meta, "invalid_request", 405);
     if (requestedHeaders !== null) {
-      const headers = requestedHeaders.split(",").map((item) => item.trim().toLowerCase());
-      if (headers.some((header) => header === "" || !/^[!#$%&'*+.^_`|~0-9a-z-]+$/u.test(header))) {
-        return this.errorResponse(meta, "invalid_request", 400);
-      }
-      for (const header of new Set(headers)) {
-        if (!ALLOWED_REQUEST_HEADERS.has(header)) return this.errorResponse(meta, "forbidden", 403);
+      const rawHeaders = requestedHeaders.split(",");
+      for (let headerIndex = 0; headerIndex < rawHeaders.length; headerIndex += 1) {
+        const rawHeader = rawHeaders[headerIndex];
+        if (rawHeader === undefined) return this.errorResponse(meta, "invalid_request", 400);
+        const header = rawHeader.trim().toLowerCase();
+        if (header === "" || !/^[!#$%&'*+.^_`|~0-9a-z-]+$/u.test(header)) {
+          return this.errorResponse(meta, "invalid_request", 400);
+        }
+        if (!containsExact(ALLOWED_REQUEST_HEADERS, header)) return this.errorResponse(meta, "forbidden", 403);
       }
     }
     const response = this.emptyResponse(meta, 204);
@@ -1019,13 +1069,21 @@ export class AuthServer {
     const params = invoke<URLSearchParams>(urlSearchParamsGetter, url, []);
     const keys = readQueryKeys(params);
     if (keys === null) throw new RequestBoundaryError("invalid_request", 400);
-    const allowed = new Set((contract.query ?? []).map(({ name }) => name));
+    const allowed: string[] = [];
+    const query = contract.query ?? [];
+    for (let index = 0; index < query.length; index += 1) {
+      const parameter = query[index];
+      if (parameter === undefined) throw new RequestBoundaryError("invalid_request", 400);
+      appendInternal(allowed, parameter.name);
+    }
     for (const key of keys) {
-      if (!allowed.has(key)) throw new RequestBoundaryError("invalid_request", 400);
+      if (!containsExact(allowed, key)) throw new RequestBoundaryError("invalid_request", 400);
       const values = invoke<string[]>(searchParamsGetAll, params, [key]);
       if (!nativeArrayIsArray(values) || values.length !== 1) throw new RequestBoundaryError("invalid_request", 400);
     }
-    for (const parameter of contract.query ?? []) {
+    for (let index = 0; index < query.length; index += 1) {
+      const parameter = query[index];
+      if (parameter === undefined) throw new RequestBoundaryError("invalid_request", 400);
       const values = invoke<string[]>(searchParamsGetAll, params, [parameter.name]);
       if (parameter.required && (!nativeArrayIsArray(values) || values.length !== 1 || values[0] === "")) throw new RequestBoundaryError("invalid_request", 400);
     }
@@ -1038,7 +1096,7 @@ export class AuthServer {
     if (contentLength !== null) {
       if (!/^\d+$/u.test(contentLength)) throw new RequestBoundaryError("invalid_request", 400);
       const length = Number(contentLength);
-      if (!Number.isSafeInteger(length) || length > MAX_BODY_BYTES) throw new RequestBoundaryError("invalid_request", 413);
+      if (!authNumberIsSafeInteger(length) || length > MAX_BODY_BYTES) throw new RequestBoundaryError("invalid_request", 413);
     }
     const contentType = meta.contentType.state === "valid" ? meta.contentType.value : null;
     if (!isJsonContentType(contentType)) {
@@ -1119,7 +1177,7 @@ export class AuthServer {
         if (chunk === null) throw new RequestBoundaryError("invalid_request", 400);
         total += chunk.byteLength;
         if (total > MAX_BODY_BYTES || (declaredLength !== undefined && total > declaredLength)) throw new RequestBoundaryError("invalid_request", 413);
-        chunks.push(chunk);
+        appendInternal(chunks, chunk);
       }
     } catch (error) {
       cancel();
@@ -1152,7 +1210,7 @@ export class AuthServer {
     if (rawApiKey.trim() !== rawApiKey || rawApiKey.length < 8 || rawApiKey.length > 512) {
       throw new AuthApiError("unauthorized", 401, "API key is required", meta.requestId);
     }
-    const expectedHash = Uint8Array.from(createHmac("sha256", this.apiKeyHashKey).update(`apikey\0${rawApiKey}`, "utf8").digest());
+    const expectedHash = nativeUint8ArrayFrom(createHmac("sha256", this.apiKeyHashKey).update(`apikey\0${rawApiKey}`, "utf8").digest());
     const record = await invokeUntrusted<unknown>(() => this.repository.operations.findApiKeyByHash(expectedHash, { now }));
     const key = safeApiKey(record, expectedHash, now);
     if (key === null) throw new AuthApiError("unauthorized", 401, "Invalid API key", meta.requestId);
@@ -1265,10 +1323,13 @@ export class AuthServer {
     try {
       const target = new nativeURL(value);
       if (target.hash !== "") return false;
-      return this.allowedRedirects.some((allowed) => {
+      for (let index = 0; index < this.allowedRedirects.length; index += 1) {
+        const allowed = this.allowedRedirects[index];
+        if (allowed === undefined) return false;
         const base = new nativeURL(allowed);
-        return target.origin === base.origin && target.pathname === base.pathname;
-      });
+        if (target.origin === base.origin && target.pathname === base.pathname) return true;
+      }
+      return false;
     } catch {
       return false;
     }
@@ -1310,7 +1371,7 @@ export class AuthServer {
     if (meta !== null) {
       invoke(headersSet, headers, ["x-request-id", meta.requestId]);
       invoke(headersSet, headers, ["vary", "Origin"]);
-      if (meta.origin !== null && this.allowedOrigins.includes(meta.origin)) {
+      if (meta.origin !== null && containsExact(this.allowedOrigins, meta.origin)) {
         invoke(headersSet, headers, ["access-control-allow-origin", meta.origin]);
         invoke(headersSet, headers, ["access-control-allow-credentials", "true"]);
         invoke(headersSet, headers, ["access-control-expose-headers", "x-request-id"]);
@@ -1334,12 +1395,12 @@ function copyChunk(value: unknown): Uint8Array | null {
   if (!(value instanceof nativeUint8Array)) return null;
   let length: unknown;
   try { length = invoke(typedArrayLengthGetter, value, []); } catch { return null; }
-  if (typeof length !== "number" || !Number.isSafeInteger(length) || length < 0) return null;
+  if (typeof length !== "number" || !authNumberIsSafeInteger(length) || length < 0) return null;
   if (length > MAX_BODY_BYTES) return new nativeUint8Array(MAX_BODY_BYTES + 1);
   const output = new nativeUint8Array(length);
   for (let index = 0; index < length; index += 1) {
     const item = ownDataProperty(value, `${index}`);
-    if (!item.valid || !item.present || typeof item.value !== "number" || !Number.isInteger(item.value) || item.value < 0 || item.value > 255) return null;
+    if (!item.valid || !item.present || typeof item.value !== "number" || !authNumberIsInteger(item.value) || item.value < 0 || item.value > 255) return null;
     output[index] = item.value;
   }
   return output;

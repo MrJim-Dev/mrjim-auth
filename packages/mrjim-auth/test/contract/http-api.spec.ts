@@ -141,7 +141,8 @@ function makeOptions(calls: Array<{ readonly name: string; readonly input: unkno
       appendAudit: async () => undefined,
       findApiKeyByHash: async (hash: Uint8Array) => {
         for (const [raw, record] of records) {
-          if (Buffer.from(hash).equals(Buffer.from(apiKeyHash(raw)))) return record;
+          if (raw === PUBLISHABLE_KEY && Buffer.from(hash).equals(Buffer.from(record.key_hash))) return record;
+          if (raw === SECRET_KEY && Buffer.from(hash).equals(Buffer.from(record.key_hash))) return record;
         }
         return null;
       },
@@ -638,6 +639,68 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect(mismatch.status).toBe(405);
   });
 
+  it("does not let polluted array membership intrinsics authorize or reflect an attacker origin", async () => {
+    const auth = serverModule.createAuthServer(makeOptions([]));
+    const originalIncludes = Array.prototype.includes;
+    const originalSome = Array.prototype.some;
+    try {
+      const allowedOrigins = (auth as any).allowedOrigins;
+      const allowedRedirects = (auth as any).allowedRedirects;
+      Array.prototype.includes = function (this: unknown[], ...args: unknown[]) {
+        if (this === allowedOrigins) throw new Error("cors-includes-sentinel");
+        return originalIncludes.apply(this, args as [unknown]);
+      } as typeof Array.prototype.includes;
+      Array.prototype.some = function (this: unknown[], ...args: unknown[]) {
+        if (this === allowedRedirects) throw new Error("cors-some-sentinel");
+        return originalSome.apply(this, args as [(value: unknown) => unknown]);
+      } as typeof Array.prototype.some;
+      const actual = await auth.handle(request("/providers", {
+        headers: { origin: "https://attacker.example", apikey: PUBLISHABLE_KEY },
+      }));
+      const preflight = await auth.handle(request("/providers", {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://attacker.example",
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "apikey",
+        },
+      }));
+      expect(actual.status).toBe(403);
+      expect(actual.headers.get("access-control-allow-origin")).toBeNull();
+      expect(preflight.status).toBe(403);
+      expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
+    } finally {
+      Array.prototype.includes = originalIncludes;
+      Array.prototype.some = originalSome;
+    }
+  });
+
+  it("uses a captured byte-array conversion for API-key hashing", async () => {
+    const auth = serverModule.createAuthServer(makeOptions([]));
+    const descriptor = Object.getOwnPropertyDescriptor(Uint8Array, "from");
+    const originalFrom = Uint8Array.from;
+    expect(originalFrom).toBeTypeOf("function");
+    try {
+      Object.defineProperty(Uint8Array, "from", {
+        configurable: descriptor?.configurable ?? true,
+        enumerable: descriptor?.enumerable ?? false,
+        writable: true,
+        value: (...args: unknown[]) => {
+          if ((new Error().stack ?? "").includes("auth-server.ts")) {
+            throw new Error("api-key-uint8array-from-sentinel");
+          }
+          return Reflect.apply(originalFrom, Uint8Array, args);
+        },
+      });
+      const response = await auth.handle(request("/providers"));
+      expect(response.status).toBe(200);
+      expect(JSON.stringify(await body(response))).not.toContain("api-key-uint8array-from-sentinel");
+    } finally {
+      if (descriptor === undefined) Reflect.deleteProperty(Uint8Array, "from");
+      else Object.defineProperty(Uint8Array, "from", descriptor);
+    }
+  });
+
   it("redacts service failures and rejects browser secret keys", async () => {
     const auth = serverModule.createAuthServer(makeOptions([]));
     const secretBrowser = await auth.handle(request("/providers", { headers: { apikey: SECRET_KEY, origin: SITE_URL } }));
@@ -918,6 +981,93 @@ describe("Task 9 framework-neutral HTTP contract", () => {
       Array.prototype.some = originalSome;
       Array.prototype.push = originalPush;
       Object.entries = originalEntries;
+    }
+  });
+
+  it("uses captured typed-array and nested collection intrinsics during server construction", () => {
+    const cases: readonly [string, (operation: () => void) => void, (options: any) => void][] = [
+      ["Uint8Array", (operation) => {
+        const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Uint8Array");
+        try {
+          Object.defineProperty(globalThis, "Uint8Array", {
+            configurable: true,
+            enumerable: descriptor?.enumerable ?? false,
+            writable: true,
+            value: {},
+          });
+          operation();
+        } finally {
+          if (descriptor === undefined) Reflect.deleteProperty(globalThis, "Uint8Array");
+          else Object.defineProperty(globalThis, "Uint8Array", descriptor);
+        }
+      }, (options) => {
+        options.signingKeys.keys.test = new TextEncoder().encode(options.signingKeys.keys.test);
+      }],
+      ["Array index setter", (operation) => {
+        const descriptor = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+        try {
+          Object.defineProperty(Array.prototype, "0", {
+            configurable: true,
+            set: () => { throw new Error("server-array-index-sentinel"); },
+          });
+          operation();
+        } finally {
+          if (descriptor === undefined) Reflect.deleteProperty(Array.prototype, "0");
+          else Object.defineProperty(Array.prototype, "0", descriptor);
+        }
+      }, (options) => {
+        options.signingKeys.audience = ["project"];
+      }],
+      ["Number safe integer", (operation) => {
+        const descriptor = Object.getOwnPropertyDescriptor(Number, "isSafeInteger");
+        try {
+          Object.defineProperty(Number, "isSafeInteger", {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: () => { throw new Error("server-number-sentinel"); },
+          });
+          operation();
+        } finally {
+          if (descriptor === undefined) Reflect.deleteProperty(Number, "isSafeInteger");
+          else Object.defineProperty(Number, "isSafeInteger", descriptor);
+        }
+      }, (options) => {
+        options.signingKeys.audience = ["project"];
+      }],
+      ["String conversion", (operation) => {
+        const descriptor = Object.getOwnPropertyDescriptor(globalThis, "String");
+        try {
+          Object.defineProperty(globalThis, "String", {
+            configurable: true,
+            enumerable: descriptor?.enumerable ?? false,
+            writable: true,
+            value: () => { throw new Error("server-string-sentinel"); },
+          });
+          operation();
+        } finally {
+          if (descriptor === undefined) Reflect.deleteProperty(globalThis, "String");
+          else Object.defineProperty(globalThis, "String", descriptor);
+        }
+      }, (options) => {
+        options.signingKeys.audience = ["project"];
+      }],
+    ];
+    for (const [label, install, prepare] of cases) {
+      const options = makeOptions([]) as any;
+      prepare(options);
+      let thrown: unknown;
+      try {
+        install(() => serverModule.createAuthServer(options));
+      } catch (error) {
+        thrown = error;
+      }
+      if (label === "Uint8Array") {
+        expect(thrown, label).toBeUndefined();
+      } else {
+        expect(thrown, label).toBeInstanceOf(AuthConfigurationError);
+        expect(String(thrown), label).not.toMatch(/sentinel/i);
+      }
     }
   });
 

@@ -289,22 +289,26 @@ JWKS/provider discovery, refresh-token logout, identities, permissions, and all
 other Task 9 routes are included; Task 10 browser behavior, Task 11 adapters,
 and Task 12 administration remain untouched.
 
-The current Task 9 remediation round follows the same reviewer’s
-`CHANGES_REQUIRED` verdict. It fixes seven Important constructor/configuration
-trust-boundary findings with one shared captured-intrinsic, descriptor-only
-collection and callback boundary, and audits the public server
-constructors/factories for the same accessor, thenable, receiver, hostile
-proxy, intrinsic-tampering, and post-construction mutation class, including
-provider credentials and exported email/password security configuration. The
-previously closed HTTP/header/body, stream-cancellation, OpenAPI,
-OAuth-wire/PKCE, export, and Tasks 1–8 behavior remains covered and unchanged
-in scope. Exact round-4 RED regressions are now GREEN: focused constructor
-coverage is 3 files/53 tests, HTTP is 28/28, OAuth is 32/32, and the current
-full suite is 20 files/287 tests. Frozen install, build, typecheck, lint,
-docs, exports/browser 12/12, migration state/integration 1/1 and 23/23,
-deterministic OpenAPI, packed-consumer, protected-hash, and diff gates pass.
-No dependency, lockfile, migration, paid service, hosted service, or remote
-database behavior was added. The same reviewer’s re-review is still required.
+The current Task 9 remediation round is round 5 after the same reviewer’s
+`CHANGES_REQUIRED` verdict (Raman `019ff09f-5cc5-7870-b429-e651cb71ac1d`, zero
+Critical and seven Important). It fixes the shared captured-intrinsic,
+descriptor-only boundary behind all seven findings: hostile collection and
+intrinsic failures, typed-array conversion, provider-returned maps/JWKs and
+thenables, OpenAPI generation, CORS membership, OAuth discovery, and public
+route callback closures. It also audits the remaining public server runtime
+byte conversion path. The previously closed HTTP/header/body,
+stream-cancellation, OAuth-wire/PKCE, authorization, export, migration,
+OpenAPI, and Tasks 1–8 behavior remains covered and unchanged in scope.
+Exact round-5 RED regressions are now GREEN: the initial five-file adversarial
+set is 55/55, OAuth discovery is 1/1, the provider-audience audit is 1/1,
+HTTP is 31/31, OpenAPI is 3/3, OAuth integration is 32/32,
+constructor/route/token coverage is 22/22, permission coverage is 37/37,
+and the current full suite is 21 files/298 tests. Frozen install, build,
+typecheck, lint, docs, exports/browser 12/12, migration state/integration
+1/1 and 23/23, deterministic OpenAPI, packed-consumer, protected-hash, and
+diff gates pass. No dependency, lockfile, migration, paid service, hosted
+service, remote database, or generic `DATABASE_URL` behavior was added. The
+same reviewer’s re-review is still required; Task 9 is not approved.
 
 The independent security review recorder remains blocked by the exact tooling
 error `scan.target.snapshotDigest: expected a non-empty string`. This is not a
@@ -366,7 +370,7 @@ database, external network, or paid SaaS service is required.
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
-| 9. HTTP and OpenAPI | Awaiting same-reviewer re-review — round-4 CHANGES_REQUIRED, not approved | Round-4 constructor/configuration RED→GREEN regressions cover hostile collection/proxy and intrinsic handling, byte isolation, dense bounded arrays, top-level/services thenability, prototype adapters, runtime origin/path validation, and the exported OpenAPI option boundary; current HTTP 28/28, OpenAPI 2/2, OAuth 32/32, focused constructor 53/53, full 20-file/287-test suite, exports/browser 12/12, migration, packed, protected-hash, and deterministic OpenAPI gates are recorded in the Task 9 report; independent re-review remains required |
+| 9. HTTP and OpenAPI | Awaiting same-reviewer re-review — round-5 CHANGES_REQUIRED, not approved | Round-5 shared-boundary RED→GREEN regressions cover polluted intrinsics and hostile collections, provider-returned maps/JWKs/thenables, OpenAPI/CORS/runtime byte conversions, OAuth discovery, and route callback capture; current HTTP 31/31, OpenAPI 3/3, OAuth 32/32, provider-audience 1/1, constructor/route/token 22/22, permissions 37/37, full 21-file/298-test suite, exports/browser 12/12, migration, packed, protected-hash, and deterministic OpenAPI gates are recorded in the Task 9 report; independent same-reviewer re-review remains required |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |

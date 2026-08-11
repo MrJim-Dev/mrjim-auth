@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { AuthConfigurationError } from "../shared/errors.js";
 import { routeContracts, type RouteContract } from "./routes/contracts.js";
-import { assertBoundaryObject, optionalBoundaryOption } from "./callback-boundary.js";
+import {
+  assertBoundaryObject,
+  optionalBoundaryOption,
+} from "./callback-boundary.js";
 
 type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
@@ -11,20 +14,82 @@ export interface OpenApiDocumentOptions {
 
 type OpenApiDocumentInput = string | OpenApiDocumentOptions | undefined;
 
+const openapiArrayIsArray = Array.isArray;
+const openapiArrayMap = Array.prototype.map;
+const openapiArrayPush = Array.prototype.push;
+const openapiArraySort = Array.prototype.sort;
+const openapiObjectKeys = Object.keys;
+const openapiMapConstructor = Map;
+const openapiMapGet = Map.prototype.get;
+const openapiMapSet = Map.prototype.set;
+const openapiReflectApply = Reflect.apply;
+const openapiRegExpExec = RegExp.prototype.exec;
+const openapiStringReplace = String.prototype.replace;
+const openapiURL = URL;
+const openapiSchemaCache: Array<{ readonly schema: object; readonly value: Record<string, JsonValue> }> = [];
+
+function openapiKeys(value: object): string[] {
+  try {
+    return openapiObjectKeys(value);
+  } catch {
+    throw new AuthConfigurationError("OpenAPI schema is not a data object");
+  }
+}
+
+function sortedOpenapiKeys(value: object): string[] {
+  const keys = openapiKeys(value);
+  try {
+    return openapiReflectApply(openapiArraySort, keys, []) as string[];
+  } catch {
+    throw new AuthConfigurationError("OpenAPI schema keys are malformed");
+  }
+}
+
+function appendOpenapiValue<T>(values: T[], value: T, label: string): void {
+  try {
+    openapiReflectApply(openapiArrayPush, values, [value]);
+  } catch {
+    throw new AuthConfigurationError(`${label} is malformed`);
+  }
+}
+
 function sortJson(value: unknown): JsonValue {
   if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(sortJson);
+  if (openapiArrayIsArray(value)) {
+    try {
+      return openapiReflectApply(openapiArrayMap, value, [sortJson]) as JsonValue[];
+    } catch {
+      throw new AuthConfigurationError("OpenAPI schema array is malformed");
+    }
+  }
   if (typeof value !== "object") return null;
   const output: Record<string, JsonValue> = {};
-  for (const key of Object.keys(value).sort()) {
+  for (const key of sortedOpenapiKeys(value)) {
     if (key === "$schema") continue;
     output[key] = sortJson((value as Record<string, unknown>)[key]);
   }
   return output;
 }
 
-function schemaJson(schema: RouteContract["response"]): Record<string, JsonValue> {
+function schemaJsonUncached(schema: RouteContract["response"]): Record<string, JsonValue> {
   return sortJson(z.toJSONSchema(schema)) as Record<string, JsonValue>;
+}
+
+function schemaJson(schema: RouteContract["response"]): Record<string, JsonValue> {
+  for (let index = 0; index < openapiSchemaCache.length; index += 1) {
+    const entry = openapiSchemaCache[index];
+    if (entry !== undefined && entry.schema === schema) return entry.value;
+  }
+  const value = schemaJsonUncached(schema);
+  appendOpenapiValue(openapiSchemaCache, { schema: schema as object, value }, "OpenAPI schema cache");
+  return value;
+}
+
+for (let contractIndex = 0; contractIndex < routeContracts.length; contractIndex += 1) {
+  const contract = routeContracts[contractIndex];
+  if (contract === undefined) throw new AuthConfigurationError("OpenAPI route contracts are malformed");
+  schemaJson(contract.response);
+  if (contract.body !== undefined) schemaJson(contract.body);
 }
 
 function schemaReference(componentName: string): string {
@@ -32,15 +97,27 @@ function schemaReference(componentName: string): string {
 }
 
 function rewriteSchemaReferences(value: unknown, references: ReadonlyMap<string, string>): JsonValue {
-  if (Array.isArray(value)) return value.map((item) => rewriteSchemaReferences(item, references));
+  if (openapiArrayIsArray(value)) {
+    try {
+      return openapiReflectApply(openapiArrayMap, value, [(item: unknown) => rewriteSchemaReferences(item, references)]) as JsonValue[];
+    } catch {
+      throw new AuthConfigurationError("OpenAPI schema array is malformed");
+    }
+  }
   if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") return value;
   if (typeof value !== "object") return null;
   const output: Record<string, JsonValue> = {};
-  for (const key of Object.keys(value)) {
+  for (const key of openapiKeys(value)) {
     if (key === "$defs") continue;
     const item = (value as Record<string, unknown>)[key];
     if (key === "$ref" && typeof item === "string") {
-      output[key] = references.get(item) ?? item;
+      let replacement: string | undefined;
+      try {
+        replacement = openapiReflectApply(openapiMapGet, references, [item]) as string | undefined;
+      } catch {
+        throw new AuthConfigurationError("OpenAPI schema references are malformed");
+      }
+      output[key] = replacement ?? item;
     } else {
       output[key] = rewriteSchemaReferences(item, references);
     }
@@ -55,12 +132,16 @@ function addSchemaComponent(
 ): void {
   const source = schemaJson(schema);
   const definitions = source.$defs;
-  const references = new Map<string, string>();
-  if (definitions !== null && typeof definitions === "object" && !Array.isArray(definitions)) {
-    for (const definitionName of Object.keys(definitions).sort()) {
-      references.set(`#/$defs/${definitionName}`, schemaReference(`${componentName}_${definitionName}`));
+  const references = new openapiMapConstructor<string, string>();
+  if (definitions !== null && typeof definitions === "object" && !openapiArrayIsArray(definitions)) {
+    for (const definitionName of sortedOpenapiKeys(definitions)) {
+      try {
+        openapiReflectApply(openapiMapSet, references, [`#/$defs/${definitionName}`, schemaReference(`${componentName}_${definitionName}`)]);
+      } catch {
+        throw new AuthConfigurationError("OpenAPI schema references are malformed");
+      }
     }
-    for (const definitionName of Object.keys(definitions).sort()) {
+    for (const definitionName of sortedOpenapiKeys(definitions)) {
       schemas[`${componentName}_${definitionName}`] = rewriteSchemaReferences(
         (definitions as Record<string, unknown>)[definitionName],
         references,
@@ -72,16 +153,19 @@ function addSchemaComponent(
 
 function pathParameters(contract: RouteContract): JsonValue[] {
   const output: JsonValue[] = [];
-  for (const match of contract.path.matchAll(/\{([^}]+)\}/gu)) {
+  const matcher = /\{([^}]+)\}/gu;
+  for (;;) {
+    const match = openapiReflectApply(openapiRegExpExec, matcher, [contract.path]) as RegExpExecArray | null;
+    if (match === null) break;
     const name = match[1];
     if (name === undefined) continue;
-    output.push({
+    appendOpenapiValue(output, {
       name,
       in: "path",
       required: true,
       schema: { type: "string", ...(name === "id" ? { format: "uuid" } : {}) },
       description: name === "provider" ? "Configured OAuth provider name" : "Resource identifier",
-    });
+    }, "OpenAPI path parameters");
   }
   return output;
 }
@@ -101,14 +185,15 @@ function configuredServerUrl(input: OpenApiDocumentInput): string {
   if (typeof candidate !== "string" || candidate.length === 0) throw new TypeError("baseUrl must be a non-empty absolute HTTP(S) URL");
   let parsed: URL;
   try {
-    parsed = new URL(candidate);
+    parsed = new openapiURL(candidate);
   } catch {
     throw new TypeError("baseUrl must be a non-empty absolute HTTP(S) URL");
   }
   if (!/^https?:$/u.test(parsed.protocol) || parsed.username !== "" || parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") {
     throw new TypeError("baseUrl must be an absolute HTTP(S) URL without credentials or query parameters");
   }
-  parsed.pathname = parsed.pathname.replace(/\/{2,}/gu, "/").replace(/\/$/u, "") || "/";
+  parsed.pathname = openapiReflectApply(openapiStringReplace, parsed.pathname, [/\/{2,}/gu, "/"]) as string;
+  parsed.pathname = openapiReflectApply(openapiStringReplace, parsed.pathname, [/\/$/u, ""]) as string || "/";
   return parsed.href;
 }
 
@@ -116,9 +201,9 @@ function securityFor(contract: RouteContract): Record<string, readonly string[]>
   if (contract.security === "signed") return [];
   if (contract.security === "user") {
     return [
-      { publishableKey: [] },
-      { secretKey: [] },
-    ].map((entry) => ({ ...entry, bearerAuth: [] }));
+      { publishableKey: [], bearerAuth: [] },
+      { secretKey: [], bearerAuth: [] },
+    ];
   }
   return [{ publishableKey: [] }, { secretKey: [] }];
 }
@@ -135,13 +220,20 @@ function requestBody(contract: RouteContract, componentName: string): Record<str
 }
 
 function queryParameters(contract: RouteContract): JsonValue[] {
-  return (contract.query ?? []).map((parameter) => ({
-    name: parameter.name,
-    in: "query",
-    required: parameter.required,
-    schema: { type: "string" },
-    description: parameter.description,
-  }));
+  const output: JsonValue[] = [];
+  const query = contract.query ?? [];
+  for (let index = 0; index < query.length; index += 1) {
+    const parameter = query[index];
+    if (parameter === undefined) throw new AuthConfigurationError("OpenAPI query parameters are malformed");
+    appendOpenapiValue(output, {
+      name: parameter.name,
+      in: "query",
+      required: parameter.required,
+      schema: { type: "string" },
+      description: parameter.description,
+    }, "OpenAPI query parameters");
+  }
+  return output;
 }
 
 function operation(contract: RouteContract): Record<string, JsonValue> {
@@ -151,9 +243,20 @@ function operation(contract: RouteContract): Record<string, JsonValue> {
     description: `Authentication operation ${contract.operationId}.`,
     tags: [contract.path.startsWith("/user") ? "current-user" : "public"],
     security: securityFor(contract),
-    parameters: [...pathParameters(contract), ...queryParameters(contract)],
+    parameters: [],
     responses: {},
   };
+  const parameters = operation.parameters as JsonValue[];
+  const pathParameterValues = pathParameters(contract);
+  const queryParameterValues = queryParameters(contract);
+  for (let index = 0; index < pathParameterValues.length; index += 1) {
+    const parameter = pathParameterValues[index];
+    if (parameter !== undefined) appendOpenapiValue(parameters, parameter, "OpenAPI parameters");
+  }
+  for (let index = 0; index < queryParameterValues.length; index += 1) {
+    const parameter = queryParameterValues[index];
+    if (parameter !== undefined) appendOpenapiValue(parameters, parameter, "OpenAPI parameters");
+  }
   const responseName = `Response_${contract.operationId}`;
   const bodyName = contract.body === undefined ? undefined : `Request_${contract.operationId}`;
   const responses = operation.responses as Record<string, JsonValue>;
@@ -203,7 +306,9 @@ export function generateOpenApiDocument(input?: OpenApiDocumentInput): Record<st
       properties: { error: { $ref: "#/components/schemas/Error" } },
     },
   };
-  for (const contract of routeContracts) {
+  for (let contractIndex = 0; contractIndex < routeContracts.length; contractIndex += 1) {
+    const contract = routeContracts[contractIndex];
+    if (contract === undefined) throw new AuthConfigurationError("OpenAPI route contracts are malformed");
     if (paths[contract.path] === undefined) paths[contract.path] = {};
     const path = paths[contract.path] as Record<string, JsonValue>;
     path[contract.method.toLowerCase()] = operation(contract);

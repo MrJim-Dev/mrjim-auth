@@ -347,6 +347,17 @@ describe("Task 7 OAuth and identity safety", () => {
       scopes: ["openid", "email", "profile"],
       capabilities: { authorization_code: true, pkce: true, identity_linking: true },
     }]);
+    const originalValues = Map.prototype.values;
+    let discoveryThrown: unknown;
+    try {
+      Map.prototype.values = (() => { throw new Error("oauth-provider-values-sentinel"); }) as typeof Map.prototype.values;
+      service.listProviders();
+    } catch (error) {
+      discoveryThrown = error;
+    } finally {
+      Map.prototype.values = originalValues;
+    }
+    expect(discoveryThrown).toBeUndefined();
     expect(JSON.stringify(service.listProviders())).not.toMatch(/client.?id|secret|token/i);
     const discoveryResponse = providersRoute(service, new Request("https://project.example.com/providers"));
     expect(discoveryResponse.headers.get("cache-control")).toBe("no-store");
