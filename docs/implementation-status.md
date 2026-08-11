@@ -116,8 +116,9 @@ controller resolution captures `WeakMap`, `WeakSet`, `Object.create`, and
 `Object.freeze` intrinsics at module initialization and adds direct regression
 coverage. Project-supplied adapters are trusted executable code, while all
 values returned or thrown by them remain untrusted and sanitized. This
-resolution is pending same-reviewer confirmation and does not yet claim
-approval or a final blocker disposition.
+resolution was independently confirmed against simultaneous replacement of
+all captured methods. Task 6 is approved with no remaining Critical or
+Important findings.
 
 ## Required dependency policy
 
@@ -161,8 +162,8 @@ local PostgreSQL 16 clusters.
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
-| 6. Users and recovery | Escalation resolution pending reviewer confirmation | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL race invocations, plus controller intrinsic-tampering regressions (52/52 mandated and 156/156 full) are recorded below; final reviewer confirmation remains pending |
-| 7. OAuth and identities | Pending | Not run |
+| 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
+| 7. OAuth and identities | In progress | Task brief generated; implementation and review pending |
 | 8. Dynamic authorization | Pending | Not run |
 | 9. HTTP and OpenAPI | Pending | Not run |
 | 10. Browser client | Pending | Not run |
@@ -173,10 +174,6 @@ local PostgreSQL 16 clusters.
 
 ## Blockers
 
-Task 6's fifth-pass reviewer escalated a same-realm intrinsic-tampering finding.
-The controller has applied captured-intrinsic hardening and regression tests;
-the same reviewer must confirm the exact resolution range. This status
-intentionally does not claim approval or a final blocker disposition.
 The scoped post-fix security scan did not finalize because its canonical manifest was missing the required
 `scan.target.snapshotDigest` value and the scanner returned exactly:
 `scan.target.snapshotDigest: expected a non-empty string`. The scan was not
@@ -186,13 +183,18 @@ historical Task 5 scope excluded OAuth provider exchanges, authorization
 enforcement, HTTP routes, browser refresh orchestration, framework adapters,
 administration, and the broader Task 13 documentation surface; those remain
 later Tasks 7-14. The optional security scanner was not invoked for Task 6,
-per the Task 6 handoff constraint; the independent reviewer remains
-responsible for that review path.
+per the Task 6 handoff constraint. This is a tooling-evidence limitation, not
+a product blocker; independent source review approved Task 6.
+
+The final reviewer also observed one non-blocking harness residual: the packed
+CLI migration test exceeded Vitest's default five-second timeout under that
+review run, then passed within seven seconds when rerun with a bounded
+30-second timeout. The controller's plain `pnpm test` run passed 156/156. A
+per-test timeout should be considered during Task 14 release hardening.
 
 ## Remaining work
 
-Complete post-resolution gates, return the exact escalation-resolution range
-to the same independent reviewer, then implement Tasks 7-14
+Implement Tasks 7-14
 with independent review after each task and complete the whole-branch review
 and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement
@@ -505,14 +507,14 @@ documentation/status/report follow-up is `e86b6ff` with final evidence
 amended in `8d3a752`. The final Pass 4 report-only follow-ups are `d2a7411`
 and `03483fd`; `03483fd` is the Pass 5 baseline.
 
-## Task 6 scope and verification — escalation resolution pending confirmation
+## Task 6 scope and verification — escalation resolved and approved
 
 Pass 5 is the fifth and final allowed fix pass for the Task 6 review range. It
 is limited to the constructor-reachable trusted-marker finding and the
 nondeterministic normalized-email race test. It does not add OAuth/provider
 adapters, RBAC APIs, HTTP routes, clients, framework adapters, administration
-APIs, or Task 7+ behavior. The same independent reviewer must re-review this
-range; this status does not claim approval or a no-blocker disposition.
+APIs, or Task 7+ behavior. The same independent reviewer approved the final
+controller resolution range with no remaining Critical or Important findings.
 
 Pass 5 changes the trusted failure marker from a class instance to a fresh,
 frozen `Object.create(null)` token. The token has no constructor, prototype,
@@ -560,8 +562,8 @@ no `0005` migration was added.
 Pass 5 code/tests are committed as `6f29e9e`. The documentation/status/report
 commit is `cef8816b7be463b98ee8e50df7def9bb5d908191`; the Pass 5 final
 documentation amendment is `d6762c99d1984143f4da8f317f8163c903c99408`.
-The controller escalation-resolution commit SHA is supplied after its full
-verification. The historical
+The controller escalation-resolution commit is
+`113fee45d999c4fead4b0c5c4d3f57ff01474e3d`. The historical
 Pass 4 report-only commits `d2a7411` and `03483fd` remain recorded above.
 
 The final Pass 5 reviewer confirmed all mandated and full-suite checks but
@@ -577,8 +579,11 @@ and fixed adapter marker remain authoritative. The mandated two-file command
 passes with 52/52 tests (18 lifecycle, 34 enumeration); full post-resolution
 verification also passes frozen install, build, 156/156 tests, typecheck, lint,
 docs check, 11/11 package-export checks, 24/24 migration checks, migration
-immutability, and `git diff --check`. Same-reviewer confirmation is still
-pending.
+immutability, and `git diff --check`. Same-reviewer confirmation replaced all
+four WeakMap/WeakSet methods plus `Object.create` and `Object.freeze`
+simultaneously and preserved exact trusted-error identity, fixed adapter-error
+classification, frozen null-prototype markers, and secret redaction. Task 6 is
+approved.
 
 ## Task 3 scope and verification (historical)
 
