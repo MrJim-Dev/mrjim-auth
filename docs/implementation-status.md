@@ -102,6 +102,14 @@ conceals expected issuance delivery/persistence/audit failures with a safe
 project-owned observability hook, and moves issuance rate-limit hooks before
 redirect validation. It also replaces the reset race fixture with the real
 recovery-reset transaction path and adds deterministic ban-vs-session races.
+Review Fix Pass 3 adds a private adapter-boundary trust marker so injected
+mailer, repository, audit, limiter, and observer failures cannot pass through
+adapter-supplied `AuthApiError` messages or details. Unclassified adapter
+failures map to the fixed public `internal_error`; concealed issuance paths
+map them to the exact generic success envelope and expose only a fixed
+`adapter_error` observability class with canonical request fingerprints.
+Recovery verification limiter hooks now run before rejected-redirect
+validation. This pass is pending re-review and does not claim approval.
 
 ## Required dependency policy
 
@@ -145,7 +153,7 @@ local PostgreSQL 16 clusters.
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
-| 6. Users and recovery | Review Fix Pass 2 pending re-review | Pass 2 RED/GREEN and full verification are recorded below; no approval is claimed |
+| 6. Users and recovery | Review Fix Pass 3 pending re-review | Pass 3 RED/GREEN and full verification are recorded below; no approval or final blocker disposition is claimed |
 | 7. OAuth and identities | Pending | Not run |
 | 8. Dynamic authorization | Pending | Not run |
 | 9. HTTP and OpenAPI | Pending | Not run |
@@ -157,7 +165,7 @@ local PostgreSQL 16 clusters.
 
 ## Blockers
 
-Task 6 Review Fix Pass 2 is pending re-review by the same independent reviewer;
+Task 6 Review Fix Pass 3 is pending re-review by the same independent reviewer;
 this status intentionally does not claim approval or a final blocker disposition.
 The scoped post-fix security scan did not finalize because its canonical manifest was missing the required
 `scan.target.snapshotDigest` value and the scanner returned exactly:
@@ -350,7 +358,7 @@ Strict TDD evidence for Review Fix Pass 2:
   remains `scan.target.snapshotDigest: expected a non-empty string`; no
   finalized no-findings result is claimed for either fix pass.
 
-## Task 6 scope and verification — Review Fix Pass 2 pending re-review
+## Task 6 scope and verification — Review Fix Pass 3 pending re-review
 
 Task 6 implementation is present in this worktree and is pending the same
 independent review. The scope remains limited to
@@ -359,8 +367,9 @@ boundaries, and the narrow repository/session contracts needed by those flows.
 It does not add OAuth/provider adapters, RBAC APIs, HTTP routes, clients,
 framework adapters, administration APIs, or Task 7+ behavior.
 
-Pass 1 fixes the initial independent review findings, and Pass 2 fixes the
-follow-up findings:
+Pass 1 fixes the initial independent review findings, Pass 2 fixes the first
+follow-up findings, and Pass 3 fixes the adapter-error trust-boundary finding
+and recovery-verification limiter ordering:
 
 - validates and canonicalizes both configured redirect boundaries before any
   account lookup, preserving deep public-result equality for existing,
@@ -394,6 +403,15 @@ follow-up findings:
 - counts invalid redirects after the per-IP and per-identifier limiter hooks,
   replaces the direct-SQL reset race with the real recovery-reset path, and
   adds committed-ban races for session creation and refresh.
+- treats all unclassified values crossing injected mailer, repository, audit,
+  limiter, or observer boundaries as opaque and returns the fixed
+  `internal_error`; only private service-created failures can preserve trusted
+  prevalidation/configuration policy errors;
+- makes concealed existing/missing/duplicate issuance results deeply equal
+  even when an adapter throws an `AuthApiError`, ordinary `Error`, string, or
+  exotic object containing email, token, code, link, redirect, or provider
+  data; observer payloads retain only fixed action/template/outcome/error class
+  and canonical IP/UA fingerprints.
 
 Changed production files include `server/users.ts`, `passwords.ts`,
 `one-time-tokens.ts`, `sessions.ts`, `server/index.ts`, PostgreSQL users/session
@@ -448,8 +466,9 @@ Final command evidence and the remaining Tasks 7-14 are recorded in
 `.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-6-report.md`.
 
 The Pass 1 implementation commit is historical: `f674967` (`fix: harden task 6 auth lifecycle`).
-Pass 2 code/tests are committed as `601599e`; this status and the detailed
-report are the tracked/force-added documentation follow-up pending re-review.
+Pass 2 code/tests are historical and committed as `601599e`; the Pass 2 docs
+SHA is `b42cc95`. Pass 3 code/tests are committed as `ea8437b`; the Pass 3
+status/report documentation follow-up is the current pending re-review range.
 
 ## Task 3 scope and verification (historical)
 
