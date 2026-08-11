@@ -468,7 +468,8 @@ Final command evidence and the remaining Tasks 7-14 are recorded in
 The Pass 1 implementation commit is historical: `f674967` (`fix: harden task 6 auth lifecycle`).
 Pass 2 code/tests are historical and committed as `601599e`; the Pass 2 docs
 SHA is `b42cc95`. Pass 3 code/tests are committed as `ea8437b`; the Pass 3
-status/report documentation follow-up is the current pending re-review range.
+status/report documentation is committed as `5068a60` and remains the current
+pending re-review range.
 
 ## Task 3 scope and verification (historical)
 
