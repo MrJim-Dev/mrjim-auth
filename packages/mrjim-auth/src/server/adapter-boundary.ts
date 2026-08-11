@@ -10,54 +10,22 @@ export type TrustedServiceError = AuthApiError | AuthConfigurationError | AuthPr
  */
 const trustedFailures = new WeakMap<object, TrustedServiceError>();
 
-class TrustedServiceFailure extends Error {
-  constructor(error: TrustedServiceError) {
-    super("trusted service failure");
-    Object.setPrototypeOf(this, TrustedServiceFailure.prototype);
-    Object.defineProperty(this, "name", {
-      value: "TrustedServiceFailure",
-      configurable: false,
-      enumerable: false,
-      writable: false,
-    });
-    Object.defineProperty(this, "stack", {
-      value: "TrustedServiceFailure",
-      configurable: false,
-      enumerable: false,
-      writable: false,
-    });
-    trustedFailures.set(this, error);
-    Object.freeze(this);
-  }
+function trustedFailureMarker(error: TrustedServiceError): object {
+  // A null-prototype object has no constructor, inherited fields, accessors,
+  // error surface, or constructible prototype for an adapter to discover.
+  const marker = Object.create(null) as object;
+  trustedFailures.set(marker, error);
+  return Object.freeze(marker);
 }
-
-Object.freeze(TrustedServiceFailure.prototype);
 
 const adapterFailures = new WeakSet<object>();
 
 /** Fixed marker for any arbitrary value thrown by an injected adapter. */
-class AdapterBoundaryFailure extends Error {
-  constructor() {
-    super("adapter operation failed");
-    Object.setPrototypeOf(this, AdapterBoundaryFailure.prototype);
-    Object.defineProperty(this, "name", {
-      value: "AdapterBoundaryFailure",
-      configurable: false,
-      enumerable: false,
-      writable: false,
-    });
-    Object.defineProperty(this, "stack", {
-      value: "AdapterBoundaryFailure",
-      configurable: false,
-      enumerable: false,
-      writable: false,
-    });
-    adapterFailures.add(this);
-    Object.freeze(this);
-  }
+function adapterFailureMarker(): object {
+  const marker = Object.create(null) as object;
+  adapterFailures.add(marker);
+  return Object.freeze(marker);
 }
-
-Object.freeze(AdapterBoundaryFailure.prototype);
 
 /** Identifies only the exact fixed adapter marker created in this module. */
 export function isAdapterBoundaryFailure(error: unknown): boolean {
@@ -67,7 +35,7 @@ export function isAdapterBoundaryFailure(error: unknown): boolean {
 
 /** Marks a service-owned expected/configuration error before an adapter call. */
 export function trustedFailure(error: TrustedServiceError): never {
-  throw new TrustedServiceFailure(error);
+  throw trustedFailureMarker(error);
 }
 
 /** Trusted prevalidation never crosses an adapter transaction. */
@@ -85,7 +53,7 @@ export async function adapterCall<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch {
-    throw new AdapterBoundaryFailure();
+    throw adapterFailureMarker();
   }
 }
 
@@ -101,6 +69,6 @@ export async function adapterTransaction<T>(
       const trusted = trustedFailures.get(error);
       if (trusted !== undefined) return onTrustedFailure(trusted);
     }
-    throw new AdapterBoundaryFailure();
+    throw adapterFailureMarker();
   }
 }

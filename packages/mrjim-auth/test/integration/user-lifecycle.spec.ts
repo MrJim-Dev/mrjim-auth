@@ -149,6 +149,71 @@ function transactionFailureRepository(base: PostgresAdapter, failure: "repositor
   };
 }
 
+function targetPrecheckBarrier(expected: number, timeoutMs: number) {
+  let arrivalCount = 0;
+  let opened = false;
+  let resolveReady!: () => void;
+  let resolveRelease!: () => void;
+  const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
+  const released = new Promise<void>((resolve) => { resolveRelease = resolve; });
+  const release = () => {
+    if (opened) return;
+    opened = true;
+    resolveRelease();
+  };
+  return {
+    ready,
+    arrivals: () => arrivalCount,
+    release,
+    async arrive(): Promise<void> {
+      if (opened) return;
+      arrivalCount += 1;
+      if (arrivalCount === expected) {
+        resolveReady();
+        release();
+      }
+      if (opened) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          released,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              release();
+              reject(new Error("target-email precheck barrier timed out"));
+            }, timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
+  };
+}
+
+function targetPrecheckBarrierRepository(
+  base: PostgresAdapter,
+  target: string,
+  barrier: ReturnType<typeof targetPrecheckBarrier>,
+): PostgresAdapter {
+  return {
+    ...base,
+    async transaction<T>(callback: (transaction: AuthRepository) => Promise<T>): Promise<T> {
+      return base.transaction((transaction) => callback({
+        ...transaction,
+        users: {
+          ...transaction.users,
+          findByNormalizedEmail: async (email, options) => {
+            const result = await transaction.users.findByNormalizedEmail(email, options);
+            if (email === target) await barrier.arrive();
+            return result;
+          },
+        },
+      } as AuthRepository));
+    },
+  };
+}
+
 function data<T>(result: { readonly data: T | null; readonly error: unknown }): T {
   if (result.data === null) throw new Error(`expected success, got ${JSON.stringify(result.error)}`);
   return result.data;
@@ -589,35 +654,50 @@ describe("Task 6 user lifecycle", () => {
   });
 
   it("resolves concurrent normalized-email target races with one committed proof", async () => {
-    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
-    const first = data(await service.users.signUp({ email: "email-change-race-a@example.com", password: PASSWORD }));
-    const second = data(await service.users.signUp({ email: "email-change-race-b@example.com", password: PASSWORD }));
+    const setup = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const first = data(await setup.users.signUp({ email: "email-change-race-a@example.com", password: PASSWORD }));
+    const second = data(await setup.users.signUp({ email: "email-change-race-b@example.com", password: PASSWORD }));
     if (first.user === null || first.session === null || second.user === null || second.session === null) {
       throw new Error("expected target-race users");
     }
     const target = "email-change-race-target@example.com";
-    await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
+    await (setup.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
       { session: first.session },
       { email: target, redirectTo: CALLBACK },
     );
-    const firstMessage = service.mailer.latest("confirmation");
-    await (service.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
+    const firstMessage = setup.mailer.latest("confirmation");
+    await (setup.users as unknown as { updateUser: (subject: unknown, patch: unknown) => Promise<unknown> }).updateUser(
       { session: second.session },
       { email: target, redirectTo: CALLBACK },
     );
-    const secondMessage = service.mailer.latest("confirmation");
-    const results = await Promise.all([
-      (service.users as unknown as { confirmEmailChange: (input: unknown) => Promise<unknown> }).confirmEmailChange({
+    const secondMessage = setup.mailer.latest("confirmation");
+    const barrier = targetPrecheckBarrier(2, 10_000);
+    const raced = services({
+      requireEmailConfirmation: false,
+      concealUserExistence: false,
+      repository: targetPrecheckBarrierRepository(setup.repository, target, barrier),
+    });
+    const inputs = [
+      {
         email: target,
         token: firstMessage?.variables.token ?? "",
         redirectTo: CALLBACK,
-      }),
-      (service.users as unknown as { confirmEmailChange: (input: unknown) => Promise<unknown> }).confirmEmailChange({
+      },
+      {
         email: target,
         token: secondMessage?.variables.token ?? "",
         redirectTo: CALLBACK,
-      }),
-    ]);
+      },
+    ];
+    let results: unknown[];
+    try {
+      results = await Promise.all(inputs.map((input) =>
+        (raced.users as unknown as { confirmEmailChange: (value: unknown) => Promise<unknown> }).confirmEmailChange(input)));
+    } finally {
+      barrier.release();
+    }
+    expect(barrier.arrivals()).toBe(2);
+    expect(results).toHaveLength(2);
     expect(results.filter((result) => (result as { readonly error: unknown }).error === null)).toHaveLength(1);
     expect(results.filter((result) => (result as { readonly error: { readonly code?: string } | null }).error?.code === "internal_error")).toHaveLength(1);
     const owners = await disposable?.pool.query("SELECT email FROM auth.users WHERE id IN ($1, $2) ORDER BY email", [first.user.id, second.user.id]);
@@ -628,6 +708,16 @@ describe("Task 6 user lifecycle", () => {
     );
     expect(tokenRows?.rows.filter((row) => row.consumed_at !== null)).toHaveLength(1);
     expect(tokenRows?.rows.filter((row) => row.consumed_at === null)).toHaveLength(1);
+    const winnerIndex = results.findIndex((result) => (result as { readonly error: unknown }).error === null);
+    const loserIndex = winnerIndex === 0 ? 1 : 0;
+    const retry = await (raced.users as unknown as { confirmEmailChange: (value: unknown) => Promise<unknown> }).confirmEmailChange(inputs[loserIndex]);
+    expect(retry).toMatchObject({ data: null, error: { code: "conflict", status: 409 } });
+    const tokenRowsAfterRetry = await disposable?.pool.query(
+      "SELECT consumed_at FROM auth.one_time_tokens WHERE target = $1 AND purpose = 'email_change' ORDER BY created_at",
+      [target],
+    );
+    expect(tokenRowsAfterRetry?.rows.filter((row) => row.consumed_at !== null)).toHaveLength(1);
+    expect(tokenRowsAfterRetry?.rows.filter((row) => row.consumed_at === null)).toHaveLength(1);
   });
 
   it("fails closed for banned session creation and refresh", async () => {

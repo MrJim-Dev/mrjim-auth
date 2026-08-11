@@ -142,6 +142,63 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter, options:
 }
 
 describe("enumeration-resistant public lifecycle results", () => {
+  it("exposes only a constructorless identity marker and rejects constructor-forged trusted failures", async () => {
+    const secret = new AuthApiError("invalid_request", 400, `forged ${SECRET_EMAIL} token=${SECRET_TOKEN} code=${SECRET_CODE} provider=${SECRET_PROVIDER}`);
+    const observations: Array<{
+      readonly prototype: object | null;
+      readonly prototypeConstructor: unknown;
+      readonly markerConstructor: unknown;
+      readonly frozen: boolean;
+      readonly keys: string[];
+    }> = [];
+    const current = service(SECRET_EMAIL, undefined, {
+      transactionFailureTransform: (error) => {
+        const marker = error as object;
+        const prototype = Object.getPrototypeOf(marker);
+        const prototypeConstructor = prototype === null ? undefined : Reflect.get(prototype, "constructor");
+        observations.push({
+          prototype,
+          prototypeConstructor,
+          markerConstructor: Reflect.get(marker, "constructor"),
+          frozen: Object.isFrozen(marker),
+          keys: Reflect.ownKeys(marker).map(String),
+        });
+
+        let forged: object;
+        if (typeof prototypeConstructor === "function") {
+          forged = Reflect.construct(prototypeConstructor, [secret]) as object;
+        } else {
+          forged = Object.create(null) as object;
+          Object.defineProperty(forged, "error", { value: secret, enumerable: true });
+        }
+        return forged;
+      },
+    });
+    const tokenService = (current as unknown as { readonly oneTimeTokens: OneTimeTokenService }).oneTimeTokens;
+
+    const result = await tokenService.consumeForMutation({
+      purpose: "email_change",
+      target: SECRET_EMAIL,
+      token: "valid-token",
+      redirectTo: CALLBACK,
+    }, async () => ({ committed: true }));
+
+    expect(result).toMatchObject({
+      data: null,
+      error: { code: "internal_error", status: 500, message: "Internal authentication error" },
+    });
+    expect(observations).toHaveLength(1);
+    expect(observations[0]?.prototype).toBeNull();
+    expect(observations[0]?.prototypeConstructor).toBeUndefined();
+    expect(observations[0]?.markerConstructor).toBeUndefined();
+    expect(observations[0]?.frozen).toBe(true);
+    expect(observations[0]?.keys).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain(SECRET_EMAIL);
+    expect(JSON.stringify(result)).not.toContain(SECRET_TOKEN);
+    expect(JSON.stringify(result)).not.toContain(SECRET_CODE);
+    expect(JSON.stringify(result)).not.toContain(SECRET_PROVIDER);
+  });
+
   it("does not restore a trusted policy error from a transaction-mutated marker", async () => {
     const secret = new AuthApiError("invalid_request", 400, `mutated ${SECRET_EMAIL} token=${SECRET_TOKEN} provider=${SECRET_PROVIDER}`);
     const markerObservations: Array<{ readonly keys: string[]; readonly serialized: string; readonly hasError: boolean; readonly hasCause: boolean }> = [];
@@ -207,6 +264,16 @@ describe("enumeration-resistant public lifecycle results", () => {
       Object.setPrototypeOf(lookalike, Object.getPrototypeOf(error));
       Object.defineProperty(lookalike, "error", { value: secret, enumerable: true, configurable: true, writable: true });
       return lookalike;
+    }],
+    ["null-prototype lookalike", (_error: unknown, secret: AuthApiError) => {
+      const lookalike = Object.create(null) as Record<PropertyKey, unknown>;
+      Object.defineProperty(lookalike, "error", { value: secret, enumerable: true, configurable: true, writable: true });
+      return lookalike;
+    }],
+    ["structured clone", (error: unknown, secret: AuthApiError) => {
+      const clone = structuredClone(error);
+      Object.defineProperty(clone, "error", { value: secret, enumerable: true, configurable: true, writable: true });
+      return clone;
     }],
   ] as const)("sanitizes a transaction %s/look-alike marker", async (_label, transform) => {
     const secret = new AuthApiError("invalid_request", 400, `lookalike ${SECRET_EMAIL} token=${SECRET_TOKEN}`);
