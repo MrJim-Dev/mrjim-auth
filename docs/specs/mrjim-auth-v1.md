@@ -104,6 +104,22 @@ Project backend: /auth/v1/*
 
 No SDK method connects directly from a browser to PostgreSQL.
 
+### Adapter trust boundary
+
+Project-supplied repository, mailer, OAuth, key-provider, rate-limiter, logger,
+cookie, and framework adapters are trusted executable code selected by the
+project operator. They run in the same JavaScript process as `mrjim-auth`; the
+SDK does not claim to sandbox an arbitrary hostile adapter or code that mutates
+the realm before the SDK module is initialized.
+
+Values returned or thrown by an adapter are nevertheless untrusted data. The
+server boundary validates returned values, maps arbitrary thrown values to
+fixed public errors, and never exposes adapter messages, stacks, causes,
+details, recipient identifiers, tokens, codes, or provider secrets. Security-
+sensitive identity bookkeeping captures the required JavaScript intrinsics at
+module initialization so a callback cannot change those decisions by
+temporarily replacing mutable prototype methods while it executes.
+
 ## 6. Package initialization
 
 ### Browser or isomorphic client

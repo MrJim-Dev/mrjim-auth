@@ -9,28 +9,51 @@ export type TrustedServiceError = AuthApiError | AuthConfigurationError | AuthPr
  * replace, serialize, or otherwise influence the value restored by a caller.
  */
 const trustedFailures = new WeakMap<object, TrustedServiceError>();
+const adapterFailures = new WeakSet<object>();
+
+// Capture the realm intrinsics before any injected adapter executes. Adapter
+// callbacks run in-process and may temporarily replace prototype methods; the
+// security boundary must not dispatch through those mutable properties after
+// control has crossed into adapter code.
+const weakMapGet = Function.prototype.call.bind(WeakMap.prototype.get) as <K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+) => V | undefined;
+const weakMapSet = Function.prototype.call.bind(WeakMap.prototype.set) as <K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+  value: V,
+) => WeakMap<K, V>;
+const weakSetAdd = Function.prototype.call.bind(WeakSet.prototype.add) as <T extends object>(
+  set: WeakSet<T>,
+  value: T,
+) => WeakSet<T>;
+const weakSetHas = Function.prototype.call.bind(WeakSet.prototype.has) as <T extends object>(
+  set: WeakSet<T>,
+  value: T,
+) => boolean;
+const objectCreate = Object.create;
+const objectFreeze = Object.freeze;
 
 function trustedFailureMarker(error: TrustedServiceError): object {
   // A null-prototype object has no constructor, inherited fields, accessors,
   // error surface, or constructible prototype for an adapter to discover.
-  const marker = Object.create(null) as object;
-  trustedFailures.set(marker, error);
-  return Object.freeze(marker);
+  const marker = objectCreate(null) as object;
+  weakMapSet(trustedFailures, marker, error);
+  return objectFreeze(marker);
 }
-
-const adapterFailures = new WeakSet<object>();
 
 /** Fixed marker for any arbitrary value thrown by an injected adapter. */
 function adapterFailureMarker(): object {
-  const marker = Object.create(null) as object;
-  adapterFailures.add(marker);
-  return Object.freeze(marker);
+  const marker = objectCreate(null) as object;
+  weakSetAdd(adapterFailures, marker);
+  return objectFreeze(marker);
 }
 
 /** Identifies only the exact fixed adapter marker created in this module. */
 export function isAdapterBoundaryFailure(error: unknown): boolean {
   if (error === null || (typeof error !== "object" && typeof error !== "function")) return false;
-  return adapterFailures.has(error);
+  return weakSetHas(adapterFailures, error);
 }
 
 /** Marks a service-owned expected/configuration error before an adapter call. */
@@ -66,7 +89,7 @@ export async function adapterTransaction<T>(
     return await operation();
   } catch (error) {
     if (error !== null && (typeof error === "object" || typeof error === "function")) {
-      const trusted = trustedFailures.get(error);
+      const trusted = weakMapGet(trustedFailures, error);
       if (trusted !== undefined) return onTrustedFailure(trusted);
     }
     throw adapterFailureMarker();

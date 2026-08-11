@@ -110,9 +110,14 @@ had a constructor-reachable registration path. Current Review Fix Pass 5
 replaces that class with a factory-created null-prototype exact-identity token.
 Only the exact marker can restore a service-created policy error; every
 arbitrary adapter value maps to fixed `internal_error`, while the service-owned
-duplicate precheck retains its documented conflict. Pass 5 is pending final
-same-reviewer re-review and does not claim approval or a final blocker
-disposition.
+duplicate precheck retains its documented conflict. The final reviewer then
+escalated same-realm prototype replacement after the fifth fix pass. The
+controller resolution captures `WeakMap`, `WeakSet`, `Object.create`, and
+`Object.freeze` intrinsics at module initialization and adds direct regression
+coverage. Project-supplied adapters are trusted executable code, while all
+values returned or thrown by them remain untrusted and sanitized. This
+resolution is pending same-reviewer confirmation and does not yet claim
+approval or a final blocker disposition.
 
 ## Required dependency policy
 
@@ -156,7 +161,7 @@ local PostgreSQL 16 clusters.
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
-| 6. Users and recovery | Review Fix Pass 5 pending final re-review | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL race invocations, frozen install, build, typecheck, lint, docs, exports, migrations, and diff checks are recorded below; no approval or final blocker disposition is claimed |
+| 6. Users and recovery | Escalation resolution pending reviewer confirmation | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL race invocations, plus controller intrinsic-tampering regressions (52/52 mandated and 156/156 full) are recorded below; final reviewer confirmation remains pending |
 | 7. OAuth and identities | Pending | Not run |
 | 8. Dynamic authorization | Pending | Not run |
 | 9. HTTP and OpenAPI | Pending | Not run |
@@ -168,8 +173,10 @@ local PostgreSQL 16 clusters.
 
 ## Blockers
 
-Task 6 Review Fix Pass 5 is pending final re-review by the same independent reviewer;
-this status intentionally does not claim approval or a final blocker disposition.
+Task 6's fifth-pass reviewer escalated a same-realm intrinsic-tampering finding.
+The controller has applied captured-intrinsic hardening and regression tests;
+the same reviewer must confirm the exact resolution range. This status
+intentionally does not claim approval or a final blocker disposition.
 The scoped post-fix security scan did not finalize because its canonical manifest was missing the required
 `scan.target.snapshotDigest` value and the scanner returned exactly:
 `scan.target.snapshotDigest: expected a non-empty string`. The scan was not
@@ -184,7 +191,8 @@ responsible for that review path.
 
 ## Remaining work
 
-Return this Pass 5 range to the same independent reviewer, then implement Tasks 7-14
+Complete post-resolution gates, return the exact escalation-resolution range
+to the same independent reviewer, then implement Tasks 7-14
 with independent review after each task and complete the whole-branch review
 and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement
@@ -497,7 +505,7 @@ documentation/status/report follow-up is `e86b6ff` with final evidence
 amended in `8d3a752`. The final Pass 4 report-only follow-ups are `d2a7411`
 and `03483fd`; `03483fd` is the Pass 5 baseline.
 
-## Task 6 scope and verification — Review Fix Pass 5 pending final re-review
+## Task 6 scope and verification — escalation resolution pending confirmation
 
 Pass 5 is the fifth and final allowed fix pass for the Task 6 review range. It
 is limited to the constructor-reachable trusted-marker finding and the
@@ -550,9 +558,27 @@ contract, verifier, packing/copy checks, and incremental tests remain unchanged;
 no `0005` migration was added.
 
 Pass 5 code/tests are committed as `6f29e9e`. The documentation/status/report
-commit is `cef8816b7be463b98ee8e50df7def9bb5d908191`; the final clean-tree
-documentation amendment SHA is supplied in the final handoff. The historical
+commit is `cef8816b7be463b98ee8e50df7def9bb5d908191`; the Pass 5 final
+documentation amendment is `d6762c99d1984143f4da8f317f8163c903c99408`.
+The controller escalation-resolution commit SHA is supplied after its full
+verification. The historical
 Pass 4 report-only commits `d2a7411` and `03483fd` remain recorded above.
+
+The final Pass 5 reviewer confirmed all mandated and full-suite checks but
+escalated one Important same-process concern: an adapter callback could replace
+`WeakMap.prototype.get/set` or `WeakSet.prototype.add/has` while the
+transaction boundary was active. Because five delegated fix passes were
+already exhausted, the controller resolved the escalation directly. The
+boundary now captures those methods, plus `Object.create` and `Object.freeze`,
+before any adapter executes and never dispatches security-sensitive identity
+operations through mutable prototype properties afterward. Direct regressions
+replace each affected prototype method and prove the original trusted failure
+and fixed adapter marker remain authoritative. The mandated two-file command
+passes with 52/52 tests (18 lifecycle, 34 enumeration); full post-resolution
+verification also passes frozen install, build, 156/156 tests, typecheck, lint,
+docs check, 11/11 package-export checks, 24/24 migration checks, migration
+immutability, and `git diff --check`. Same-reviewer confirmation is still
+pending.
 
 ## Task 3 scope and verification (historical)
 

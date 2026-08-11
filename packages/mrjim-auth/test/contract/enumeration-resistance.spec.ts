@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { EmailService } from "../../src/server/email.js";
+import {
+  adapterCall,
+  adapterTransaction,
+  isAdapterBoundaryFailure,
+  trustedFailure,
+} from "../../src/server/adapter-boundary.js";
 import { FakeMailer } from "../../src/testing/fake-mailer.js";
 import { OneTimeTokenService } from "../../src/server/one-time-tokens.js";
 import { PasswordService } from "../../src/server/passwords.js";
@@ -142,6 +148,98 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter, options:
 }
 
 describe("enumeration-resistant public lifecycle results", () => {
+  it("uses captured WeakMap intrinsics to restore only the original trusted failure", async () => {
+    const expected = new AuthApiError("invalid_token", 401, "Invalid or expired link");
+    const injected = new AuthApiError(
+      "invalid_request",
+      400,
+      `intrinsic ${SECRET_EMAIL} token=${SECRET_TOKEN} provider=${SECRET_PROVIDER}`,
+    );
+    const setDescriptor = Object.getOwnPropertyDescriptor(WeakMap.prototype, "set");
+    const getDescriptor = Object.getOwnPropertyDescriptor(WeakMap.prototype, "get");
+    if (setDescriptor === undefined || getDescriptor === undefined) throw new Error("WeakMap intrinsics are unavailable");
+    const originalSet = WeakMap.prototype.set;
+    const originalGet = WeakMap.prototype.get;
+
+    try {
+      Object.defineProperty(WeakMap.prototype, "set", {
+        ...setDescriptor,
+        value(this: WeakMap<object, unknown>, key: object, value: unknown) {
+          return originalSet.call(this, key, value === expected ? injected : value);
+        },
+      });
+      await expect(adapterTransaction(
+        async () => trustedFailure(expected),
+        (error) => { throw error; },
+      )).rejects.toBe(expected);
+    } finally {
+      Object.defineProperty(WeakMap.prototype, "set", setDescriptor);
+    }
+
+    try {
+      Object.defineProperty(WeakMap.prototype, "get", {
+        ...getDescriptor,
+        value(this: WeakMap<object, unknown>, key: object) {
+          const value = originalGet.call(this, key);
+          return value === expected ? injected : value;
+        },
+      });
+      await expect(adapterTransaction(
+        async () => trustedFailure(expected),
+        (error) => { throw error; },
+      )).rejects.toBe(expected);
+    } finally {
+      Object.defineProperty(WeakMap.prototype, "get", getDescriptor);
+    }
+  });
+
+  it("uses captured WeakSet intrinsics for fixed adapter-boundary identities", async () => {
+    const addDescriptor = Object.getOwnPropertyDescriptor(WeakSet.prototype, "add");
+    const hasDescriptor = Object.getOwnPropertyDescriptor(WeakSet.prototype, "has");
+    if (addDescriptor === undefined || hasDescriptor === undefined) throw new Error("WeakSet intrinsics are unavailable");
+    const originalHas = WeakSet.prototype.has;
+    let marker: unknown;
+
+    try {
+      Object.defineProperty(WeakSet.prototype, "add", {
+        ...addDescriptor,
+        value(this: WeakSet<object>) {
+          return this;
+        },
+      });
+      try {
+        await adapterCall(async () => {
+          throw new AuthApiError(
+            "invalid_request",
+            400,
+            `adapter intrinsic ${SECRET_EMAIL} token=${SECRET_TOKEN}`,
+          );
+        });
+      } catch (error) {
+        marker = error;
+      }
+    } finally {
+      Object.defineProperty(WeakSet.prototype, "add", addDescriptor);
+    }
+
+    expect(isAdapterBoundaryFailure(marker)).toBe(true);
+    expect(JSON.stringify(marker)).toBe("{}");
+
+    let classifiedWhilePatched = true;
+    try {
+      Object.defineProperty(WeakSet.prototype, "has", {
+        ...hasDescriptor,
+        value(this: WeakSet<object>, value: object) {
+          return originalHas.call(this, value) ? false : originalHas.call(this, value);
+        },
+      });
+      classifiedWhilePatched = isAdapterBoundaryFailure(marker);
+    } finally {
+      Object.defineProperty(WeakSet.prototype, "has", hasDescriptor);
+    }
+    expect(classifiedWhilePatched).toBe(true);
+  });
+
   it("exposes only a constructorless identity marker and rejects constructor-forged trusted failures", async () => {
     const secret = new AuthApiError("invalid_request", 400, `forged ${SECRET_EMAIL} token=${SECRET_TOKEN} code=${SECRET_CODE} provider=${SECRET_PROVIDER}`);
     const observations: Array<{
