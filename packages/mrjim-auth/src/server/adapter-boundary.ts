@@ -1,43 +1,68 @@
-import { AuthApiError, AuthConfigurationError, AuthProgrammingError } from "../shared/errors.js";
+import type { AuthApiError, AuthConfigurationError, AuthProgrammingError } from "../shared/errors.js";
 
 /** Errors intentionally created by trusted server-side policy code. */
 export type TrustedServiceError = AuthApiError | AuthConfigurationError | AuthProgrammingError;
 
-/**
- * Carries only a trusted, already-constructed error across an adapter call.
- * Adapter-thrown values are never stored here.
+/*
+ * The thrown marker is deliberately only an identity.  Its trusted error is
+ * kept in module-private state so an injected transaction cannot read,
+ * replace, serialize, or otherwise influence the value restored by a caller.
  */
+const trustedFailures = new WeakMap<object, TrustedServiceError>();
+
 class TrustedServiceFailure extends Error {
-  readonly name = "TrustedServiceFailure" as const;
-
-  constructor(readonly error: TrustedServiceError) {
+  constructor(error: TrustedServiceError) {
     super("trusted service failure");
-    Object.setPrototypeOf(this, new.target.prototype);
+    Object.setPrototypeOf(this, TrustedServiceFailure.prototype);
+    Object.defineProperty(this, "name", {
+      value: "TrustedServiceFailure",
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+    Object.defineProperty(this, "stack", {
+      value: "TrustedServiceFailure",
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+    trustedFailures.set(this, error);
+    Object.freeze(this);
   }
 }
 
-interface TrustedServiceFailureShape {
-  readonly error: TrustedServiceError;
-}
+Object.freeze(TrustedServiceFailure.prototype);
 
-/** Identifies only failures created by this private module. */
-export function isTrustedServiceFailure(error: unknown): error is TrustedServiceFailureShape {
-  return error instanceof TrustedServiceFailure;
-}
+const adapterFailures = new WeakSet<object>();
 
-/** Fixed internal classification for an error crossing an injected boundary. */
-export type AdapterFailureClass = "adapter_error" | "email_exists";
-
-/**
- * Deliberately contains no adapter message, cause, stack, or arbitrary fields.
- */
-export class AdapterBoundaryFailure extends Error {
-  readonly name = "AdapterBoundaryFailure" as const;
-
-  constructor(readonly classification: AdapterFailureClass = "adapter_error") {
+/** Fixed marker for any arbitrary value thrown by an injected adapter. */
+class AdapterBoundaryFailure extends Error {
+  constructor() {
     super("adapter operation failed");
-    Object.setPrototypeOf(this, new.target.prototype);
+    Object.setPrototypeOf(this, AdapterBoundaryFailure.prototype);
+    Object.defineProperty(this, "name", {
+      value: "AdapterBoundaryFailure",
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+    Object.defineProperty(this, "stack", {
+      value: "AdapterBoundaryFailure",
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+    adapterFailures.add(this);
+    Object.freeze(this);
   }
+}
+
+Object.freeze(AdapterBoundaryFailure.prototype);
+
+/** Identifies only the exact fixed adapter marker created in this module. */
+export function isAdapterBoundaryFailure(error: unknown): boolean {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return false;
+  return adapterFailures.has(error);
 }
 
 /** Marks a service-owned expected/configuration error before an adapter call. */
@@ -45,64 +70,37 @@ export function trustedFailure(error: TrustedServiceError): never {
   throw new TrustedServiceFailure(error);
 }
 
-/** Preserves trusted synchronous prevalidation while keeping adapter failures opaque. */
+/** Trusted prevalidation never crosses an adapter transaction. */
 export function trustedValidation<T>(operation: () => T): T {
-  try {
-    return operation();
-  } catch (error) {
-    if (error instanceof AuthApiError || error instanceof AuthConfigurationError || error instanceof AuthProgrammingError) {
-      throw new TrustedServiceFailure(error);
-    }
-    throw error;
-  }
+  return operation();
 }
 
-/** Preserves trusted failures from another server service, never adapter details. */
+/** Trusted server-service failures are already outside an adapter transaction. */
 export async function trustedAsync<T>(operation: () => Promise<T>): Promise<T> {
-  try {
-    return await operation();
-  } catch (error) {
-    if (error instanceof AuthApiError || error instanceof AuthConfigurationError || error instanceof AuthProgrammingError) {
-      throw new TrustedServiceFailure(error);
-    }
-    throw error;
-  }
+  return operation();
 }
 
 /** Executes one injected operation without retaining or inspecting its thrown value. */
 export async function adapterCall<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
-  } catch (error) {
-    throw new AdapterBoundaryFailure(classifyAdapterFailure(error));
+  } catch {
+    throw new AdapterBoundaryFailure();
   }
 }
 
-/** Executes an adapter-owned transaction while preserving only trusted callback failures. */
-export async function adapterTransaction<T>(operation: () => Promise<T>): Promise<T> {
+/** Executes an adapter-owned transaction while preserving only an exact trusted marker. */
+export async function adapterTransaction<T>(
+  operation: () => Promise<T>,
+  onTrustedFailure: (error: TrustedServiceError) => never,
+): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    if (isTrustedServiceFailure(error)) throw error;
-    throw new AdapterBoundaryFailure(classifyAdapterFailure(error));
+    if (error !== null && (typeof error === "object" || typeof error === "function")) {
+      const trusted = trustedFailures.get(error);
+      if (trusted !== undefined) return onTrustedFailure(trusted);
+    }
+    throw new AdapterBoundaryFailure();
   }
-}
-
-/**
- * The only adapter classification retained is the repository's fixed,
- * non-secret uniqueness outcome needed for an authenticated email-change
- * conflict. All other adapter values become `adapter_error`.
- */
-function classifyAdapterFailure(error: unknown): AdapterFailureClass {
-  try {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      (error as { readonly name?: unknown }).name === "PostgresRepositoryError" &&
-      (error as { readonly code?: unknown }).code === "email_exists"
-    ) return "email_exists";
-  } catch {
-    // A hostile adapter object may expose throwing getters; it remains opaque.
-  }
-  return "adapter_error";
 }

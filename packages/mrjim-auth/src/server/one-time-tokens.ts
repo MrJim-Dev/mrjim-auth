@@ -10,7 +10,8 @@ import type {
 import { authFailure, authSuccess, type AuthResult } from "../shared/result.js";
 import { AuthApiError, AuthConfigurationError, AuthProgrammingError } from "../shared/errors.js";
 import { sanitizeRedactedMetadata, type UUID } from "../shared/types.js";
-import { AdapterBoundaryFailure, adapterTransaction, isTrustedServiceFailure, trustedFailure } from "./adapter-boundary.js";
+import { adapterTransaction, trustedFailure } from "./adapter-boundary.js";
+import type { TrustedServiceError } from "./adapter-boundary.js";
 import { EmailService, normalizeAndValidateEmail } from "./email.js";
 
 /** Every supported one-time flow is purpose-bound in PostgreSQL. */
@@ -136,14 +137,13 @@ function internalError(): AuthApiError {
 }
 
 function mapMutationError(error: unknown): AuthResult<never> {
-  if (isTrustedServiceFailure(error)) {
-    if (error.error instanceof AuthApiError) return authFailure(error.error);
-    throw error.error;
-  }
-  if (error instanceof AdapterBoundaryFailure && error.classification === "email_exists") {
-    return authFailure(new AuthApiError("conflict", 409, "Email address is already registered"));
-  }
+  if (error instanceof AuthApiError) return authFailure(error);
+  if (error instanceof AuthConfigurationError || error instanceof AuthProgrammingError) throw error;
   return authFailure(internalError());
+}
+
+function rethrowTrusted(error: TrustedServiceError): never {
+  throw error;
 }
 
 /** Server-only purpose-bound token issuer/verifier with project-owned mail. */
@@ -300,7 +300,7 @@ export class OneTimeTokenService {
         }
         const verification = this.verificationFromConsumed(purpose, consumed);
         return mutation(transaction, verification);
-      }));
+      }), rethrowTrusted);
       return authSuccess(result);
     } catch (error) {
       return mapMutationError(error);

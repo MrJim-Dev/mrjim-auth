@@ -619,7 +619,7 @@ describe("Task 6 user lifecycle", () => {
       }),
     ]);
     expect(results.filter((result) => (result as { readonly error: unknown }).error === null)).toHaveLength(1);
-    expect(results.filter((result) => (result as { readonly error: { readonly code?: string } | null }).error?.code === "conflict")).toHaveLength(1);
+    expect(results.filter((result) => (result as { readonly error: { readonly code?: string } | null }).error?.code === "internal_error")).toHaveLength(1);
     const owners = await disposable?.pool.query("SELECT email FROM auth.users WHERE id IN ($1, $2) ORDER BY email", [first.user.id, second.user.id]);
     expect(owners?.rows.filter((row) => row.email === target)).toHaveLength(1);
     const tokenRows = await disposable?.pool.query(

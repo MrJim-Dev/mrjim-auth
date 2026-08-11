@@ -7,7 +7,7 @@ import type {
   RepositoryOperationOptions,
 } from "../shared/contracts.js";
 import { authFailure, authSuccess, type AuthResult } from "../shared/result.js";
-import { AuthApiError, AuthConfigurationError } from "../shared/errors.js";
+import { AuthApiError, AuthConfigurationError, AuthProgrammingError } from "../shared/errors.js";
 import type { JsonObject, Session, User, UUID } from "../shared/types.js";
 import { sanitizeRedactedMetadata, uuidSchema } from "../shared/types.js";
 import { EmailService, normalizeAndValidateEmail } from "./email.js";
@@ -15,14 +15,14 @@ import { OneTimeTokenService, type OneTimeTokenPurpose } from "./one-time-tokens
 import { PasswordService } from "./passwords.js";
 import { normalizeIpAddress, SessionService, type AuthenticatedSession, type SessionContext } from "./sessions.js";
 import {
-  AdapterBoundaryFailure,
   adapterCall,
   adapterTransaction,
   trustedFailure,
   trustedAsync,
   trustedValidation,
-  isTrustedServiceFailure,
+  isAdapterBoundaryFailure,
 } from "./adapter-boundary.js";
+import type { TrustedServiceError } from "./adapter-boundary.js";
 
 export interface UserRequestContext extends SessionContext {
   readonly request_id?: string;
@@ -136,11 +136,13 @@ function invalidApplicationMetadata(): AuthApiError {
 }
 
 function mapUnexpected(error: unknown): AuthResult<never> {
-  if (isTrustedServiceFailure(error)) {
-    if (error.error instanceof AuthApiError) return authFailure(error.error);
-    throw error.error;
-  }
+  if (error instanceof AuthApiError) return authFailure(error);
+  if (error instanceof AuthConfigurationError || error instanceof AuthProgrammingError) throw error;
   return authFailure(internalError());
+}
+
+function rethrowTrusted(error: TrustedServiceError): never {
+  throw error;
 }
 
 function contextOptions(context: UserRequestContext | undefined): UserRequestContext {
@@ -247,7 +249,7 @@ export class UserService {
           await transaction.authorization.assignRole({ user_id: created.id, role_id: role.id }, { now });
         }
         return created;
-      }));
+      }), rethrowTrusted);
 
       let session: Session | null = null;
       if (this.requireEmailConfirmation) {
@@ -262,7 +264,7 @@ export class UserService {
         const deliveryFailure = await this.handleIssuanceFailure(delivery, "signup", "confirmation", context);
         if (deliveryFailure !== null) return deliveryFailure;
       } else {
-        if (this.sessions === undefined) trustedFailure(new AuthConfigurationError("session service is required when confirmation is disabled"));
+        if (this.sessions === undefined) throw new AuthConfigurationError("session service is required when confirmation is disabled");
         const createdSession = await this.sessions.create(user, contextOptions(context));
         if (createdSession.error !== null) return authFailure(createdSession.error);
         session = createdSession.data;
@@ -277,10 +279,6 @@ export class UserService {
       }
       return authSuccess(publicData(user, session, this.concealUserExistence));
     } catch (error) {
-      if (error instanceof AdapterBoundaryFailure && error.classification === "email_exists" && this.concealUserExistence) {
-        await this.passwords.hash(input.password);
-        return authSuccess(publicData(null, null, true));
-      }
       if (await this.concealOperationalFailure(error, "signup", "confirmation", context)) {
         await this.passwords.hash(input.password);
         return authSuccess(publicData(null, null, true));
@@ -300,7 +298,7 @@ export class UserService {
       const verification = await this.passwords.verify(input.password, credential?.password_hash ?? null);
       if (user === null || credential === null || !verification.valid) return authFailure(invalidCredentials());
       const sessions = this.sessions;
-      if (sessions === undefined) trustedFailure(new AuthConfigurationError("session service is required for password sign-in"));
+      if (sessions === undefined) throw new AuthConfigurationError("session service is required for password sign-in");
       const now = trustedValidation(() => validNow(this.clock));
       const result = await adapterTransaction(() => this.repository.transaction(async (transaction) => {
         const lockedUser = await transaction.users.findByIdForUpdate(user.id, { now });
@@ -332,7 +330,7 @@ export class UserService {
           ));
         }
         return { user: updated, session: createdSession.data };
-      }));
+      }), rethrowTrusted);
       const updated = result.user;
       await this.audit(updated.id, "user.sign_in", "success", context, now);
       return authSuccess(publicData(updated, result.session, false));
@@ -402,7 +400,7 @@ export class UserService {
         email_confirmed_at: now,
         confirmed_at: now,
       }, { now }));
-      if (this.sessions === undefined) trustedFailure(new AuthConfigurationError("session service is required for OTP verification"));
+      if (this.sessions === undefined) throw new AuthConfigurationError("session service is required for OTP verification");
       const session = await this.sessions.create(confirmed, contextOptions(context));
       if (session.error !== null) return authFailure(session.error);
       await this.audit(confirmed.id, `user.${purpose}.verified`, "success", context, now);
@@ -520,7 +518,7 @@ export class UserService {
         return Object.keys(input).length === 0
           ? current
           : transaction.users.update(current.id, input, { now });
-      }));
+      }), rethrowTrusted);
       if (pendingEmail !== undefined) {
         const issued = await trustedAsync(() => this.oneTimeTokens.issue({
           purpose: "email_change",
@@ -636,7 +634,7 @@ export class UserService {
       subject.session === null ||
       typeof subject.session !== "object"
     ) return authFailure(unauthorizedSubject());
-    if (this.sessions === undefined) trustedFailure(new AuthConfigurationError("session service is required for self-service mutations"));
+    if (this.sessions === undefined) throw new AuthConfigurationError("session service is required for self-service mutations");
     return this.sessions.authorizeSession(subject.session);
   }
 
@@ -686,7 +684,7 @@ export class UserService {
         occurred_at: now,
       }, { now } satisfies RepositoryOperationOptions);
       return changed;
-    }));
+    }), rethrowTrusted);
   }
 
   private async changePasswordForRecovery(
@@ -714,7 +712,7 @@ export class UserService {
         occurred_at: now,
       }, { now } satisfies RepositoryOperationOptions);
       return changed;
-    }));
+    }), rethrowTrusted);
   }
 
   private async handleIssuanceFailure(
@@ -737,7 +735,7 @@ export class UserService {
     if (!this.concealUserExistence) {
       return false;
     }
-    const isSanitizedAdapterFailure = error instanceof AdapterBoundaryFailure || (
+    const isSanitizedAdapterFailure = isAdapterBoundaryFailure(error) || (
       error instanceof AuthApiError && error.code === "internal_error"
     );
     if (!isSanitizedAdapterFailure) return false;

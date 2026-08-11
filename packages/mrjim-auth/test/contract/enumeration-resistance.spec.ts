@@ -6,6 +6,7 @@ import { PasswordService } from "../../src/server/passwords.js";
 import { UserService } from "../../src/server/users.js";
 import type { AuthRepository, Mailer, RateLimiter } from "../../src/shared/contracts.js";
 import { AuthApiError } from "../../src/shared/errors.js";
+import { PostgresRepositoryError } from "../../src/postgres/repositories/errors.js";
 import { uuidSchema, roleKeySchema } from "../../src/shared/types.js";
 
 const CALLBACK = "https://project.example.com/auth/callback";
@@ -36,6 +37,9 @@ interface ServiceOptions {
   readonly observerError?: unknown;
   readonly auditEvents?: unknown[];
   readonly observerEvents?: unknown[];
+  readonly defaultRoleKeys?: readonly string[];
+  readonly transactionError?: unknown;
+  readonly transactionFailureTransform?: (error: unknown) => unknown;
   readonly onOperationalFailure?: (event: unknown) => void | Promise<void>;
 }
 
@@ -69,7 +73,17 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter, options:
     recordFailure: async () => null,
   };
   const repository = {
-    transaction: async (callback: (value: AuthRepository) => Promise<unknown>) => callback(repository as unknown as AuthRepository),
+    transaction: async (callback: (value: AuthRepository) => Promise<unknown>) => {
+      if (options.transactionError !== undefined) throw options.transactionError;
+      try {
+        return await callback(repository as unknown as AuthRepository);
+      } catch (error) {
+        if (options.transactionFailureTransform !== undefined) {
+          throw options.transactionFailureTransform(error);
+        }
+        throw error;
+      }
+    },
     users: {
       findByNormalizedEmail: async (email: string) => {
         if (options.lookupError !== undefined) throw options.lookupError;
@@ -114,6 +128,7 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter, options:
     rateLimiter: suppliedLimiter ?? limiter(),
     concealUserExistence: true,
     requireEmailConfirmation: true,
+    ...(options.defaultRoleKeys === undefined ? {} : { defaultRoleKeys: options.defaultRoleKeys }),
     ...((options.onOperationalFailure === undefined && options.observerError === undefined && options.observerEvents === undefined)
       ? {}
       : {
@@ -127,6 +142,144 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter, options:
 }
 
 describe("enumeration-resistant public lifecycle results", () => {
+  it("does not restore a trusted policy error from a transaction-mutated marker", async () => {
+    const secret = new AuthApiError("invalid_request", 400, `mutated ${SECRET_EMAIL} token=${SECRET_TOKEN} provider=${SECRET_PROVIDER}`);
+    const markerObservations: Array<{ readonly keys: string[]; readonly serialized: string; readonly hasError: boolean; readonly hasCause: boolean }> = [];
+    const current = service(SECRET_EMAIL, undefined, {
+      transactionFailureTransform: (error) => {
+        try {
+          const marker = error as Record<PropertyKey, unknown>;
+          markerObservations.push({
+            keys: Reflect.ownKeys(marker).map(String),
+            serialized: JSON.stringify(marker),
+            hasError: Object.prototype.hasOwnProperty.call(marker, "error"),
+            hasCause: Object.prototype.hasOwnProperty.call(marker, "cause"),
+          });
+          marker.error = secret;
+          Object.defineProperty(marker, "error", { value: secret, configurable: true, writable: true });
+          Object.setPrototypeOf(marker, Error.prototype);
+          JSON.stringify(marker);
+        } catch {
+          // The regression intentionally attempts every mutable path.
+        }
+        return error;
+      },
+    });
+    const tokenService = (current as unknown as { readonly oneTimeTokens: OneTimeTokenService }).oneTimeTokens;
+
+    const result = await tokenService.consumeForMutation({
+      purpose: "email_change",
+      target: SECRET_EMAIL,
+      token: "valid-token",
+      redirectTo: CALLBACK,
+    }, async () => ({ committed: true }));
+
+    expect(result).toMatchObject({
+      data: null,
+      error: { code: "invalid_token", status: 401, message: "Invalid or expired link" },
+    });
+    expect(JSON.stringify(result)).not.toContain(SECRET_EMAIL);
+    expect(JSON.stringify(result)).not.toContain(SECRET_TOKEN);
+    expect(JSON.stringify(result)).not.toContain(SECRET_PROVIDER);
+    expect(markerObservations).toHaveLength(1);
+    expect(markerObservations[0]?.keys).not.toContain("error");
+    expect(markerObservations[0]?.keys).not.toContain("cause");
+    expect(markerObservations[0]?.hasError).toBe(false);
+    expect(markerObservations[0]?.hasCause).toBe(false);
+    expect(markerObservations[0]?.serialized).not.toContain(SECRET_EMAIL);
+    expect(markerObservations[0]?.serialized).not.toContain(SECRET_TOKEN);
+    expect(markerObservations[0]?.serialized).not.toContain(SECRET_PROVIDER);
+  });
+
+  it.each([
+    ["clone", (error: unknown, secret: AuthApiError) => ({ ...(error as object), error: secret })],
+    ["proxy", (error: unknown, secret: AuthApiError) => new Proxy(error as object, {
+      get: (target, property, receiver) => property === "error" ? secret : Reflect.get(target, property, receiver),
+    })],
+    ["wrapped cause", (error: unknown) => new Error("adapter wrapper", { cause: error })],
+    ["same-prototype clone", (error: unknown, secret: AuthApiError) => {
+      const clone = Object.create(Object.getPrototypeOf(error)) as Record<PropertyKey, unknown>;
+      Object.defineProperty(clone, "error", { value: secret, enumerable: true, configurable: true, writable: true });
+      return clone;
+    }],
+    ["mutated-prototype error", (error: unknown, secret: AuthApiError) => {
+      const lookalike = new Error("lookalike");
+      Object.setPrototypeOf(lookalike, Object.getPrototypeOf(error));
+      Object.defineProperty(lookalike, "error", { value: secret, enumerable: true, configurable: true, writable: true });
+      return lookalike;
+    }],
+  ] as const)("sanitizes a transaction %s/look-alike marker", async (_label, transform) => {
+    const secret = new AuthApiError("invalid_request", 400, `lookalike ${SECRET_EMAIL} token=${SECRET_TOKEN}`);
+    const current = service(SECRET_EMAIL, undefined, {
+      transactionFailureTransform: (error) => transform(error, secret),
+    });
+    const tokenService = (current as unknown as { readonly oneTimeTokens: OneTimeTokenService }).oneTimeTokens;
+
+    const result = await tokenService.consumeForMutation({
+      purpose: "email_change",
+      target: SECRET_EMAIL,
+      token: "valid-token",
+      redirectTo: CALLBACK,
+    }, async () => ({ committed: true }));
+
+    expect(result).toMatchObject({
+      data: null,
+      error: { code: "internal_error", status: 500, message: "Internal authentication error" },
+    });
+    expect(JSON.stringify(result)).not.toContain(SECRET_EMAIL);
+    expect(JSON.stringify(result)).not.toContain(SECRET_TOKEN);
+  });
+
+  it("preserves a trusted configuration throw through a transaction that cannot mutate its marker", async () => {
+    const secret = new AuthApiError("invalid_request", 400, `config leak ${SECRET_EMAIL} token=${SECRET_TOKEN}`);
+    const current = service(SECRET_EMAIL, undefined, {
+      defaultRoleKeys: ["missing"],
+      transactionFailureTransform: (error) => {
+        try {
+          const marker = error as Record<PropertyKey, unknown>;
+          marker.error = secret;
+          Object.setPrototypeOf(marker, Error.prototype);
+        } catch {
+          // Frozen markers must remain opaque and rethrowable.
+        }
+        return error;
+      },
+    });
+
+    await expect(current.signUp({
+      email: "new@example.com",
+      password: "correct horse battery staple",
+    }, undefined)).rejects.toMatchObject({
+      name: "AuthConfigurationError",
+      message: "configured default role is missing",
+    });
+  });
+
+  it.each([
+    ["forged shape", { name: "PostgresRepositoryError", code: "email_exists", message: `forged ${SECRET_EMAIL} token=${SECRET_TOKEN}` }],
+    ["real repository error", new PostgresRepositoryError("email_exists", `real ${SECRET_EMAIL} token=${SECRET_TOKEN}`)],
+    ["subclass", new (class extends PostgresRepositoryError {}) ("email_exists", `subclass ${SECRET_EMAIL} token=${SECRET_TOKEN}`)],
+    ["proxy", new Proxy(new PostgresRepositoryError("email_exists", `proxy ${SECRET_EMAIL} token=${SECRET_TOKEN}`), {})],
+    ["forged AuthApiError", Object.assign(new AuthApiError("internal_error", 500, `auth ${SECRET_EMAIL} token=${SECRET_TOKEN}`), { name: "PostgresRepositoryError", code: "email_exists" })],
+  ] as const)("maps %s email_exists adapter failures to fixed internal_error", async (_label, transactionError) => {
+    const current = service(SECRET_EMAIL, undefined, { transactionError });
+    const tokenService = (current as unknown as { readonly oneTimeTokens: OneTimeTokenService }).oneTimeTokens;
+
+    const result = await tokenService.consumeForMutation({
+      purpose: "email_change",
+      target: SECRET_EMAIL,
+      token: "valid-token",
+      redirectTo: CALLBACK,
+    }, async () => ({ committed: true }));
+
+    expect(result).toMatchObject({
+      data: null,
+      error: { code: "internal_error", status: 500, message: "Internal authentication error" },
+    });
+    expect(JSON.stringify(result)).not.toContain(SECRET_EMAIL);
+    expect(JSON.stringify(result)).not.toContain(SECRET_TOKEN);
+  });
+
   it("keeps recovery results equivalent for existing and nonexistent targets", async () => {
     const existing = await service("existing@example.com").resetPasswordForEmail("existing@example.com", { redirectTo: CALLBACK });
     const missing = await service("existing@example.com").resetPasswordForEmail("missing@example.com", { redirectTo: CALLBACK });
