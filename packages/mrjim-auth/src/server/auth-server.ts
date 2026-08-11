@@ -61,6 +61,7 @@ const searchParamsKeys = captureMethod(nativeURLSearchParams.prototype, "keys");
 const searchParamsIteratorNext = captureIteratorNext();
 const readableStreamGetReader = captureMethod(ReadableStream.prototype, "getReader");
 const readableReaderRead = captureMethod(ReadableStreamDefaultReader.prototype, "read");
+const readableReaderCancel = captureMethod(ReadableStreamDefaultReader.prototype, "cancel");
 const readableReaderReleaseLock = captureMethod(ReadableStreamDefaultReader.prototype, "releaseLock");
 const typedArrayPrototype = objectGetPrototypeOf(nativeUint8Array.prototype);
 const typedArrayLengthGetter = (() => {
@@ -94,6 +95,10 @@ const MAX_SNAPSHOT_DEPTH = 32;
 const MAX_SNAPSHOT_KEYS = 100_000;
 const ALLOWED_REQUEST_HEADERS = new Set(["apikey", "authorization", "content-type", "x-request-id"]);
 const SAFE_CACHE_CONTROL = "public, max-age=300, must-revalidate";
+const FETCH_SITE_VALUES = new Set(["cross-site", "same-origin", "same-site", "none"]);
+const FETCH_MODE_VALUES = new Set(["cors", "navigate", "no-cors", "same-origin", "websocket"]);
+const FETCH_DEST_VALUES = new Set(["audio", "audioworklet", "document", "embed", "empty", "font", "frame", "iframe", "image", "manifest", "object", "paintworklet", "report", "script", "serviceworker", "sharedworker", "style", "track", "video", "worker", "xslt"]);
+const FETCH_USER_VALUES = new Set(["?0", "?1"]);
 
 type DataProperty =
   | { readonly valid: true; readonly present: false }
@@ -107,6 +112,7 @@ type RequestMeta = {
   readonly headers: Headers;
   readonly requestId: string;
   readonly origin: string | null;
+  readonly browserMarked: boolean;
 };
 
 type SafeResult =
@@ -180,6 +186,155 @@ function hasThenProperty(value: object): boolean {
   return current !== null;
 }
 
+function inheritedDataProperty(value: object, key: PropertyKey): DataProperty {
+  let current: object | null = value;
+  const seen = new Set<object>();
+  for (let depth = 0; current !== null && depth < MAX_SNAPSHOT_DEPTH; depth += 1) {
+    if (seen.has(current)) return { valid: false, present: true };
+    seen.add(current);
+    try {
+      const descriptor = objectGetOwnPropertyDescriptor(current, key);
+      if (descriptor !== undefined) {
+        if (!("value" in descriptor)) return { valid: false, present: true };
+        return { valid: true, present: true, value: descriptor.value };
+      }
+      current = objectGetPrototypeOf(current);
+    } catch {
+      return { valid: false, present: false };
+    }
+  }
+  return current === null ? { valid: true, present: false } : { valid: false, present: true };
+}
+
+function requiredFunction(value: object, label: string, method: string): Function {
+  const property = inheritedDataProperty(value, method);
+  if (!property.valid || !property.present || typeof property.value !== "function") {
+    throw new AuthConfigurationError(`${label}.${method} must be a data-property function`);
+  }
+  return property.value;
+}
+
+function captureMethodGroup(
+  value: unknown,
+  label: string,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Record<string, unknown> {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    throw new AuthConfigurationError(`${label} service is incomplete`);
+  }
+  const source = value as object;
+  if (hasThenProperty(source)) throw new AuthConfigurationError(`${label} service must not be thenable`);
+  const facade = objectCreate(null) as Record<string, unknown>;
+  for (const method of required) {
+    const captured = requiredFunction(source, label, method);
+    objectDefineProperty(facade, method, {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value: (...args: unknown[]) => reflectApply(captured, source, args),
+    });
+  }
+  for (const method of optional) {
+    const property = inheritedDataProperty(source, method);
+    if (!property.valid) throw new AuthConfigurationError(`${label}.${method} must be a data-property function`);
+    if (!property.present) continue;
+    if (typeof property.value !== "function") throw new AuthConfigurationError(`${label}.${method} must be a data-property function`);
+    const captured = property.value;
+    objectDefineProperty(facade, method, {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value: (...args: unknown[]) => reflectApply(captured, source, args),
+    });
+  }
+  return objectFreeze(facade);
+}
+
+function requiredMember(value: object, label: string, member: string): unknown {
+  const property = inheritedDataProperty(value, member);
+  if (!property.valid || !property.present) throw new AuthConfigurationError(`${label}.${member} is unavailable`);
+  return property.value;
+}
+
+const USER_SERVICE_METHODS = ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resend", "updateUser"] as const;
+const SESSION_SERVICE_METHODS = ["refresh", "authorizeSession", "signOut"] as const;
+const TOKEN_SERVICE_METHODS = ["verifyAccessToken", "jwks"] as const;
+const AUTHORIZATION_SERVICE_METHODS = ["getPermissions", "authorize"] as const;
+const OAUTH_SERVICE_METHODS = ["listProviders", "authorize", "callback", "exchangeCode", "listIdentities", "unlinkIdentity"] as const;
+const REPOSITORY_METHODS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  root: ["transaction"],
+  users: ["findById", "findByIdForUpdate", "findByNormalizedEmail", "findByNormalizedEmailForUpdate", "create", "createIfAvailable", "update", "softDelete"],
+  identities: ["findByProviderSubject", "listByUserId", "create", "createIfAvailable", "deleteById"],
+  passwordCredentials: ["findByUserId", "upsert", "deleteByUserId"],
+  sessions: ["create", "findByIdForUpdate", "findRefreshForUpdate", "rotate", "revokeSession", "revokeFamily", "revokeUserSessions"],
+  oneTimeTokens: ["issue", "consume", "consumeBound", "recordFailure"],
+  oauthStates: ["create", "consume"],
+  authorization: ["effectivePermissions", "assignRole", "unassignRole", "setRolePermissions", "setRoleInheritance"],
+  roles: ["list", "findById", "create", "update", "delete"],
+  permissions: ["list", "findById", "create", "update", "delete"],
+  operations: ["appendAudit", "findApiKeyByHash"],
+});
+
+/** Captures all service callbacks without mutating the caller's composition. */
+export function captureAuthServerServices(value: AuthServerServices): AuthServerServices {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    throw new AuthConfigurationError("auth server service composition is incomplete");
+  }
+  const source = value as object;
+  if (hasThenProperty(source)) throw new AuthConfigurationError("auth server services must not be thenable");
+  const facade = objectCreate(null) as Record<string, unknown>;
+  objectDefineProperty(facade, "users", { configurable: false, enumerable: true, writable: false, value: captureMethodGroup(requiredMember(source, "auth", "users"), "user", USER_SERVICE_METHODS) });
+  objectDefineProperty(facade, "sessions", { configurable: false, enumerable: true, writable: false, value: captureMethodGroup(requiredMember(source, "auth", "sessions"), "session", SESSION_SERVICE_METHODS, ["revokeRefreshToken"]) });
+  objectDefineProperty(facade, "tokens", { configurable: false, enumerable: true, writable: false, value: captureMethodGroup(requiredMember(source, "auth", "tokens"), "token", TOKEN_SERVICE_METHODS) });
+  objectDefineProperty(facade, "authorization", { configurable: false, enumerable: true, writable: false, value: captureMethodGroup(requiredMember(source, "auth", "authorization"), "authorization", AUTHORIZATION_SERVICE_METHODS) });
+  const oauth = inheritedDataProperty(source, "oauth");
+  if (!oauth.valid) throw new AuthConfigurationError("OAuth service must be a data property");
+  if (oauth.present && oauth.value !== undefined) {
+    objectDefineProperty(facade, "oauth", { configurable: false, enumerable: true, writable: false, value: captureMethodGroup(oauth.value, "OAuth", OAUTH_SERVICE_METHODS) });
+  }
+  return objectFreeze(facade) as unknown as AuthServerServices;
+}
+
+/** Captures every repository callback used by the server and default services. */
+export function captureAuthServerRepository(value: AuthRepository): AuthRepository {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    throw new AuthConfigurationError("database repository is incomplete");
+  }
+  const source = value as object;
+  if (hasThenProperty(source)) throw new AuthConfigurationError("database repository must not be thenable");
+  const facade = objectCreate(null) as Record<string, unknown>;
+  for (const [member, methods] of Object.entries(REPOSITORY_METHODS)) {
+    if (member === "root") {
+      const transaction = requiredFunction(source, "database", "transaction");
+      objectDefineProperty(facade, "transaction", {
+        configurable: false,
+        enumerable: true,
+        writable: false,
+        value: (...args: unknown[]) => {
+          const callback = args[0];
+          if (typeof callback !== "function") return reflectApply(transaction, source, args);
+          const wrapped = (transactionRepository: unknown, ...callbackArgs: unknown[]) => reflectApply(
+            callback,
+            undefined,
+            [captureAuthServerRepository(transactionRepository as AuthRepository), ...callbackArgs],
+          );
+          return reflectApply(transaction, source, [wrapped, ...args.slice(1)]);
+        },
+      });
+      continue;
+    }
+    const group = requiredMember(source, "database", member);
+    objectDefineProperty(facade, member, {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value: captureMethodGroup(group, `database.${member}`, methods),
+    });
+  }
+  return objectFreeze(facade) as unknown as AuthRepository;
+}
+
 function isAsciiAlphaNumeric(value: string | undefined): boolean {
   if (value === undefined) return false;
   return (value >= "a" && value <= "z") || (value >= "A" && value <= "Z") || (value >= "0" && value <= "9");
@@ -198,6 +353,28 @@ function validHeaderValue(value: string | null): string | null {
   if (value === null) return null;
   if (value.includes(",") || value.includes("\r") || value.includes("\n")) return null;
   return value;
+}
+
+function readFetchMetadata(headers: object): boolean | null {
+  const fields: readonly [string, ReadonlySet<string>][] = [
+    ["sec-fetch-site", FETCH_SITE_VALUES],
+    ["sec-fetch-mode", FETCH_MODE_VALUES],
+    ["sec-fetch-dest", FETCH_DEST_VALUES],
+    ["sec-fetch-user", FETCH_USER_VALUES],
+  ];
+  let present = false;
+  for (const [name, allowed] of fields) {
+    let value: string | null;
+    try {
+      value = invoke<string | null>(headersGet, headers, [name]);
+    } catch {
+      return null;
+    }
+    if (value === null) continue;
+    present = true;
+    if (value.length === 0 || value.trim() !== value || value.includes(",") || !allowed.has(value)) return null;
+  }
+  return present;
 }
 
 function nativePromiseValue(value: unknown): Promise<unknown> {
@@ -242,6 +419,28 @@ function nativePromiseValue(value: unknown): Promise<unknown> {
       () => reject(new RequestBoundaryError("internal_error", 500)),
     ]);
   });
+}
+
+function drainNativePromise(value: unknown): void {
+  try {
+    if (
+      value === null ||
+      (typeof value !== "object" && typeof value !== "function") ||
+      objectGetPrototypeOf(value) !== nativePromisePrototype ||
+      objectGetOwnPropertyDescriptor(value, "then") !== undefined
+    ) return;
+    invoke(nativePromiseThen, value, [() => undefined, () => undefined]);
+  } catch {
+    // Cancellation is best effort and must not change the stable request result.
+  }
+}
+
+function cancelReader(reader: unknown): void {
+  try {
+    drainNativePromise(invoke(readableReaderCancel, reader, []));
+  } catch {
+    // Cancellation is best effort and must not change the stable request result.
+  }
 }
 
 function hasThenValue(value: unknown): boolean {
@@ -593,8 +792,8 @@ export class AuthServer {
 
   constructor(options: AuthServerRuntimeOptions) {
     this.config = options.config;
-    this.repository = options.repository;
-    this.services = options.services;
+    this.repository = captureAuthServerRepository(options.repository);
+    this.services = captureAuthServerServices(options.services);
     this.apiKeyHashKey = nativeUint8Array.from(options.apiKeyHashKey);
     this.baseOrigin = options.baseOrigin;
     this.basePath = options.basePath;
@@ -688,8 +887,10 @@ export class AuthServer {
       if (url.hash !== "") return null;
       const rawRequestId = validHeaderValue(invoke<string | null>(headersGet, headers, ["x-request-id"]));
       const rawOrigin = validHeaderValue(invoke<string | null>(headersGet, headers, ["origin"]));
+      const browserMarked = readFetchMetadata(headers);
+      if (browserMarked === null) return null;
       const requestId = validRequestId(rawRequestId) ? rawRequestId : randomUUID();
-      return { request, method, url, headers: headers as Headers, requestId, origin: rawOrigin };
+      return { request, method, url, headers: headers as Headers, requestId, origin: rawOrigin, browserMarked };
     } catch {
       return null;
     }
@@ -739,6 +940,13 @@ export class AuthServer {
 
   private async parseRequestBody(meta: RequestMeta, contract: RouteContract, query: URLSearchParams): Promise<unknown> {
     if (contract.body === undefined) return undefined;
+    let contentEncoding: string | null;
+    try {
+      contentEncoding = invoke<string | null>(headersGet, meta.headers, ["content-encoding"]);
+    } catch {
+      throw new RequestBoundaryError("invalid_request", 400);
+    }
+    if (contentEncoding !== null && contentEncoding !== "identity") throw new RequestBoundaryError("invalid_request", 400);
     const contentLength = validHeaderValue(invoke<string | null>(headersGet, meta.headers, ["content-length"]));
     if (contentLength !== null) {
       if (!/^\d+$/u.test(contentLength)) throw new RequestBoundaryError("invalid_request", 400);
@@ -802,6 +1010,12 @@ export class AuthServer {
     }
     const chunks: Uint8Array[] = [];
     let total = 0;
+    let cancellationRequested = false;
+    const cancel = () => {
+      if (cancellationRequested) return;
+      cancellationRequested = true;
+      cancelReader(reader);
+    };
     try {
       for (;;) {
         const raw = invoke<unknown>(readableReaderRead, reader, []);
@@ -810,7 +1024,10 @@ export class AuthServer {
         const doneProperty = ownDataProperty(result, "done");
         const valueProperty = ownDataProperty(result, "value");
         if (!doneProperty.valid || !doneProperty.present || typeof doneProperty.value !== "boolean" || !valueProperty.valid || !valueProperty.present) throw new RequestBoundaryError("invalid_request", 400);
-        if (doneProperty.value) break;
+        if (doneProperty.value) {
+          if (declaredLength !== undefined && total !== declaredLength) throw new RequestBoundaryError("invalid_request", 400);
+          break;
+        }
         const chunk = copyChunk(valueProperty.value);
         if (chunk === null) throw new RequestBoundaryError("invalid_request", 400);
         total += chunk.byteLength;
@@ -818,12 +1035,12 @@ export class AuthServer {
         chunks.push(chunk);
       }
     } catch (error) {
+      cancel();
       if (error instanceof RequestBoundaryError && error.code !== "internal_error") throw error;
       throw new RequestBoundaryError("invalid_request", 400);
     } finally {
       try { invoke(readableReaderReleaseLock, reader, []); } catch { /* best effort */ }
     }
-    if (declaredLength !== undefined && total !== declaredLength) throw new RequestBoundaryError("invalid_request", 400);
     const output = new nativeUint8Array(total);
     let offset = 0;
     for (const chunk of chunks) {
@@ -849,7 +1066,7 @@ export class AuthServer {
     const record = await invokeUntrusted<unknown>(() => this.repository.operations.findApiKeyByHash(expectedHash, { now }));
     const key = safeApiKey(record, expectedHash, now);
     if (key === null) throw new AuthApiError("unauthorized", 401, "Invalid API key", meta.requestId);
-    if (key.kind === "secret" && meta.origin !== null) throw new AuthApiError("forbidden", 403, "Secret API keys are not accepted from browser origins", meta.requestId);
+    if (key.kind === "secret" && (meta.origin !== null || meta.browserMarked)) throw new AuthApiError("forbidden", 403, "Secret API keys are not accepted from browser origins", meta.requestId);
 
     const authorization = validHeaderValue(invoke<string | null>(headersGet, meta.headers, ["authorization"]));
     let bearer: string | null = null;

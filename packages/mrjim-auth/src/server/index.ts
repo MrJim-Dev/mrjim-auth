@@ -109,4 +109,4 @@ export {
   type AuthServerServiceOverrides,
   type CreateAuthServerOptions,
 } from "./create-auth-server.js";
-export { generateOpenApiDocument } from "./openapi.js";
+export { generateOpenApiDocument, type OpenApiDocumentOptions } from "./openapi.js";

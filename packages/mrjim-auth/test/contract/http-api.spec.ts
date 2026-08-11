@@ -384,6 +384,101 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect(bodyFailure.status).toBe(400);
   });
 
+  it("cancels failed body readers without changing stable errors", async () => {
+    const auth = serverModule.createAuthServer(makeOptions([]));
+    const cancellation = { overflow: 0, invalid: 0, failure: 0 };
+    const overflowStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024 + 1));
+      },
+      cancel() {
+        cancellation.overflow += 1;
+        return Promise.reject(new Error("overflow cancellation rejected"));
+      },
+    });
+    const overflow = await auth.handle(new Request(`${BASE_URL}/signup`, {
+      method: "POST",
+      headers: { apikey: PUBLISHABLE_KEY, "content-type": "application/json" },
+      body: overflowStream,
+      duplex: "half",
+    } as RequestInit));
+    expect(overflow.status).toBe(413);
+    expect(cancellation.overflow).toBe(1);
+
+    const invalidChunkStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue("not-a-byte-chunk" as unknown as Uint8Array);
+      },
+      cancel() {
+        cancellation.invalid += 1;
+        return Promise.reject(new Error("invalid cancellation rejected"));
+      },
+    });
+    const invalidChunk = await auth.handle(new Request(`${BASE_URL}/signup`, {
+      method: "POST",
+      headers: { apikey: PUBLISHABLE_KEY, "content-type": "application/json" },
+      body: invalidChunkStream,
+      duplex: "half",
+    } as RequestInit));
+    expect(invalidChunk.status).toBe(400);
+    expect(cancellation.invalid).toBe(1);
+
+    const readFailureStream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("reader failed"));
+      },
+      cancel() {
+        cancellation.failure += 1;
+        return Promise.reject(new Error("failure cancellation rejected"));
+      },
+    });
+    const readFailure = await auth.handle(new Request(`${BASE_URL}/signup`, {
+      method: "POST",
+      headers: { apikey: PUBLISHABLE_KEY, "content-type": "application/json" },
+      body: readFailureStream,
+      duplex: "half",
+    } as RequestInit));
+    expect(readFailure.status).toBe(400);
+    expect(cancellation.failure).toBeLessThanOrEqual(1);
+  });
+
+  it("rejects unsupported or ambiguous Content-Encoding before reading the body", async () => {
+    const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+    const auth = serverModule.createAuthServer(makeOptions(calls));
+    const signup = JSON.stringify({ email: "user@example.com", password: "correct horse battery staple" });
+    const encodings = ["gzip", "br", "deflate", "GZIP", "gzip, identity", "identity, gzip", "identity,identity", "", "identity;foo"];
+    for (const encoding of encodings) {
+      let pulls = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(new TextEncoder().encode(signup));
+          controller.close();
+        },
+      });
+      const encodedRequest = new Request(`${BASE_URL}/signup`, {
+        method: "POST",
+        headers: { apikey: PUBLISHABLE_KEY, "content-type": "application/json", "content-encoding": encoding },
+        body: stream,
+        duplex: "half",
+      } as RequestInit);
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+      const pullsBeforeHandle = pulls;
+      const response = await auth.handle(encodedRequest);
+      expect(response.status, JSON.stringify({ encoding })).toBe(400);
+      expect(pulls, JSON.stringify({ encoding })).toBe(pullsBeforeHandle);
+    }
+    expect(calls).toHaveLength(0);
+
+    const identity = await auth.handle(request("/signup", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-encoding": "identity" },
+      body: signup,
+    }));
+    expect(identity.status).toBe(200);
+    expect(calls).toHaveLength(1);
+  });
+
   it("applies CORS, preflight, method, path, and origin rules without authorizing preflight", async () => {
     const auth = serverModule.createAuthServer(makeOptions([]));
     const preflight = await auth.handle(request("/user", {
@@ -434,6 +529,104 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect(thenCalls).toBe(0);
   });
 
+  it("captures every service and repository callback at construction", async () => {
+    const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+    const options = makeOptions(calls) as any;
+    const originalSignUp = options.services.users.signUp;
+    let signUpReceiver: unknown;
+    options.services.users.signUp = function (this: unknown, ...args: unknown[]) {
+      signUpReceiver = this;
+      return Reflect.apply(originalSignUp, this, args);
+    };
+    const originalLookup = options.database.operations.findApiKeyByHash;
+    let lookupReceiver: unknown;
+    options.database.operations.findApiKeyByHash = function (this: unknown, ...args: unknown[]) {
+      lookupReceiver = this;
+      return Reflect.apply(originalLookup, this, args);
+    };
+
+    const auth = serverModule.createAuthServer(options);
+    const serviceMethods: Record<string, readonly string[]> = {
+      users: ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resend", "updateUser"],
+      sessions: ["refresh", "authorizeSession", "signOut", "revokeRefreshToken"],
+      tokens: ["verifyAccessToken", "jwks"],
+      authorization: ["getPermissions", "authorize"],
+      oauth: ["listProviders", "authorize", "callback", "exchangeCode", "listIdentities", "unlinkIdentity"],
+    };
+    for (const [serviceName, methods] of Object.entries(serviceMethods)) {
+      const service = options.services[serviceName];
+      if (service === undefined) continue;
+      for (const method of methods) {
+        if (typeof service[method] === "function") service[method] = () => { throw new Error(`swapped ${serviceName}.${method}`); };
+      }
+    }
+    for (const member of Object.keys(options.database)) {
+      const value = options.database[member];
+      if (value === null || typeof value !== "object") continue;
+      for (const method of Object.keys(value)) {
+        if (typeof value[method] === "function") value[method] = () => { throw new Error(`swapped database.${member}.${method}`); };
+      }
+    }
+
+    const jsonRequest = (path: string, value: unknown) => request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(value),
+    });
+    const responses: Array<[string, Promise<Response>, number]> = [
+      ["signup", auth.handle(jsonRequest("/signup", { email: "user@example.com", password: "correct horse battery staple" })), 200],
+      ["password", auth.handle(jsonRequest("/token?grant_type=password", { email: "user@example.com", password: "correct horse battery staple" })), 200],
+      ["refresh", auth.handle(jsonRequest("/token?grant_type=refresh_token", { refresh_token: REFRESH_TOKEN })), 200],
+      ["otp", auth.handle(jsonRequest("/otp", { email: "user@example.com" })), 200],
+      ["verify", auth.handle(jsonRequest("/verify", { email: "user@example.com", token: "123456", type: "email_otp" })), 200],
+      ["recover", auth.handle(jsonRequest("/recover", { email: "user@example.com" })), 200],
+      ["resend", auth.handle(jsonRequest("/resend", { type: "signup", email: "user@example.com" })), 200],
+      ["providers", auth.handle(request("/providers")), 200],
+      ["authorize", auth.handle(request("/authorize?provider=google&redirect_to=https%3A%2F%2Fproject.example.com%2Fauth%2Fcallback")), 200],
+      ["callback", auth.handle(request("/callback/google?code=provider-code&state=state")), 303],
+      ["exchange", auth.handle(jsonRequest("/exchange", { code: "callback-code", code_verifier: "verifier" })), 200],
+      ["getUser", auth.handle(request("/user", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } })), 200],
+      ["updateUser", auth.handle(request("/user", { method: "PUT", headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ user_metadata: { display_name: "Updated" } }) })), 200],
+      ["identities", auth.handle(request("/user/identities", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } })), 200],
+      ["unlinkIdentity", auth.handle(request(`/user/identities/${IDENTITY_ID}`, { method: "DELETE", headers: { authorization: `Bearer ${ACCESS_TOKEN}` } })), 200],
+      ["permissions", auth.handle(request("/user/permissions", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } })), 200],
+      ["signOut", auth.handle(request("/logout", { method: "POST", headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json" }, body: "{}" })), 200],
+      ["revokeRefreshToken", auth.handle(jsonRequest("/logout", { refresh_token: REFRESH_TOKEN })), 200],
+      ["jwks", auth.handle(request("/.well-known/jwks.json")), 200],
+    ];
+    for (const [name, responsePromise, status] of responses) {
+      const response = await responsePromise;
+      expect(response.status, name).toBe(status);
+    }
+    const subject = await auth.authorize(request("/not-a-route", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } }), { all: ["invoice.read"] });
+    expect(subject).toMatchObject({ user_id: USER_ID });
+    expect(signUpReceiver).toBe(options.services.users);
+    expect(lookupReceiver).toBe(options.database.operations);
+    expect(calls.map(({ name }) => name)).toEqual(expect.arrayContaining(["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resend", "refresh", "updateUser", "signOut", "revokeRefreshToken", "authorize", "callback", "exchangeCode", "unlinkIdentity"]));
+  });
+
+  it("rejects accessor and thenable service values without invoking them", () => {
+    const accessorOptions = makeOptions([]) as any;
+    let getterCalls = 0;
+    Object.defineProperty(accessorOptions.services.users, "signUp", {
+      configurable: true,
+      enumerable: true,
+      get: () => { getterCalls += 1; throw new Error("service getter executed"); },
+    });
+    expect(() => serverModule.createAuthServer(accessorOptions)).toThrow();
+    expect(getterCalls).toBe(0);
+
+    const thenableOptions = makeOptions([]) as any;
+    let thenGetterCalls = 0;
+    Object.defineProperty(thenableOptions.services.users, "then", {
+      configurable: true,
+      enumerable: true,
+      get: () => { thenGetterCalls += 1; throw new Error("then getter executed"); },
+    });
+    expect(() => serverModule.createAuthServer(thenableOptions)).toThrow();
+    expect(thenGetterCalls).toBe(0);
+  });
+
   it("rejects expired and revoked API keys before dispatch", async () => {
     const expiredOptions = makeOptions([]) as any;
     expiredOptions.database.operations.findApiKeyByHash = async () => ({
@@ -450,6 +643,61 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     });
     const revoked = await serverModule.createAuthServer(revokedOptions).handle(request("/providers"));
     expect(revoked.status).toBe(401);
+  });
+
+  it("rejects browser-marked secret keys without Origin and preserves server use", async () => {
+    const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+    const auth = serverModule.createAuthServer(makeOptions(calls));
+    const signup = JSON.stringify({ email: "user@example.com", password: "correct horse battery staple" });
+    const browserSignals = [
+      { "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" },
+      { "sec-fetch-site": "same-origin" },
+      { "sec-fetch-site": "same-site" },
+      { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document", "sec-fetch-user": "?1" },
+      { "sec-fetch-site": "none", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
+    ];
+    for (const headers of browserSignals) {
+      const response = await auth.handle(request("/signup", {
+        method: "POST",
+        headers: { apikey: SECRET_KEY, "content-type": "application/json", ...headers },
+        body: signup,
+      }));
+      expect(response.status, JSON.stringify(headers)).toBe(403);
+    }
+    expect(calls).toHaveLength(0);
+
+    const serverResponse = await auth.handle(request("/signup", {
+      method: "POST",
+      headers: { apikey: SECRET_KEY, "content-type": "application/json" },
+      body: signup,
+    }));
+    expect(serverResponse.status).toBe(200);
+    expect(calls).toHaveLength(1);
+
+    const duplicate = await auth.handle(request("/signup", {
+      method: "POST",
+      headers: { apikey: SECRET_KEY, "content-type": "application/json", "sec-fetch-site": "cross-site, same-origin" },
+      body: signup,
+    }));
+    expect(duplicate.status).toBe(400);
+    expect(calls).toHaveLength(1);
+
+    const malformed = await auth.handle(request("/signup", {
+      method: "POST",
+      headers: { apikey: SECRET_KEY, "content-type": "application/json", "sec-fetch-site": "not-a-fetch-site" },
+      body: signup,
+    }));
+    expect(malformed.status).toBe(400);
+    expect(calls).toHaveLength(1);
+
+    const hostileRequest = Object.create(null) as Request;
+    let metadataGetterCalls = 0;
+    Object.defineProperty(hostileRequest, "headers", {
+      get: () => { metadataGetterCalls += 1; throw new Error("headers getter executed"); },
+    });
+    const hostileResponse = await auth.handle(hostileRequest);
+    expect(hostileResponse.status).toBe(400);
+    expect(metadataGetterCalls).toBe(0);
   });
 
   it("fails closed for expired, revoked, and wrong-session access tokens", async () => {

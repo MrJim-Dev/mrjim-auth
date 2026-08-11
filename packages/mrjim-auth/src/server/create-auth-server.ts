@@ -13,7 +13,12 @@ import { PasswordService } from "./passwords.js";
 import { SessionService } from "./sessions.js";
 import { TokenService } from "./tokens.js";
 import { UserService } from "./users.js";
-import { AuthServer, type AuthServerRuntimeOptions } from "./auth-server.js";
+import {
+  AuthServer,
+  captureAuthServerRepository,
+  captureAuthServerServices,
+  type AuthServerRuntimeOptions,
+} from "./auth-server.js";
 import type { AuthServerServices } from "./routes/contracts.js";
 
 /** Optional service seams used by tests and by projects that compose services themselves. */
@@ -159,38 +164,43 @@ function createDefaultServices(
 }
 
 function mergeServices(defaults: AuthServerServices, overrides: AuthServerServiceOverrides | undefined): AuthServerServices {
-  if (overrides === undefined) return defaults;
-  const merged: AuthServerServices = {
-    ...defaults,
-    ...overrides,
+  const merged: Record<string, unknown> = {
+    users: defaults.users,
+    sessions: defaults.sessions,
+    tokens: defaults.tokens,
+    authorization: defaults.authorization,
+    ...(defaults.oauth === undefined ? {} : { oauth: defaults.oauth }),
   };
-  if (merged.users === undefined || merged.sessions === undefined || merged.tokens === undefined || merged.authorization === undefined) {
-    throw new AuthConfigurationError("auth server service composition is incomplete");
-  }
-  const requireMethods = (value: unknown, label: string, methods: readonly string[]): void => {
-    if (value === null || (typeof value !== "object" && typeof value !== "function")) throw new AuthConfigurationError(`${label} service is incomplete`);
-    try {
-      for (const method of methods) {
-        if (typeof (value as Record<string, unknown>)[method] !== "function") throw new AuthConfigurationError(`${label} service is incomplete`);
+  if (overrides !== undefined) {
+    const source = asRecord(overrides);
+    if (source === null) throw new AuthConfigurationError("auth server service composition is incomplete");
+    for (const member of ["users", "sessions", "tokens", "authorization", "oauth"] as const) {
+      let descriptor: PropertyDescriptor | undefined;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(source, member);
+      } catch {
+        throw new AuthConfigurationError("auth server service composition is incomplete");
       }
-    } catch (error) {
-      if (error instanceof AuthConfigurationError) throw error;
-      throw new AuthConfigurationError(`${label} service is incomplete`);
+      if (descriptor === undefined) continue;
+      if (!("value" in descriptor)) throw new AuthConfigurationError(`auth server ${member} must be a data property`);
+      merged[member] = descriptor.value;
     }
-  };
-  requireMethods(merged.users, "user", ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resend", "updateUser"]);
-  requireMethods(merged.sessions, "session", ["refresh", "authorizeSession", "signOut"]);
-  requireMethods(merged.tokens, "token", ["verifyAccessToken", "jwks"]);
-  requireMethods(merged.authorization, "authorization", ["getPermissions", "authorize"]);
-  if (merged.oauth !== undefined) requireMethods(merged.oauth, "OAuth", ["listProviders", "authorize", "callback", "exchangeCode", "listIdentities", "unlinkIdentity"]);
-  return merged;
+  }
+  return captureAuthServerServices(merged as unknown as AuthServerServices);
 }
 
 /** Creates a fully validated, framework-neutral server synchronously. */
 export function createAuthServer(input: CreateAuthServerOptions): AuthServer {
   const parsed = authServerOptionsSchema.parse(input);
   const raw = asRecord(input);
-  const rawServices = raw?.services as AuthServerServiceOverrides | undefined;
+  let rawServices: AuthServerServiceOverrides | undefined;
+  if (raw !== null) {
+    const descriptor = Object.getOwnPropertyDescriptor(raw, "services");
+    if (descriptor !== undefined) {
+      if (!("value" in descriptor)) throw new AuthConfigurationError("auth server services must be a data property");
+      rawServices = descriptor.value as AuthServerServiceOverrides | undefined;
+    }
+  }
   const baseUrl = parseAbsoluteUrl(parsed.baseUrl, "baseUrl");
   const issuer = parseAbsoluteUrl(parsed.signingKeys.issuer, "signingKeys.issuer");
   if (issuer.href !== baseUrl.href) throw new AuthConfigurationError("baseUrl must exactly match signingKeys.issuer");
@@ -200,7 +210,7 @@ export function createAuthServer(input: CreateAuthServerOptions): AuthServer {
   const allowedOrigins = Object.freeze([...new Set([baseOrigin, siteUrl.origin])]);
   const allowedRedirects = Object.freeze([...parsed.redirects.allowed]);
   const clock = () => new Date();
-  const repository = parsed.database;
+  const repository = captureAuthServerRepository(parsed.database);
   const defaults = createDefaultServices(parsed, repository, clock, allowedRedirects);
   const services = mergeServices(defaults, rawServices);
   const runtime: AuthServerRuntimeOptions = {

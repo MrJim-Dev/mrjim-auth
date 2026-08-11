@@ -276,7 +276,7 @@ Write-time cycle rejection and diamond deduplication remain covered by local
 PostgreSQL tests; the report intentionally does not claim an independent
 corrupted-cycle read regression. No migration or dependency was added.
 
-Task 9 now implements the framework-neutral Web Request/Response public and
+Task 9 implements the framework-neutral Web Request/Response public and
 current-user HTTP surface from the same strict Zod route contracts used to
 generate the deterministic OpenAPI document. `createAuthServer` validates the
 existing synchronous server configuration and composes the established
@@ -287,14 +287,27 @@ untrusted adapter result/thenable/prototype screening. `AuthServer.authorize`
 creates a fresh request-local authorization context. OAuth callback redirects,
 JWKS/provider discovery, refresh-token logout, identities, permissions, and all
 other Task 9 routes are included; Task 10 browser behavior, Task 11 adapters,
-and Task 12 administration remain untouched. The focused contract RED was
-captured before production edits; identical-command GREEN is 15/15. Full test
-and release gates passed: 18 files/255 tests, frozen install, build, typecheck,
-lint, docs, package exports 12/12, migration state 1/1, migration integration
-23/23, deterministic OpenAPI byte parity, fresh packed root/server/browser
-imports 3/3, and diff checks. No dependency, lockfile, migration, paid service,
-hosted service, or remote database behavior was added. Independent review remains
-pending; approval is not claimed.
+and Task 12 administration remain untouched.
+
+The Task 9 remediation round closes TSK9-SEC-001 through TSK9-SEC-005 with
+exact RED-before-fix regressions and bounded GREEN fixes: Fetch Metadata now
+protects secret keys without Origin, body readers are cancelled on all invalid
+stream paths, Content-Encoding is validated before body/service work, OpenAPI
+`$defs`/references/path parameters/statuses/server URLs are deterministic and
+closed, and construction captures frozen receiver-preserving service and
+repository facades. The focused remediation surface is GREEN at 2 files and
+21/21 tests (HTTP 20/20 plus OpenAPI 1/1). Full verification is GREEN at 19
+files and 261/261 tests, with frozen install, build, typecheck, lint, docs,
+package exports 12/12, migration state 1/1, migration integration 23/23,
+deterministic OpenAPI structural/parity checks, fresh packed root/server/browser
+imports plus a representative handler call, protected migration identity, and
+diff checks. No dependency, lockfile, migration, paid service, hosted service,
+or remote database behavior was added.
+
+The independent security review recorder remains blocked by the exact tooling
+error `scan.target.snapshotDigest: expected a non-empty string`. This is not a
+pass or independent approval; Task 9 remains awaiting re-review and is not
+approved.
 
 ## Required dependency policy
 
@@ -351,7 +364,7 @@ database, external network, or paid SaaS service is required.
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
-| 9. HTTP and OpenAPI | In progress — controller gates passed; independent review pending | TDD RED captured before production edits; focused GREEN 15/15; full 255/255, package exports 12/12, migrations 23/23, packed imports 3/3, OpenAPI parity, and final diff/status evidence in Task 9 report |
+| 9. HTTP and OpenAPI | Awaiting independent re-review — not approved | Five Important remediation regressions are RED→GREEN; focused 21/21, full 261/261, package exports 12/12, migration state/integration 1/1 and 23/23, packed root/server/browser imports plus handler, OpenAPI refs/path/status/server parity, protected migrations, and diff evidence in Task 9 report |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
@@ -383,14 +396,17 @@ final range and closed every Task 7 finding. No paid or hosted service is
 needed for review or operation.
 
 Task 9 product blockers: none. The controller verification gates passed and no
-new dependency, migration, paid/hosted service, or remote database was needed;
-independent review is still pending and is not claimed here.
+new dependency, migration, paid/hosted service, or remote database was needed.
+The independent security review recorder is a tooling blocker with the exact
+`scan.target.snapshotDigest: expected a non-empty string` failure; it is not a
+clean scan or approval.
 
 ## Remaining work
 
 Task 8's third post-pass route-boundary hardening resolution is complete and
 independently approved. Task 9's controller implementation and verification
-gates are complete; its independent review remains before handoff. Tasks 10-14 remain,
+gates are complete; Task 9 remains awaiting independent re-review and is not
+approved. Tasks 10-14 remain,
 with independent review after each task, followed by the whole-branch review
 and release handoff. In particular, later work must use the clean `auth`
 schema and explicit migration CLI from Task 3 for the browser/SSR surface,
