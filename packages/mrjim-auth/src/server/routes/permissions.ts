@@ -229,9 +229,9 @@ function safeStatus(value: unknown, fallback: number): number {
     : fallback;
 }
 
-function snapshotResponsePermissions(value: unknown): string[] {
+function snapshotResponsePermissions(value: unknown): string[] | null {
   const snapshot = newNullPrototypeArray<string>();
-  if (!arrayIsArray(value)) return snapshot;
+  if (!arrayIsArray(value)) return null;
 
   const lengthProperty = ownDataProperty(value, "length");
   if (
@@ -242,12 +242,12 @@ function snapshotResponsePermissions(value: unknown): string[] {
     lengthProperty.value < 0 ||
     lengthProperty.value > MAX_RESPONSE_PERMISSION_KEYS
   ) {
-    return snapshot;
+    return null;
   }
   for (let index = 0; index < lengthProperty.value; index += 1) {
     const item = ownDataProperty(value, `${index}`);
     if (!item.valid || !item.present || typeof item.value !== "string") {
-      return newNullPrototypeArray<string>();
+      return null;
     }
     defineSafeProperty(snapshot, `${index}`, item.value);
   }
@@ -259,15 +259,16 @@ function snapshotSuccessData(value: unknown): object {
   if (value !== null && (typeof value === "object" || typeof value === "function")) {
     const permissions = ownDataProperty(value, "permissions");
     if (permissions.valid && permissions.present) {
-      defineSafeProperty(data, "permissions", snapshotResponsePermissions(permissions.value));
+      defineSafeProperty(data, "permissions", snapshotResponsePermissions(permissions.value) ?? newNullPrototypeArray<string>());
       return data;
     }
   }
-  defineSafeProperty(data, "permissions", snapshotResponsePermissions(undefined));
+  defineSafeProperty(data, "permissions", newNullPrototypeArray<string>());
   return data;
 }
 
-function safeResponseCode(value: unknown): string {
+function safeResponseCode(value: unknown, allowInternalError = false): string {
+  if (allowInternalError && value === "internal_error") return value;
   if (
     value === "invalid_request" ||
     value === "unauthorized" ||
@@ -279,7 +280,7 @@ function safeResponseCode(value: unknown): string {
   return "invalid_request";
 }
 
-function snapshotError(error: unknown, fallbackStatus: number): object {
+function snapshotError(error: unknown, fallbackStatus: number, allowInternalError = false): object {
   const output = objectCreate(null) as Record<string, unknown>;
   const name = "AuthError";
   let message = "Authentication request failed";
@@ -299,7 +300,7 @@ function snapshotError(error: unknown, fallbackStatus: number): object {
       status = safeStatus(statusProperty.value, fallbackStatus);
     }
     if (codeProperty.valid && codeProperty.present) {
-      code = safeResponseCode(codeProperty.value);
+      code = safeResponseCode(codeProperty.value, allowInternalError);
     }
     if (
       requestIdProperty.valid &&
@@ -318,13 +319,16 @@ function snapshotError(error: unknown, fallbackStatus: number): object {
   return output;
 }
 
-function snapshotResult<T>(result: AuthResult<T>): { readonly body: object; readonly status: number } {
+function snapshotResult<T>(
+  result: AuthResult<T>,
+  allowInternalError = false,
+): { readonly body: object; readonly status: number } {
   const body = objectCreate(null) as Record<string, unknown>;
   const dataProperty = ownDataProperty(result as unknown as object, "data");
   const errorProperty = ownDataProperty(result as unknown as object, "error");
   if (!dataProperty.valid || !errorProperty.valid || !errorProperty.present) {
     defineSafeProperty(body, "data", null);
-    defineSafeProperty(body, "error", snapshotError(undefined, 500));
+    defineSafeProperty(body, "error", snapshotError(undefined, 500, allowInternalError));
     return { body, status: 500 };
   }
 
@@ -343,7 +347,7 @@ function snapshotResult<T>(result: AuthResult<T>): { readonly body: object; read
     ? safeStatus(statusProperty.value, 500)
     : 500;
   defineSafeProperty(body, "data", null);
-  defineSafeProperty(body, "error", snapshotError(errorObject, status));
+  defineSafeProperty(body, "error", snapshotError(errorObject, status, allowInternalError));
   return { body, status };
 }
 
@@ -358,9 +362,18 @@ function json(value: object, status = 200): Response {
   });
 }
 
-function resultResponse<T>(result: AuthResult<T>): Response {
-  const snapshot = snapshotResult(result);
+function resultResponse<T>(result: AuthResult<T>, allowInternalError = false): Response {
+  const snapshot = snapshotResult(result, allowInternalError);
   return json(snapshot.body, snapshot.status);
+}
+
+function internalErrorResponse(requestIdValue?: string): Response {
+  return resultResponse(authFailure(new AuthApiError(
+    "internal_error",
+    500,
+    "Internal authentication error",
+    requestIdValue,
+  )), true);
 }
 
 function invalidRequest(requestIdValue?: string): Response {
@@ -434,17 +447,14 @@ export async function permissionsRoute(
       requestSnapshot.requestId,
     )));
   }
-  const permissions = await service.getPermissions(context.subject.user_id, scope, context);
-  const safePermissions = newNullPrototypeArray<string>();
-  for (let index = 0; index < permissions.length; index += 1) {
-    objectDefineProperty(safePermissions, `${index}`, {
-      configurable: true,
-      enumerable: true,
-      value: permissions[index],
-      writable: true,
-    });
+  try {
+    const rawPermissions = await service.getPermissions(context.subject.user_id, scope, context);
+    const safePermissions = snapshotResponsePermissions(rawPermissions);
+    if (safePermissions === null) return internalErrorResponse(requestSnapshot.requestId);
+    return resultResponse(authSuccess({ permissions: safePermissions }));
+  } catch {
+    return internalErrorResponse(requestSnapshot.requestId);
   }
-  return resultResponse(authSuccess({ permissions: safePermissions }));
 }
 
 /** Creates the framework-neutral user-permission route handler. */

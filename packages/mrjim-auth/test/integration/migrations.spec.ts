@@ -1529,6 +1529,64 @@ describe("Task 3 PostgreSQL migrations", () => {
             }
             if (!nativeRejectionHandled) throw new Error("packed native Promise rejection escaped");
 
+            let rebasedSpeciesReads = 0;
+            let rebasedConstructorReads = 0;
+            let rebasedThenReads = 0;
+            let rebasedSettlementThenReads = 0;
+            class RebasedPromise extends Promise {
+              static get [Symbol.species]() {
+                rebasedSpeciesReads += 1;
+                return Promise;
+              }
+            }
+            Object.defineProperty(RebasedPromise.prototype, "constructor", {
+              configurable: true,
+              get() {
+                rebasedConstructorReads += 1;
+                throw new Error("packed rebased constructor hook must not run");
+              },
+            });
+            Object.defineProperty(RebasedPromise.prototype, "then", {
+              configurable: true,
+              get() {
+                rebasedThenReads += 1;
+                throw new Error("packed rebased then hook must not run");
+              },
+            });
+            let settleRebased;
+            const rebasedSettlement = {};
+            const rebasedPromise = new RebasedPromise((resolve) => { settleRebased = resolve; });
+            const rebasedService = new server.AuthorizationService({
+              repository: {
+                authorization: {
+                  effectivePermissions: () => {
+                    Object.setPrototypeOf(rebasedPromise, Promise.prototype);
+                    queueMicrotask(() => {
+                      settleRebased(rebasedSettlement);
+                      Object.defineProperty(rebasedSettlement, "then", {
+                        configurable: true,
+                        get() {
+                          rebasedSettlementThenReads += 1;
+                          throw new Error("packed settlement then hook must not run");
+                        },
+                      });
+                    });
+                    return rebasedPromise;
+                  },
+                },
+              },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            let rebasedRejected = false;
+            try {
+              await rebasedService.authorize(user, { all: ["invoice.read"] });
+            } catch (error) {
+              rebasedRejected = error?.code === "insufficient_permission";
+            }
+            if (!rebasedRejected || rebasedSpeciesReads !== 0 || rebasedConstructorReads !== 0 || rebasedThenReads !== 0 || rebasedSettlementThenReads !== 0) {
+              throw new Error("packed rebased Promise crossed the provenance boundary");
+            }
+
             const largePermissions = new Array(100000);
             for (let index = 0; index < largePermissions.length; index += 1) {
               const resource = "resource_" + index.toString(36);
@@ -1923,6 +1981,71 @@ describe("Task 3 PostgreSQL migrations", () => {
             } finally {
               restoreDescriptor(globalThis, "Response", responseDescriptor);
               JSON.stringify = stringify;
+            }
+
+            const malformedRouteRequest = new Request("https://project.example.com/user/permissions", {
+              headers: { "x-request-id": "packed-internal" },
+            });
+            const throwingLength = new Proxy([], {
+              getOwnPropertyDescriptor(target, property) {
+                if (property === "length") throw new Error("packed secret length accessor");
+                return Reflect.getOwnPropertyDescriptor(target, property);
+              },
+            });
+            let throwingIndexReads = 0;
+            const throwingIndex = [];
+            Object.defineProperty(throwingIndex, "0", {
+              configurable: true,
+              get() {
+                throwingIndexReads += 1;
+                throw new Error("packed secret index accessor");
+              },
+            });
+            let secretAccessorReads = 0;
+            const secretAccessor = [];
+            Object.defineProperty(secretAccessor, "0", {
+              configurable: true,
+              get() {
+                secretAccessorReads += 1;
+                return "secret.read";
+              },
+            });
+            const sparse = new Array(1);
+            const oversized = [];
+            oversized.length = 100001;
+            const malformedRouteServices = [
+              () => null,
+              () => Promise.reject(new Error("packed secret adapter rejection")),
+              () => Promise.resolve(throwingLength),
+              () => throwingIndex,
+              () => secretAccessor,
+              () => [123],
+              () => sparse,
+              () => oversized,
+            ];
+            for (let caseIndex = 0; caseIndex < malformedRouteServices.length; caseIndex += 1) {
+              const malformedService = { getPermissions: malformedRouteServices[caseIndex] };
+              let malformedResponse;
+              let malformedThrown;
+              try {
+                malformedResponse = await server.permissionsRoute(malformedService, malformedRouteRequest, user);
+              } catch (error) {
+                malformedThrown = error;
+              }
+              if (malformedThrown !== undefined || malformedResponse?.status !== 500) {
+                throw new Error("packed malformed permission output escaped");
+              }
+              const malformedBody = await malformedResponse.text();
+              if (!malformedBody.includes('"code":"internal_error"') ||
+                  !malformedBody.includes('"status":500') ||
+                  !malformedBody.includes('"request_id":"packed-internal"') ||
+                  !malformedBody.includes("Internal authentication error") ||
+                  malformedBody.includes("secret")) {
+                throw new Error("packed malformed permission output was leaked");
+              }
+            }
+            if (throwingIndexReads !== 0 || secretAccessorReads !== 0) {
+              throw new Error("packed route permission accessors were invoked");
             }
 
             let invalidRouteThrew = false;

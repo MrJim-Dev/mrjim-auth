@@ -462,6 +462,61 @@ describe("authorization permission matching", () => {
     );
   });
 
+  it("does not assimilate settlement values from rebased Promise subclasses", async () => {
+    let speciesReads = 0;
+    let constructorReads = 0;
+    let thenReads = 0;
+    let settlementThenReads = 0;
+    class RebasedPromise extends Promise<unknown> {
+      static get [Symbol.species](): PromiseConstructor {
+        speciesReads += 1;
+        return Promise;
+      }
+    }
+    Object.defineProperty(RebasedPromise.prototype, "constructor", {
+      configurable: true,
+      get() {
+        constructorReads += 1;
+        throw new Error("rebased constructor hook must not run");
+      },
+    });
+    Object.defineProperty(RebasedPromise.prototype, "then", {
+      configurable: true,
+      get() {
+        thenReads += 1;
+        throw new Error("rebased then hook must not run");
+      },
+    });
+
+    let settle!: (value: unknown) => void;
+    const settlement = {};
+    const rebasedPromise = new RebasedPromise((resolve) => {
+      settle = resolve;
+    });
+    const rebasedService = serviceFor(() => {
+      // The raw subclass is deliberately rebased before it crosses the
+      // adapter boundary. Its original prototype hooks must remain inert.
+      Object.setPrototypeOf(rebasedPromise, Promise.prototype);
+      queueMicrotask(() => {
+        settle(settlement);
+        Object.defineProperty(settlement, "then", {
+          configurable: true,
+          get() {
+            settlementThenReads += 1;
+            throw new Error("settlement then hook must not run");
+          },
+        });
+      });
+      return rebasedPromise;
+    });
+
+    await expectInsufficient(rebasedService.authorize(subject(), { all: ["invoice.read"] }));
+    expect(speciesReads).toBe(0);
+    expect(constructorReads).toBe(0);
+    expect(thenReads).toBe(0);
+    expect(settlementThenReads).toBe(0);
+  });
+
   it("rejects descriptor accessors when Object.prototype.value is polluted", async () => {
     const service = serviceFor(() => [permission("invoice.read")]);
 
@@ -1238,6 +1293,73 @@ describe("authorization permission matching", () => {
     } finally {
       restoreGlobals();
     }
+  });
+
+  it("fails closed when the permission route receives malformed service output", async () => {
+    const request = new Request("https://project.example.com/user/permissions", {
+      headers: { "x-request-id": "route-internal" },
+    });
+    const routeServiceFor = (getPermissions: () => unknown): AuthorizationService => (
+      { getPermissions } as unknown as AuthorizationService
+    );
+
+    const throwingLength = new Proxy([], {
+      getOwnPropertyDescriptor(_target, property) {
+        if (property === "length") throw new Error("secret length accessor");
+        return Reflect.getOwnPropertyDescriptor(_target, property);
+      },
+    });
+    let throwingIndexReads = 0;
+    const throwingIndex: unknown[] = [];
+    Object.defineProperty(throwingIndex, "0", {
+      configurable: true,
+      get() {
+        throwingIndexReads += 1;
+        throw new Error("secret index accessor");
+      },
+    });
+    let secretAccessorReads = 0;
+    const secretAccessor: unknown[] = [];
+    Object.defineProperty(secretAccessor, "0", {
+      configurable: true,
+      get() {
+        secretAccessorReads += 1;
+        return "secret.read";
+      },
+    });
+    const sparse = new Array<unknown>(1);
+    const oversized: unknown[] = [];
+    oversized.length = 100_001;
+
+    const malformedServices = [
+      () => null,
+      () => Promise.reject(new Error("secret adapter rejection")),
+      () => Promise.resolve(throwingLength),
+      () => throwingIndex,
+      () => secretAccessor,
+      () => [123],
+      () => sparse,
+      () => oversized,
+    ];
+    for (const getPermissions of malformedServices) {
+      let response: Response | undefined;
+      let thrown: unknown;
+      try {
+        response = await permissionsRoute(routeServiceFor(getPermissions), request, subject());
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeUndefined();
+      expect(response?.status).toBe(500);
+      const body = await response?.text();
+      expect(body).toContain('"code":"internal_error"');
+      expect(body).toContain('"status":500');
+      expect(body).toContain('"request_id":"route-internal"');
+      expect(body).toContain("Internal authentication error");
+      expect(body).not.toContain("secret");
+    }
+    expect(throwingIndexReads).toBe(0);
+    expect(secretAccessorReads).toBe(0);
   });
 
   it("requires own service configuration and ignores inherited or accessor options", async () => {

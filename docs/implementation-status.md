@@ -217,25 +217,40 @@ expiry check; byte/checksum assertions preserve `0001–0004` unchanged. No
 callback code is kept in process memory or represented as a self-contained
 reusable token.
 
-Task 8 post-pass controller resolution is implemented pending fresh
-independent review. The public `AuthorizationService.getPermissions()`
-boundary now copies internal null-prototype keys into a fresh frozen standard
-Array with normal iteration, spread, `map`, and `includes` behavior. A
-non-enumerable immutable own `then: undefined` shields the array from
-`Object.prototype.then` and `Array.prototype.then` assimilation before the
-async return completes. Internal authorization and route snapshots remain
-null-prototype. The resolution RED was 3 failed/58 passed; the identical
-focused GREEN is 61/61. The full suite is 17 files and 236/236 tests. The
-repository/shared group is 36/36, migration/state is 24/24, and the
-export/browser group is 15/15. The packed consumer covers installation,
-assets/CLI, direct root/server/browser imports, the public-array contract, and
-both pollution cases. The focused 100,000-row and 10,000-requirement checks
-pass with 371ms and 12ms test-body measurements. Frozen install, build,
-typecheck, lint, docs check, diff check, and protected hashes pass. No
-migration, manifest, lockfile, dependency, direct-user-permission model, paid
+Task 8's second post-pass controller hardening resolution is implemented
+pending fresh independent review against clean baseline
+`19cfb16eb9044616f0f54da9ef16694c6ea5cab9`. It closes exactly two Important
+findings. Adapter Promise returns are synchronously inspected and normalized
+through a package-owned native Promise bridge branded in a module-private
+`WeakSet`; only that bridge may be awaited, while raw sources, arbitrary
+thenables, custom subclass/species/constructor hooks, rejected values, and
+settlement thenables fail closed. A fully rebased subclass is honestly
+normalized behind the bridge because reflection cannot distinguish it from a
+native instance; the raw object is never trusted or cached. Ordinary native
+Promises from the PostgreSQL repository remain supported.
+
+The permission route now catches the service call and descriptor-snapshots its
+result before any length or element indexing. Null, rejected, non-array,
+sparse, accessor-backed, oversized, and malformed results return a fixed
+no-store 500 `internal_error` with only the bounded request ID. Valid public
+arrays retain the exact 200 contract. Response-code sanitization admits
+`internal_error` only through this private fixed server-failure path; adapter
+errors cannot select it. Captured Response/JSON primitives and
+null-prototype response snapshots remain in force.
+
+Fix Pass 5's second post-pass RED was source 1 failed/39 passed and packed 1
+failed/22 skipped (23), both before production edits. The identical GREEN was
+source 40/40 and packed 1/1 (22 skipped). The full suite is 17 files and
+238/238 tests. Repository/shared is 36/36, migration/state is 24/24, and
+export/browser is 15/15. The deterministic 100,000-row/10,000-requirement
+source performance group is 2/2 in 589ms file time; the packed install,
+assets/CLI, direct root/server/browser imports, adversarial checks, and
+100,000-row result pass in 5.62s. Frozen install, build, typecheck, lint,
+docs check, diff check, and protected hashes pass. No migration, manifest,
+lockfile, dependency, direct-user-permission model, paid service, hosted
 service, or runtime-network dependency changed. Corrupted-cycle read
 termination remains unclaimed beyond the recursive `UNION` CTE and write-time
-cycle guard. Fresh independent review remains pending.
+cycle guard. Fresh independent review remains pending; approval is not claimed.
 
 Task 8 Fix Pass 1 was implemented pending fresh independent review. `AuthorizationService`
 consumes the existing PostgreSQL authorization repository, whose recursive CTE
@@ -313,7 +328,7 @@ database, external network, or paid SaaS service is required.
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
-| 8. Dynamic authorization | Complete — post-pass controller resolution implemented; independent review pending | 61/61 focused, 236/236 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, bounded packed public-contract checks, frozen install, build, typecheck, lint, docs, diff, and protected-hash gates; evidence in Task 8 report |
+| 8. Dynamic authorization | Complete — second post-pass controller hardening implemented; independent review pending | 40/40 focused source, packed 1/1 (22 skipped), 238/238 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Pending | Not run |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
@@ -347,8 +362,8 @@ needed for review or operation.
 
 ## Remaining work
 
-Task 8 post-pass controller resolution is complete pending independent review.
-Tasks 9-14 remain, with independent review after each task; then complete the
+Task 8's second post-pass controller hardening resolution is complete pending
+independent review. Tasks 9-14 remain, with independent review after each task; then complete the
 whole-branch review and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement
 auth/session/OAuth/RBAC behavior, HTTP and browser/SSR surfaces,

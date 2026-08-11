@@ -60,6 +60,10 @@ const stringToLowerCase = String.prototype.toLowerCase;
 const weakMapConstructor = WeakMap;
 const weakMapGet = WeakMap.prototype.get;
 const weakMapSet = WeakMap.prototype.set;
+const weakSetConstructor = WeakSet;
+const weakSetAdd = WeakSet.prototype.add;
+const weakSetHas = WeakSet.prototype.has;
+const promiseSignalOwnership = new weakSetConstructor<object>();
 
 const MAX_REQUIREMENT_KEYS = 100_000;
 const MAX_PERMISSION_ROWS = 100_000;
@@ -520,7 +524,7 @@ function hasThenProperty(value: object): boolean {
 }
 
 type NativePromiseOutcome = {
-  readonly signal: Promise<unknown>;
+  readonly signal: Promise<void>;
   readonly state: { rejected: boolean; value: unknown };
 };
 
@@ -540,19 +544,6 @@ function samePropertyDescriptor(
 }
 
 function nativePromiseOutcome(value: unknown): NativePromiseOutcome | null {
-  const state = objectCreate(null) as { rejected: boolean; value: unknown };
-  objectDefineProperty(state, "rejected", {
-    configurable: false,
-    enumerable: false,
-    value: false,
-    writable: true,
-  });
-  objectDefineProperty(state, "value", {
-    configurable: false,
-    enumerable: false,
-    value: undefined,
-    writable: true,
-  });
   try {
     if (
       value === null ||
@@ -571,20 +562,64 @@ function nativePromiseOutcome(value: unknown): NativePromiseOutcome | null {
     ) {
       return null;
     }
-    const signal = invoke<Promise<unknown>>(promiseThen, value, [
+
+    const state = objectCreate(null) as { rejected: boolean; value: unknown };
+    objectDefineProperty(state, "rejected", {
+      configurable: false,
+      enumerable: false,
+      value: false,
+      writable: true,
+    });
+    objectDefineProperty(state, "value", {
+      configurable: false,
+      enumerable: false,
+      value: undefined,
+      writable: true,
+    });
+
+    let settleSignal: ((value?: unknown) => void) | undefined;
+    const signal = invoke<Promise<void>>(reflectConstruct, undefined, [
+      promiseConstructor,
+      [
+        (resolve: (value?: unknown) => void) => {
+          settleSignal = resolve;
+        },
+      ],
+    ]);
+    invoke(weakSetAdd, promiseSignalOwnership, [signal]);
+    if (!isOwnedPromiseSignal(signal) || settleSignal === undefined) return null;
+    const resolveSignal = settleSignal;
+
+    // A fully rebased Promise subclass cannot be distinguished from a native
+    // instance by reflection alone. It is therefore never trusted directly:
+    // the captured native `then` only transfers settlement into package-owned
+    // state, and the package-owned bridge settles with `undefined` so an
+    // adapter-controlled settlement value can never be then-assimilated by
+    // the signal that is awaited below.
+    invoke<unknown>(promiseThen, value, [
       (resolved: unknown) => {
         state.value = resolved;
+        resolveSignal(undefined);
       },
       (_reason: unknown) => {
         state.rejected = true;
+        resolveSignal(undefined);
       },
     ]);
     return { signal, state };
   } catch {
-    // The exact native prototype and captured constructor/species descriptors
-    // exclude subclasses and adapter-controlled constructor/species hooks
-    // before the native brand-checking `then` is invoked.
+    // Raw adapter values and all source errors are fail closed. The raw
+    // promise is never awaited or cached as an authority.
     return null;
+  }
+}
+
+function isOwnedPromiseSignal(value: unknown): value is Promise<void> {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) return false;
+  try {
+    return invoke<boolean>(weakSetHas, promiseSignalOwnership, [value]);
+  } catch {
+    return false;
   }
 }
 
@@ -993,6 +1028,7 @@ export class AuthorizationService {
       } else {
         const outcome = nativePromiseOutcome(rawRecords);
         if (outcome === null) return createEmptyPermissionIndex();
+        if (!isOwnedPromiseSignal(outcome.signal)) return createEmptyPermissionIndex();
         await outcome.signal;
         if (outcome.state.rejected) return createEmptyPermissionIndex();
         records = outcome.state.value;
