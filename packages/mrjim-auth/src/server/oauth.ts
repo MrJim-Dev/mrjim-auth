@@ -50,6 +50,31 @@ const OAUTH_FLOW_VALUES = ["sign_in", "link_identity"] as const;
 const CALLBACK_CODE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const PROVIDER_SUBJECT_MAX_LENGTH = 512;
 
+const OAuthDate = Date;
+const OAuthUint8Array = Uint8Array;
+const arrayIsArray = Array.isArray;
+const numberIsFinite = Number.isFinite;
+const numberIsSafeInteger = Number.isSafeInteger;
+const dateParse = Date.parse;
+const dateGetTime = Function.prototype.call.bind(Date.prototype.getTime) as (value: Date) => number;
+const copyOAuthBuffer = Buffer.from.bind(Buffer) as (
+  value: string | Uint8Array,
+  encoding?: BufferEncoding,
+) => Buffer;
+const concatOAuthBuffers = Buffer.concat.bind(Buffer) as (values: readonly Uint8Array[]) => Buffer;
+const copyOAuthBytes = Uint8Array.from.bind(Uint8Array) as (
+  value: ArrayLike<number> | Iterable<number>,
+) => Uint8Array;
+const freezeOAuthValue = Object.freeze as <T>(value: T) => Readonly<T>;
+const mapOAuthArray = Function.prototype.call.bind(Array.prototype.map) as <T, U>(
+  value: readonly T[],
+  callback: (item: T, index: number) => U,
+) => U[];
+const copyOAuthArray = Function.prototype.call.bind(Array.prototype.slice) as <T>(
+  value: readonly T[],
+) => T[];
+const constantTimeEqualBytes = timingSafeEqual;
+
 const oauthTransactionValues = new WeakMap<object, unknown>();
 const transactionValueSet = Function.prototype.call.bind(WeakMap.prototype.set) as <K extends object, V>(
   map: WeakMap<K, V>,
@@ -186,7 +211,7 @@ type ProfileResolution = {
 
 function validNow(clock: () => Date): Date {
   const now = clock();
-  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+  if (!(now instanceof OAuthDate) || !numberIsFinite(dateGetTime(now))) {
     throw new AuthConfigurationError("OAuth clock must return a valid Date");
   }
   return now;
@@ -198,12 +223,12 @@ function validKey(value: string | Uint8Array, label: string): Buffer {
     if (value !== value.trim() || !/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) {
       throw new AuthConfigurationError(`${label} must be unpadded base64url key material`);
     }
-    bytes = Buffer.from(value, "base64url");
+    bytes = copyOAuthBuffer(value, "base64url");
     if (bytes.toString("base64url") !== value) {
       throw new AuthConfigurationError(`${label} must be canonical unpadded base64url key material`);
     }
   } else {
-    bytes = Buffer.from(value);
+    bytes = copyOAuthBuffer(value);
   }
   if (bytes.byteLength < 32) throw new AuthConfigurationError(`${label} must contain at least 32 decoded bytes`);
   return bytes;
@@ -262,13 +287,13 @@ function validCode(value: unknown): string {
 }
 
 function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.byteLength === b.byteLength && timingSafeEqual(a, b);
+  const a = copyOAuthBuffer(left);
+  const b = copyOAuthBuffer(right);
+  return a.byteLength === b.byteLength && constantTimeEqualBytes(a, b);
 }
 
 function hmac(key: Buffer, purpose: string, value: string): Uint8Array {
-  return Uint8Array.from(createHmac("sha256", key).update(`${purpose}\0${value}`, "utf8").digest());
+  return copyOAuthBytes(createHmac("sha256", key).update(`${purpose}\0${value}`, "utf8").digest());
 }
 
 function randomOpaque(): string {
@@ -286,18 +311,18 @@ function stateBinding(state: string, provider: string, flow: OAuthFlow, redirect
 function encryptState(payload: EncryptedStatePayload, key: Buffer): Uint8Array {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const ciphertext = Buffer.concat([
+  const ciphertext = concatOAuthBuffers([
     cipher.update(JSON.stringify(payload), "utf8"),
     cipher.final(),
   ]);
   const tag = cipher.getAuthTag();
-  return Uint8Array.from(Buffer.concat([iv, tag, ciphertext]));
+  return copyOAuthBytes(concatOAuthBuffers([iv, tag, ciphertext]));
 }
 
 function decryptState(value: Uint8Array | null, key: Buffer): EncryptedStatePayload {
   if (value === null || value.byteLength < 28) throw new AuthApiError("oauth_state_invalid", 400, "Invalid OAuth state");
   try {
-    const bytes = Buffer.from(value);
+    const bytes = copyOAuthBuffer(value);
     const decipher = createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
     decipher.setAuthTag(bytes.subarray(12, 28));
     const parsed: unknown = JSON.parse(Buffer.concat([
@@ -357,7 +382,8 @@ function trustedAuthError(error: { readonly code: AuthApiError["code"]; readonly
 }
 
 function isBanned(user: User, now: Date): boolean {
-  return user.banned_until !== null && new Date(user.banned_until).getTime() > now.getTime();
+  return user.banned_until !== null
+    && dateGetTime(new OAuthDate(user.banned_until)) > dateGetTime(now);
 }
 
 function isDeleted(user: User): boolean {
@@ -429,32 +455,40 @@ function copyAdapterDate(value: unknown, nullable: false): Date;
 function copyAdapterDate(value: unknown, nullable: true): Date | null;
 function copyAdapterDate(value: unknown, nullable: boolean): Date | null {
   if (value === null && nullable) return null;
-  if (!(value instanceof Date)) throw new TypeError("invalid OAuth state adapter value");
-  const time = value.getTime();
-  if (!Number.isFinite(time)) throw new TypeError("invalid OAuth state adapter value");
-  return new Date(time);
+  if (!(value instanceof OAuthDate)) throw new TypeError("invalid OAuth state adapter value");
+  const time = dateGetTime(value);
+  if (!numberIsFinite(time)) throw new TypeError("invalid OAuth state adapter value");
+  return new OAuthDate(time);
 }
 
 function safeOAuthStateRecord(value: unknown, expected: OAuthStateBinding): OAuthStateRecord {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (typeof value !== "object" || value === null || arrayIsArray(value)) {
     throw new TypeError("invalid OAuth state adapter value");
   }
   const candidate = value as Record<string, unknown>;
   const idValue = candidate.id;
   const stateHashValue = candidate.state_hash;
+  if (!(stateHashValue instanceof OAuthUint8Array)) {
+    throw new TypeError("invalid OAuth state adapter value");
+  }
+  const stateHash = copyOAuthBytes(stateHashValue);
   const providerValue = candidate.provider;
   const flowValue = candidate.flow;
   const pkceChallengeValue = candidate.pkce_challenge;
   const encryptedVerifierValue = candidate.encrypted_verifier;
+  if (!(encryptedVerifierValue instanceof OAuthUint8Array)) {
+    throw new TypeError("invalid OAuth state adapter value");
+  }
+  const encryptedVerifier = copyOAuthBytes(encryptedVerifierValue);
   const redirectValue = candidate.redirect;
   const linkingUserIdValue = candidate.linking_user_id;
   const expiresAtValue = candidate.expires_at;
+  const expiresAt = copyAdapterDate(expiresAtValue, false);
   const consumedAtValue = candidate.consumed_at;
+  const consumedAt = copyAdapterDate(consumedAtValue, true);
 
   const id = uuidSchema.safeParse(idValue);
-  if (!id.success || !(stateHashValue instanceof Uint8Array)) {
-    throw new TypeError("invalid OAuth state adapter value");
-  }
+  if (!id.success) throw new TypeError("invalid OAuth state adapter value");
   let provider: string;
   try {
     provider = normalizeProvider(providerValue);
@@ -467,9 +501,7 @@ function safeOAuthStateRecord(value: unknown, expected: OAuthStateBinding): OAut
     || !OAUTH_FLOW_VALUES.includes(flowValue as OAuthFlow)
     || redirectValue !== expected.redirect
     || typeof pkceChallengeValue !== "string"
-    || !(encryptedVerifierValue instanceof Uint8Array)
   ) throw new TypeError("invalid OAuth state adapter value");
-  const stateHash = Uint8Array.from(stateHashValue);
   if (!constantTimeEqual(stateHash, expected.stateHash)) {
     throw new TypeError("invalid OAuth state adapter value");
   }
@@ -479,17 +511,17 @@ function safeOAuthStateRecord(value: unknown, expected: OAuthStateBinding): OAut
   if (linkingUserId !== null && !linkingUserId.success) {
     throw new TypeError("invalid OAuth state adapter value");
   }
-  return Object.freeze({
+  return freezeOAuthValue({
     id: id.data,
     state_hash: stateHash,
     provider,
     flow: flowValue as OAuthFlow,
     pkce_challenge: pkceChallengeValue,
-    encrypted_verifier: Uint8Array.from(encryptedVerifierValue),
+    encrypted_verifier: encryptedVerifier,
     redirect: redirectValue as string,
     linking_user_id: linkingUserId === null ? null : linkingUserId.data,
-    expires_at: copyAdapterDate(expiresAtValue, false),
-    consumed_at: copyAdapterDate(consumedAtValue, true),
+    expires_at: expiresAt,
+    consumed_at: consumedAt,
   });
 }
 
@@ -500,7 +532,7 @@ type IdentityBinding = {
 };
 
 function safeRepositoryIdentity(value: unknown, expected: IdentityBinding = {}): Identity {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (typeof value !== "object" || value === null || arrayIsArray(value)) {
     throw new TypeError("invalid identity adapter value");
   }
   const candidate = value as Record<string, unknown>;
@@ -527,12 +559,12 @@ function safeRepositoryIdentity(value: unknown, expected: IdentityBinding = {}):
     || providerSubjectValue.length > PROVIDER_SUBJECT_MAX_LENGTH
     || (emailValue !== null && typeof emailValue !== "string")
     || typeof createdAtValue !== "string"
-    || !Number.isFinite(Date.parse(createdAtValue))
+    || !numberIsFinite(dateParse(createdAtValue))
     || typeof updatedAtValue !== "string"
-    || !Number.isFinite(Date.parse(updatedAtValue))
+    || !numberIsFinite(dateParse(updatedAtValue))
     || typeof identityDataValue !== "object"
     || identityDataValue === null
-    || Array.isArray(identityDataValue)
+    || arrayIsArray(identityDataValue)
   ) throw new TypeError("invalid identity adapter value");
   let email: string | null;
   try {
@@ -549,7 +581,7 @@ function safeRepositoryIdentity(value: unknown, expected: IdentityBinding = {}):
     || (expected.subject !== undefined && providerSubjectValue !== expected.subject)
     || (expected.userId !== undefined && userId.data !== expected.userId)
   ) throw new TypeError("invalid identity adapter value");
-  return Object.freeze({
+  return freezeOAuthValue({
     id: id.data,
     user_id: userId.data,
     provider,
@@ -562,8 +594,14 @@ function safeRepositoryIdentity(value: unknown, expected: IdentityBinding = {}):
 }
 
 function safeRepositoryIdentities(value: unknown, expectedUserId: UUID): readonly Identity[] {
-  if (!Array.isArray(value)) throw new TypeError("invalid identity-list adapter value");
-  return Object.freeze(value.map((identity) => safeRepositoryIdentity(identity, { userId: expectedUserId })));
+  if (!arrayIsArray(value)) throw new TypeError("invalid identity-list adapter value");
+  const length = value.length;
+  if (!numberIsSafeInteger(length) || length < 0) throw new TypeError("invalid identity-list adapter value");
+  const elements: unknown[] = [];
+  for (let index = 0; index < length; index += 1) elements[index] = value[index];
+  const identities = mapOAuthArray(elements, (identity) =>
+    safeRepositoryIdentity(identity, { userId: expectedUserId }));
+  return freezeOAuthValue(copyOAuthArray(identities));
 }
 
 function redirectWithCode(redirect: string, code: string): string {
@@ -742,9 +780,10 @@ export class OAuthService {
       let redirect: string | null = null;
       for (const candidate of redirectCandidates) {
         for (const flow of OAUTH_FLOW_VALUES) {
-          const stateHash = hmac(this.tokenHashKey, "oauth_state", stateBinding(input.state, providerName, flow, candidate));
+          const expectedStateHash = hmac(this.tokenHashKey, "oauth_state", stateBinding(input.state, providerName, flow, candidate));
+          const requestedStateHash = copyOAuthBytes(expectedStateHash);
           consumed = await adapterCall(async () => {
-            const value = await this.repository.oauthStates.consume(stateHash, now, {
+            const value = await this.repository.oauthStates.consume(requestedStateHash, now, {
               now,
               provider: providerName,
               flow,
@@ -752,7 +791,7 @@ export class OAuthService {
             });
             if (value === null) return null;
             return safeOAuthStateRecord(value, {
-              stateHash,
+              stateHash: expectedStateHash,
               provider: providerName,
               flow,
               redirect: candidate,

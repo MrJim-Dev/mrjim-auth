@@ -291,6 +291,18 @@ async function databaseMutationSnapshot(): Promise<Record<string, string>> {
   return row;
 }
 
+function identityListWithOverriddenMap(
+  elements: readonly Identity[],
+  mapped: readonly Identity[] = elements,
+): readonly Identity[] {
+  const value = [...elements];
+  Object.defineProperty(value, "map", {
+    configurable: true,
+    value: () => mapped,
+  });
+  return value;
+}
+
 describe("Task 7 OAuth and identity safety", () => {
   beforeAll(async () => {
     disposable = await startPostgres();
@@ -912,7 +924,81 @@ describe("Task 7 OAuth and identity safety", () => {
     expect(await databaseMutationSnapshot()).toEqual(before);
   });
 
-  it("rejects a found identity whose provider subject does not match the lookup without a session", async () => {
+  it("rejects a wrong state digest when projection accessors mutate realm intrinsics", async () => {
+    let projectedState: OAuthStateRecord | null = null;
+    let requestedDigest: Uint8Array | null = null;
+    let providerCalls = 0;
+    const base = requireRepository();
+    const projectedRepository: AuthRepository = {
+      ...base,
+      oauthStates: {
+        ...base.oauthStates,
+        consume: async (stateHash) => {
+          requestedDigest = Uint8Array.from(stateHash);
+          return projectedState;
+        },
+      },
+    };
+    const service = createOAuthService({
+      repository: projectedRepository,
+      provider: deterministicProvider({
+        exchange: async () => {
+          providerCalls += 1;
+          return profile({ subject: "realm-mutated-state-subject", email: null });
+        },
+      }),
+    });
+    const authorized = unwrap(await service.authorize({ provider: "google", redirectTo: CALLBACK }));
+    const stored = await latestOAuthStateRecord();
+    const wrongDigest = Uint8Array.from(stored.state_hash);
+    wrongDigest[0] = (wrongDigest[0] ?? 0) ^ 0xff;
+    const projection = { ...stored, state_hash: wrongDigest };
+    const originalBufferFrom = Buffer.from;
+    const originalTypedArrayFrom = Uint8Array.from;
+    const originalDateGetTime = Date.prototype.getTime;
+    const originalFreeze = Object.freeze;
+    let digestCopies = 0;
+    Object.defineProperty(projection, "id", {
+      enumerable: true,
+      get: () => {
+        Buffer.from = ((...args: unknown[]) => {
+          const source = args[0];
+          if (source instanceof Uint8Array && source.byteLength === 32 && digestCopies < 2) {
+            digestCopies += 1;
+            if (requestedDigest === null) throw new Error("requested state digest was not captured");
+            return originalBufferFrom(requestedDigest);
+          }
+          return Reflect.apply(originalBufferFrom, Buffer, args) as Buffer;
+        }) as typeof Buffer.from;
+        Uint8Array.from = ((source: ArrayLike<number>) =>
+          source instanceof Uint8Array ? source : originalTypedArrayFrom(source)) as typeof Uint8Array.from;
+        Date.prototype.getTime = function getTime() {
+          return Reflect.apply(originalDateGetTime, this, []) as number;
+        };
+        Object.freeze = ((value: unknown) => value) as typeof Object.freeze;
+        return stored.id;
+      },
+    });
+    projectedState = projection;
+    const before = await databaseMutationSnapshot();
+
+    const result = await service.callback({
+      provider: "google",
+      code: "provider-code",
+      state: authorized.state,
+      redirectTo: CALLBACK,
+    }).finally(() => {
+      Buffer.from = originalBufferFrom;
+      Uint8Array.from = originalTypedArrayFrom;
+      Date.prototype.getTime = originalDateGetTime;
+      Object.freeze = originalFreeze;
+    });
+    expect(result).toMatchObject({ data: null, error: { code: "internal_error", status: 500 } });
+    expect(providerCalls).toBe(0);
+    expect(await databaseMutationSnapshot()).toEqual(before);
+  });
+
+  it("rejects a found identity when mutable freeze substitutes another owner", async () => {
     let projectedIdentity: Identity | null = null;
     const base = requireRepository();
     const projectedRepository = projectedIdentityRepository(base, (identities) => ({
@@ -925,40 +1011,72 @@ describe("Task 7 OAuth and identity safety", () => {
       subject: "projected-find-owner",
       email: "projected-find-owner@example.com",
     })));
-    projectedIdentity = (await base.identities.listByUserId(owner.user.id))[0] ?? null;
+    const ownerIdentity = (await base.identities.listByUserId(owner.user.id))[0];
+    if (ownerIdentity === undefined) throw new Error("found identity was not persisted");
+    const requestedSubject = "projected-find-requested";
+    const originalFreeze = Object.freeze;
+    const projection = {
+      ...ownerIdentity,
+      user_id: "00000000-0000-4000-8000-000000000001" as UUID,
+      provider_subject: requestedSubject,
+      identity_data: sanitizeIdentityData({ ...ownerIdentity.identity_data, sub: requestedSubject }),
+    };
+    Object.defineProperty(projection, "id", {
+      enumerable: true,
+      get: () => {
+        Object.freeze = ((value: unknown) => {
+          if (typeof value === "object" && value !== null && "provider_subject" in value) return ownerIdentity;
+          return originalFreeze(value);
+        }) as typeof Object.freeze;
+        return ownerIdentity.id;
+      },
+    });
+    projectedIdentity = projection;
     const beforeSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
 
-    expect(await service.signInFromProfile(profile({
-      subject: "projected-find-requested",
+    const result = await service.signInFromProfile(profile({
+      subject: requestedSubject,
       email: null,
-    }))).toMatchObject({ data: null, error: { code: "internal_error", status: 500 } });
+    })).finally(() => { Object.freeze = originalFreeze; });
+    expect(result).toMatchObject({ data: null, error: { code: "unauthorized", status: 401 } });
     const afterSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
     expect(afterSessions?.rows[0]?.count).toBe(beforeSessions?.rows[0]?.count);
   });
 
-  it("rolls back a created identity projected for a different user", async () => {
+  it("does not disclose a substituted identity owner when mutable freeze runs during create", async () => {
     const base = requireRepository();
     const otherUser = await base.users.create({ email: "projected-create-other@example.com" });
+    const originalFreeze = Object.freeze;
     const projectedRepository = projectedIdentityRepository(base, (identities) => ({
       ...identities,
       createIfAvailable: async (input, options) => {
         const created = await identities.createIfAvailable(input, options);
-        return created === null ? null : { ...created, user_id: otherUser.id };
+        if (created === null) return null;
+        const projection = { ...created };
+        Object.defineProperty(projection, "id", {
+          enumerable: true,
+          get: () => {
+            Object.freeze = ((value: unknown) => {
+              if (typeof value === "object" && value !== null && "provider_subject" in value) {
+                return { ...created, user_id: otherUser.id };
+              }
+              return originalFreeze(value);
+            }) as typeof Object.freeze;
+            return created.id;
+          },
+        });
+        return projection;
       },
     }));
     const service = createOAuthService({ repository: projectedRepository });
     const email = "projected-create-owner@example.com";
     const subject = "projected-create-subject";
-    const beforeSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
 
-    expect(await service.signInFromProfile(profile({ subject, email }))).toMatchObject({
-      data: null,
-      error: { code: "internal_error", status: 500 },
-    });
-    expect((await disposable?.pool.query("SELECT id FROM auth.users WHERE email_normalized = $1", [email]))?.rows).toHaveLength(0);
-    expect((await disposable?.pool.query("SELECT id FROM auth.identities WHERE provider_subject = $1", [subject]))?.rows).toHaveLength(0);
-    const afterSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
-    expect(afterSessions?.rows[0]?.count).toBe(beforeSessions?.rows[0]?.count);
+    const result = await service.signInFromProfile(profile({ subject, email }))
+      .finally(() => { Object.freeze = originalFreeze; });
+    const created = unwrap(result);
+    expect(created.identity.user_id).toBe(created.user.id);
+    expect(created.identity.user_id).not.toBe(otherUser.id);
   });
 
   it("rolls back callback exchange when the identity list projects another owner", async () => {
@@ -979,7 +1097,8 @@ describe("Task 7 OAuth and identity safety", () => {
     const identity = await base.identities.findByProviderSubject("google", "projected-exchange-subject");
     if (identity === null) throw new Error("callback identity was not persisted");
     const otherUser = await base.users.create({ email: "projected-exchange-other@example.com" });
-    projectedList = [{ ...identity, user_id: otherUser.id }];
+    const foreignProjection = { ...identity, user_id: otherUser.id };
+    projectedList = identityListWithOverriddenMap([foreignProjection]);
     const beforeSessions = await disposable?.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth.sessions");
 
     expect(await service.exchangeCode({
@@ -1011,10 +1130,11 @@ describe("Task 7 OAuth and identity safety", () => {
     })));
     const identity = (await base.identities.listByUserId(signedIn.user.id))[0];
     if (identity === undefined) throw new Error("listed identity was not persisted");
-    projectedList = [{
+    const mismatchedProjection = {
       ...identity,
       identity_data: sanitizeIdentityData({ ...identity.identity_data, sub: "different-list-subject" }),
-    }];
+    };
+    projectedList = identityListWithOverriddenMap([mismatchedProjection]);
 
     expect(await service.listIdentities({ session: signedIn.session })).toMatchObject({
       data: null,
@@ -1041,7 +1161,7 @@ describe("Task 7 OAuth and identity safety", () => {
     const ownerIdentity = (await base.identities.listByUserId(owner.user.id))[0];
     const otherIdentity = (await base.identities.listByUserId(other.user.id))[0];
     if (ownerIdentity === undefined || otherIdentity === undefined) throw new Error("unlink identities were not persisted");
-    projectedList = [otherIdentity, ownerIdentity];
+    projectedList = identityListWithOverriddenMap([otherIdentity, ownerIdentity]);
 
     expect(await service.unlinkIdentity({ session: owner.session }, otherIdentity.id)).toMatchObject({
       data: null,
