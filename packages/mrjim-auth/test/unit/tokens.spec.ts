@@ -110,6 +110,7 @@ describe("TokenService", () => {
       algorithms: ["ES256"],
       issuer: ISSUER,
       audience: AUDIENCE,
+      currentDate: NOW,
     });
     expect(verified.payload).toMatchObject({
       iss: ISSUER,

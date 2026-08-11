@@ -1170,6 +1170,152 @@ describe("Task 7 OAuth and identity safety", () => {
     expect(await base.identities.findByProviderSubject(otherIdentity.provider, otherIdentity.provider_subject)).not.toBeNull();
   });
 
+  it.each(["exchange", "unlink"] as const)(
+    "selects the %s identity only from the validated immutable snapshot",
+    async (operation) => {
+      const base = requireRepository();
+      const originalFind = Array.prototype.find;
+      let projectedList: readonly Identity[] | null = null;
+      let injectedIdentity: Identity | null = null;
+      let sessionCreateCalls = 0;
+      let deleteByIdCalls = 0;
+      const wrap = (current: AuthRepository): AuthRepository => ({
+        ...current,
+        identities: {
+          ...current.identities,
+          listByUserId: async (userId, options) =>
+            projectedList ?? current.identities.listByUserId(userId, options),
+          deleteById: async (identityId, options) => {
+            deleteByIdCalls += 1;
+            await current.identities.deleteById(identityId, options);
+          },
+        },
+        sessions: {
+          ...current.sessions,
+          create: async (input, options) => {
+            sessionCreateCalls += 1;
+            return current.sessions.create(input, options);
+          },
+        },
+      });
+      const attackedRepository: AuthRepository = {
+        ...wrap(base),
+        transaction: (callback) => base.transaction((transaction) => callback(wrap(transaction))),
+      };
+      const installInheritedFind = (source: Identity, projectedId: UUID): Identity => {
+        const projection = { ...source };
+        Object.defineProperty(projection, "id", {
+          enumerable: true,
+          get: () => {
+            Array.prototype.find = (() => injectedIdentity) as unknown as typeof Array.prototype.find;
+            return projectedId;
+          },
+        });
+        return projection;
+      };
+
+      try {
+        if (operation === "exchange") {
+          const subject = "inherited-find-exchange-subject";
+          const service = createOAuthService({
+            repository: attackedRepository,
+            provider: deterministicProvider({
+              exchange: async () => profile({ subject, email: null }),
+            }),
+          });
+          const authorized = unwrap(await service.authorize({ provider: "google", redirectTo: CALLBACK }));
+          const callback = unwrap(await service.callback({
+            provider: "google",
+            code: "provider-code",
+            state: authorized.state,
+          }));
+          const persistedIdentity = await base.identities.findByProviderSubject("google", subject);
+          if (persistedIdentity === null) throw new Error("callback identity was not persisted");
+          injectedIdentity = persistedIdentity;
+          projectedList = [installInheritedFind(
+            persistedIdentity,
+            uuidSchema.parse("00000000-0000-4000-8000-000000000101"),
+          )];
+          sessionCreateCalls = 0;
+          deleteByIdCalls = 0;
+          const before = await databaseMutationSnapshot();
+          const callbackToken = await disposable?.pool.query<{ id: string; consumed_at: Date | null }>(
+            "SELECT id::text, consumed_at FROM auth.one_time_tokens WHERE purpose = 'oauth_callback' AND metadata->>'target_id' = $1",
+            [persistedIdentity.id],
+          );
+          const callbackTokenId = uuidSchema.parse(callbackToken?.rows[0]?.id);
+          expect(callbackToken?.rows[0]?.consumed_at).toBeNull();
+
+          const result = await service.exchangeCode({
+            code: callback.code,
+            codeVerifier: authorized.codeVerifier,
+            redirectTo: CALLBACK,
+          });
+
+          expect(result).toMatchObject({
+            data: null,
+            error: {
+              name: "AuthError",
+              code: "invalid_request",
+              status: 400,
+              message: "OAuth identity is unavailable",
+            },
+          });
+          expect(sessionCreateCalls).toBe(0);
+          expect(deleteByIdCalls).toBe(0);
+          expect(await databaseMutationSnapshot()).toEqual(before);
+          expect(await disposable?.pool.query<{ consumed_at: Date | null }>(
+            "SELECT consumed_at FROM auth.one_time_tokens WHERE id = $1",
+            [callbackTokenId],
+          )).toMatchObject({ rows: [{ consumed_at: null }] });
+          return;
+        }
+
+        const service = createOAuthService({ repository: attackedRepository });
+        const owner = unwrap(await service.signInFromProfile(profile({
+          subject: "inherited-find-unlink-owner",
+          email: "inherited-find-unlink-owner@example.com",
+        })));
+        const other = unwrap(await service.signInFromProfile(profile({
+          subject: "inherited-find-unlink-other",
+          email: "inherited-find-unlink-other@example.com",
+        })));
+        const ownerIdentity = (await base.identities.listByUserId(owner.user.id))[0];
+        const otherIdentity = (await base.identities.listByUserId(other.user.id))[0];
+        if (ownerIdentity === undefined || otherIdentity === undefined) throw new Error("unlink identities were not persisted");
+        injectedIdentity = otherIdentity;
+        projectedList = [
+          installInheritedFind(ownerIdentity, uuidSchema.parse("00000000-0000-4000-8000-000000000102")),
+          { ...ownerIdentity, id: uuidSchema.parse("00000000-0000-4000-8000-000000000103") },
+        ];
+        sessionCreateCalls = 0;
+        deleteByIdCalls = 0;
+        const before = await databaseMutationSnapshot();
+
+        const result = await service.unlinkIdentity({ session: owner.session }, otherIdentity.id);
+
+        expect(result).toMatchObject({
+          data: null,
+          error: {
+            name: "AuthError",
+            code: "not_found",
+            status: 404,
+            message: "Identity not found",
+          },
+        });
+        expect(sessionCreateCalls).toBe(0);
+        expect(deleteByIdCalls).toBe(0);
+        expect(await databaseMutationSnapshot()).toEqual(before);
+        expect(await base.identities.findByProviderSubject(
+          otherIdentity.provider,
+          otherIdentity.provider_subject,
+        )).not.toBeNull();
+      } finally {
+        Array.prototype.find = originalFind;
+      }
+    },
+  );
+
   it("assigns configured default roles to OAuth-created users and rolls back missing-role creation", async () => {
     const role = await requireRepository().roles.create({
       key: roleKeySchema.parse("oauth_member"),

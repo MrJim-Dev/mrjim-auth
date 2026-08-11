@@ -185,6 +185,25 @@ selected PostgreSQL race tests, 45 provider/export/migration tests, 12 explicit
 export/browser tests, and the full 196-test suite. Same-reviewer re-review is
 pending; approval is not claimed.
 
+Task 7 Fix Pass 4 removes the final inherited identity-selection operation.
+Both callback-code exchange and unlink now use one module-local numeric helper
+that searches only the validated immutable snapshot and never calls inherited
+or collection-owned `.find`. The one table-driven regression mutates
+`Array.prototype.find` from a returned-item getter and restores it in `finally`;
+exchange returns the fixed `invalid_request` error without session creation or
+callback-code consumption, while unlink returns the fixed `not_found` error
+without `deleteById` or foreign deletion. Database snapshots remain unchanged.
+Targeted RED was 2 failed with 26 skipped; identical-command GREEN was 2 passed
+with 26 skipped. Pass 4 then passed 61 focused tests, five selected PostgreSQL
+races, 45 provider/export/migration tests, the 23-test migration suite, the
+12-test export/browser suite, and the final 198-test full suite. The first full
+run exposed one existing wall-clock-sensitive JWT assertion after its fixed
+token crossed expiry (197 passed, 1 failed); direct verification now uses that
+test's injected `NOW`, and its seven-test file plus the full rerun pass. No
+production token behavior or additional test case changed. No migration,
+dependency, manifest, or lockfile changed. Same-reviewer re-review is pending;
+approval is not claimed.
+
 The forward-only `0005_oauth_callback` migration is required because the
 immutable `0001–0004` `one_time_tokens_purpose_check` cannot accept the new
 durable callback purpose. It adds only the new purpose and its `<= 60 seconds`
@@ -245,7 +264,7 @@ database, external network, or paid SaaS service is required.
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
-| 7. OAuth and identities | Fix Pass 3 complete — re-review pending | Pass-3 RED/GREEN, captured realm intrinsics, trusted identity-list snapshots, races, provider/export/migration, 196-test full suite, package, and gate evidence recorded in Task 7 report |
+| 7. OAuth and identities | Fix Pass 4 complete — re-review pending | Pass-4 two-row RED/GREEN, numeric validated-snapshot identity selection, races, provider/export/migration, 198-test full suite, packed consumer, byte identity, and gate evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Pending | Not run |
 | 9. HTTP and OpenAPI | Pending | Not run |
 | 10. Browser client | Pending | Not run |
@@ -274,7 +293,7 @@ review run, then passed within seven seconds when rerun with a bounded
 30-second timeout. The controller's plain `pnpm test` run passed 156/156. A
 per-test timeout should be considered during Task 14 release hardening.
 
-Task 7 Fix Pass 3 blockers: none. Same-reviewer re-review is intentionally left
+Task 7 Fix Pass 4 blockers: none. Same-reviewer re-review is intentionally left
 to the controller after this handoff; the status does not claim approval. No
 paid or hosted service is needed for review or operation.
 

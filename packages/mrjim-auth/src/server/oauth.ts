@@ -604,6 +604,15 @@ function safeRepositoryIdentities(value: unknown, expectedUserId: UUID): readonl
   return freezeOAuthValue(copyOAuthArray(identities));
 }
 
+function selectIdentityById(identities: readonly Identity[], identityId: UUID): Identity | undefined {
+  const length = identities.length;
+  for (let index = 0; index < length; index += 1) {
+    const identity = identities[index];
+    if (identity !== undefined && identity.id === identityId) return identity;
+  }
+  return undefined;
+}
+
 function redirectWithCode(redirect: string, code: string): string {
   const url = new URL(redirect);
   url.searchParams.set("code", code);
@@ -922,7 +931,7 @@ export class OAuthService {
           : undefined;
         const identity = identityId === undefined
           ? undefined
-          : identities.find((candidate) => candidate.id === identityId);
+          : selectIdentityById(identities, identityId);
         if (identity === undefined) trustedFailure(new AuthApiError("invalid_request", 400, "OAuth identity is unavailable"));
         const signedInUser = await transaction.users.update(user.id, { last_sign_in_at: now }, { now });
         const session = await this.sessions.create(signedInUser, input.context ?? {}, transaction);
@@ -1037,7 +1046,7 @@ export class OAuthService {
           await transaction.identities.listByUserId(currentUser.id, { now }),
           currentUser.id,
         );
-        const identity = identities.find((candidate) => candidate.id === identityId);
+        const identity = selectIdentityById(identities, identityId);
         if (identity === undefined) trustedFailure(new AuthApiError("not_found", 404, "Identity not found"));
         const password = await transaction.passwordCredentials.findByUserId(currentUser.id, { now });
         if (password === null && identities.length <= 1) trustedFailure(new AuthApiError("identity_unlink_not_allowed", 400, "A final usable login method cannot be removed"));
