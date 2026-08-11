@@ -217,8 +217,8 @@ expiry check; byte/checksum assertions preserve `0001–0004` unchanged. No
 callback code is kept in process memory or represented as a self-contained
 reusable token.
 
-Task 8's third post-pass route-boundary hardening resolution is implemented
-pending fresh independent review against clean baseline
+Task 8's third post-pass route-boundary hardening resolution is independently
+approved against clean baseline
 `b81a12f83471b2b46a141d1c0b618228a5cd3771`. It closes exactly the two
 validated High findings. `permissionsRoute` now calls `getPermissions`
 synchronously inside a fail-closed boundary, snapshots direct arrays before
@@ -242,15 +242,17 @@ Third post-pass RED was source 2 failed/40 passed across the 42-test focused
 group and packed 1 failed/22 skipped (23), before production edits. Identical
 GREEN is source 42/42 and packed 1/1 (22 skipped). The full suite is 17 files
 and 240/240 tests. Repository/shared is 36/36, migration/state is 24/24, and
-export/browser is 46/46. The deterministic 100,000-row/10,000-requirement
+export/browser is 15/15. The deterministic 100,000-row/10,000-requirement
 source performance group is 2/2 in 709ms test time; the packed fresh
 install/import/adversarial run includes the deterministic 100,000-row result
 and passed in 9.14s. Frozen install, build, typecheck, lint, docs check,
 direct root/server/browser imports (3/3), packed install/import, diff check,
 and protected hashes pass. No migration, manifest, lockfile, dependency,
 direct-user-permission model, paid service, hosted service, or runtime-network
-dependency changed. Fresh independent review remains pending; approval is not
-claimed. Task 8 has no product blocker. Tasks 9-14 remain.
+dependency changed. The same independent Luna reviewer approved resolution
+commit `000a960fe9e3783223916e3ffa484d042ba7b7b9`; security scan
+`b547872f-8453-4f5b-aff4-34174f0cd124` sealed with zero reportable findings.
+Task 8 has no product blocker. Tasks 9-14 remain.
 
 Task 8 Fix Pass 1 was implemented pending fresh independent review. `AuthorizationService`
 consumes the existing PostgreSQL authorization repository, whose recursive CTE
@@ -328,7 +330,7 @@ database, external network, or paid SaaS service is required.
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
-| 8. Dynamic authorization | Complete — third post-pass route-boundary hardening implemented; independent review pending | 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 46/46 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
+| 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Pending | Not run |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
@@ -362,9 +364,10 @@ needed for review or operation.
 
 ## Remaining work
 
-Task 8's third post-pass route-boundary hardening resolution is complete pending
-independent review. Task 8 implementation/re-review remains the current handoff state; Tasks 9-14 remain, with independent review after each task; then complete the
-whole-branch review and release handoff. In particular, later work must use
+Task 8's third post-pass route-boundary hardening resolution is complete and
+independently approved. Task 9 is the current handoff state; Tasks 9-14 remain,
+with independent review after each task, followed by the whole-branch review
+and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement
 auth/session/OAuth/RBAC behavior, HTTP and browser/SSR surfaces,
 administration, examples, and release verification.
