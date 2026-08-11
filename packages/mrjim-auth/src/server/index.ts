@@ -99,3 +99,14 @@ export {
   createPermissionRoutes,
   permissionsRoute,
 } from "./routes/permissions.js";
+export {
+  AuthServer,
+  type AuthServerRuntimeOptions,
+  type AuthSubject,
+} from "./auth-server.js";
+export {
+  createAuthServer,
+  type AuthServerServiceOverrides,
+  type CreateAuthServerOptions,
+} from "./create-auth-server.js";
+export { generateOpenApiDocument } from "./openapi.js";

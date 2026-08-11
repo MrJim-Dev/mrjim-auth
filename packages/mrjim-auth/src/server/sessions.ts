@@ -435,6 +435,47 @@ export class SessionService {
     }
   }
 
+  /** Revokes a session selected by a refresh token without returning token state. */
+  async revokeRefreshToken(
+    refreshToken: string,
+    scope: SignOutScope,
+  ): Promise<AuthResult<null>> {
+    if (scope !== "local" && scope !== "global" && scope !== "others") {
+      return authFailure(new AuthApiError("invalid_request", 400, "Invalid sign-out scope"));
+    }
+    if (typeof refreshToken !== "string" || !isOpaqueRefreshToken(refreshToken)) {
+      return authFailure(invalidRefreshToken());
+    }
+    const now = nowFrom(this.clock);
+    const tokenHash = this.tokens.hashOpaqueToken(refreshToken);
+    try {
+      await this.repository.transaction(async (transaction) => {
+        const found = await transaction.sessions.findRefreshForUpdate(tokenHash, { now });
+        if (found === null || !sameDigest(tokenHash, found.refreshToken.token_hash)) return;
+        if (scope === "local") {
+          await transaction.sessions.revokeSession(found.session.id, { now });
+        } else if (scope === "global") {
+          await transaction.sessions.revokeUserSessions(found.session.user_id, undefined, { now });
+        } else {
+          await transaction.sessions.revokeUserSessions(found.session.user_id, found.session.id, { now });
+        }
+        await transaction.operations.appendAudit({
+          actor_user_id: found.session.user_id,
+          actor_session_id: found.session.id,
+          action: `session.sign_out.${scope}`,
+          target_type: scope === "local" ? "session" : "user",
+          target_id: scope === "local" ? found.session.id : found.session.user_id,
+          metadata: auditMetadata("session.sign_out", { operation: scope, credential: "refresh_token" }),
+          outcome: "success",
+          occurred_at: now,
+        }, { now });
+      });
+      return authSuccess(null);
+    } catch (error) {
+      return mapUnexpectedOperationalError(error);
+    }
+  }
+
   /** Revokes the current session, every session, or every other session. */
   async signOut(
     session: Session,

@@ -1,0 +1,219 @@
+import type { AuthRepository, KeyMaterial, KeyProvider } from "../shared/contracts.js";
+import { authServerOptionsSchema, type AuthServerOptions } from "../shared/config.js";
+import { AuthConfigurationError } from "../shared/errors.js";
+import {
+  AuthorizationService,
+  type AuthorizationServiceOptions,
+} from "./authorization.js";
+import { EmailService } from "./email.js";
+import { OneTimeTokenService } from "./one-time-tokens.js";
+import { OAuthService } from "./oauth.js";
+import { GoogleOAuthProvider, OidcOAuthProvider, type OAuthProvider } from "./oauth-providers.js";
+import { PasswordService } from "./passwords.js";
+import { SessionService } from "./sessions.js";
+import { TokenService } from "./tokens.js";
+import { UserService } from "./users.js";
+import { AuthServer, type AuthServerRuntimeOptions } from "./auth-server.js";
+import type { AuthServerServices } from "./routes/contracts.js";
+
+/** Optional service seams used by tests and by projects that compose services themselves. */
+export type AuthServerServiceOverrides = Partial<AuthServerServices>;
+
+/** Public synchronous construction options for the framework-neutral server. */
+export type CreateAuthServerOptions = AuthServerOptions & {
+  readonly services?: AuthServerServiceOverrides;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
+}
+
+function parseAbsoluteUrl(value: string, label: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new AuthConfigurationError(`${label} must be an absolute URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:" || parsed.username !== "" || parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") {
+    throw new AuthConfigurationError(`${label} must be a credential-free HTTP(S) URL without a query or fragment`);
+  }
+  return parsed;
+}
+
+function normalizedBasePath(baseUrl: URL): string {
+  const path = baseUrl.pathname.replace(/\/+$/u, "");
+  return path === "" || path === "/" ? "/auth/v1" : path;
+}
+
+function secretString(value: string | Uint8Array): string {
+  if (typeof value === "string") return value;
+  return Buffer.from(value).toString("base64url");
+}
+
+function keyProvider(options: AuthServerOptions): KeyProvider {
+  const configured = options.signingKeys.keys;
+  const activeKeyId = options.signingKeys.activeKeyId;
+  const verificationKeys = new Map<string, KeyMaterial>(Object.entries(configured));
+  return {
+    getActiveKeyId: () => activeKeyId,
+    getSigningKey: (keyId) => {
+      const material = configured[keyId];
+      if (material === undefined) throw new AuthConfigurationError(`signing key is not configured: ${keyId}`);
+      return material;
+    },
+    getVerificationKeys: () => new Map(verificationKeys),
+  };
+}
+
+function createProviders(options: AuthServerOptions): readonly OAuthProvider[] {
+  const configured = options.oauth;
+  if (configured === undefined) return [];
+  const providers: OAuthProvider[] = [];
+  if (configured.google !== undefined) {
+    providers.push(new GoogleOAuthProvider({
+      clientId: configured.google.clientId,
+      clientSecret: secretString(configured.google.clientSecret),
+    }));
+  }
+  if (configured.oidc !== undefined) {
+    providers.push(new OidcOAuthProvider({
+      name: "oidc",
+      clientId: configured.oidc.clientId,
+      clientSecret: secretString(configured.oidc.clientSecret),
+      issuer: configured.oidc.issuer,
+      ...(configured.oidc.scopes === undefined ? {} : { scopes: configured.oidc.scopes }),
+    }));
+  }
+  return providers;
+}
+
+function createDefaultServices(
+  options: AuthServerOptions,
+  repository: AuthRepository,
+  clock: () => Date,
+  allowedRedirects: readonly string[],
+): AuthServerServices {
+  const defaultRedirect = allowedRedirects[0];
+  if (defaultRedirect === undefined) throw new AuthConfigurationError("at least one redirect is required");
+  const email = new EmailService({
+    allowedRedirects,
+    defaultRedirect,
+  });
+  const tokens = new TokenService({
+    issuer: options.signingKeys.issuer,
+    audience: options.signingKeys.audience,
+    keyProvider: keyProvider(options),
+    tokenHashKey: options.secrets.tokenHashKey,
+    accessTokenTtlSeconds: options.accessTokenTtlSeconds,
+    clock,
+  });
+  const sessions = new SessionService({
+    repository,
+    tokens,
+    refreshTokenTtlSeconds: options.refreshTokenTtlSeconds,
+    clock,
+  });
+  const oneTimeTokens = new OneTimeTokenService({
+    repository,
+    mailer: options.email,
+    email,
+    tokenHashKey: options.secrets.tokenHashKey,
+    allowedRedirects,
+    defaultRedirect,
+    clock,
+  });
+  const passwords = new PasswordService();
+  const users = new UserService({
+    repository,
+    passwords,
+    email,
+    mailer: options.email,
+    oneTimeTokens,
+    sessions,
+    ...(options.rateLimiter === undefined ? {} : { rateLimiter: options.rateLimiter }),
+    ...(options.authorization?.defaultRoleKeys === undefined ? {} : { defaultRoleKeys: options.authorization.defaultRoleKeys }),
+    clock,
+  });
+  const authorizationOptions: AuthorizationServiceOptions = { repository, clock };
+  const authorization = new AuthorizationService(authorizationOptions);
+  const providers = createProviders(options);
+  const oauth = providers.length === 0 ? undefined : new OAuthService({
+    repository,
+    sessions,
+    providers,
+    tokenHashKey: options.secrets.tokenHashKey,
+    encryptionKey: options.secrets.encryptionKey,
+    allowedRedirects,
+    defaultRedirect,
+    ...(options.authorization?.defaultRoleKeys === undefined ? {} : { defaultRoleKeys: options.authorization.defaultRoleKeys }),
+    clock,
+  });
+  return {
+    users,
+    sessions,
+    tokens,
+    authorization,
+    ...(oauth === undefined ? {} : { oauth }),
+  };
+}
+
+function mergeServices(defaults: AuthServerServices, overrides: AuthServerServiceOverrides | undefined): AuthServerServices {
+  if (overrides === undefined) return defaults;
+  const merged: AuthServerServices = {
+    ...defaults,
+    ...overrides,
+  };
+  if (merged.users === undefined || merged.sessions === undefined || merged.tokens === undefined || merged.authorization === undefined) {
+    throw new AuthConfigurationError("auth server service composition is incomplete");
+  }
+  const requireMethods = (value: unknown, label: string, methods: readonly string[]): void => {
+    if (value === null || (typeof value !== "object" && typeof value !== "function")) throw new AuthConfigurationError(`${label} service is incomplete`);
+    try {
+      for (const method of methods) {
+        if (typeof (value as Record<string, unknown>)[method] !== "function") throw new AuthConfigurationError(`${label} service is incomplete`);
+      }
+    } catch (error) {
+      if (error instanceof AuthConfigurationError) throw error;
+      throw new AuthConfigurationError(`${label} service is incomplete`);
+    }
+  };
+  requireMethods(merged.users, "user", ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resend", "updateUser"]);
+  requireMethods(merged.sessions, "session", ["refresh", "authorizeSession", "signOut"]);
+  requireMethods(merged.tokens, "token", ["verifyAccessToken", "jwks"]);
+  requireMethods(merged.authorization, "authorization", ["getPermissions", "authorize"]);
+  if (merged.oauth !== undefined) requireMethods(merged.oauth, "OAuth", ["listProviders", "authorize", "callback", "exchangeCode", "listIdentities", "unlinkIdentity"]);
+  return merged;
+}
+
+/** Creates a fully validated, framework-neutral server synchronously. */
+export function createAuthServer(input: CreateAuthServerOptions): AuthServer {
+  const parsed = authServerOptionsSchema.parse(input);
+  const raw = asRecord(input);
+  const rawServices = raw?.services as AuthServerServiceOverrides | undefined;
+  const baseUrl = parseAbsoluteUrl(parsed.baseUrl, "baseUrl");
+  const issuer = parseAbsoluteUrl(parsed.signingKeys.issuer, "signingKeys.issuer");
+  if (issuer.href !== baseUrl.href) throw new AuthConfigurationError("baseUrl must exactly match signingKeys.issuer");
+  const siteUrl = parseAbsoluteUrl(parsed.siteUrl, "siteUrl");
+  const basePath = normalizedBasePath(baseUrl);
+  const baseOrigin = baseUrl.origin;
+  const allowedOrigins = Object.freeze([...new Set([baseOrigin, siteUrl.origin])]);
+  const allowedRedirects = Object.freeze([...parsed.redirects.allowed]);
+  const clock = () => new Date();
+  const repository = parsed.database;
+  const defaults = createDefaultServices(parsed, repository, clock, allowedRedirects);
+  const services = mergeServices(defaults, rawServices);
+  const runtime: AuthServerRuntimeOptions = {
+    config: parsed,
+    repository,
+    services,
+    apiKeyHashKey: typeof parsed.secrets.tokenHashKey === "string"
+      ? new TextEncoder().encode(parsed.secrets.tokenHashKey)
+      : Uint8Array.from(parsed.secrets.tokenHashKey),
+    baseOrigin,
+    basePath,
+    allowedOrigins,
+    allowedRedirects,
+  };
+  return new AuthServer(runtime);
+}
