@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { AuthorizationService } from "../../src/server/authorization.js";
+import {
+  AuthorizationService,
+  createAuthorizationRequestContext,
+} from "../../src/server/authorization.js";
 import { permissionsRoute } from "../../src/server/routes/permissions.js";
 import { migrate } from "../../src/postgres/migrate.js";
 import { createPostgresAdapter, type PostgresAdapter } from "../../src/postgres/adapter.js";
@@ -235,17 +238,27 @@ describe("Task 8 dynamic authorization", () => {
     } as PostgresAdapter;
     const service = new AuthorizationService({ repository: countingRepository, clock: () => NOW });
     const firstRequest = { user_id: user.id, request_id: "request-one" } as const;
-    await service.authorize(firstRequest, { all: ["cache.read"] });
-    await service.authorize(firstRequest, { all: ["cache.read"] });
+    const firstContext = createAuthorizationRequestContext(firstRequest);
+    expect(firstContext).not.toBeNull();
+    if (firstContext === null) throw new Error("first request context was not created");
+    await service.authorize(firstRequest, { all: ["cache.read"] }, firstContext);
+    await service.authorize(firstRequest, { all: ["cache.read"] }, firstContext);
     expect(reads).toBe(1);
     const secondRequest = { user_id: user.id, request_id: "request-two" } as const;
-    await service.authorize(secondRequest, { all: ["cache.read"] });
+    const secondContext = createAuthorizationRequestContext(secondRequest);
+    expect(secondContext).not.toBeNull();
+    if (secondContext === null) throw new Error("second request context was not created");
+    await service.authorize(secondRequest, { all: ["cache.read"] }, secondContext);
     expect(reads).toBe(2);
 
     const secondPermission = await base.permissions.create({ key: permissionKeySchema.parse("cache.write"), resource: lowercaseKeySchema.parse("cache"), action: lowercaseKeySchema.parse("write") });
     await base.authorization.setRolePermissions(role.id, [permission.id, secondPermission.id]);
-    await expect(service.authorize(firstRequest, { all: ["cache.write"] })).rejects.toMatchObject({ code: "insufficient_permission" });
-    await expect(service.authorize({ user_id: user.id, request_id: "request-three" }, { all: ["cache.write"] })).resolves.toMatchObject({ user_id: user.id });
+    await expect(service.authorize(firstRequest, { all: ["cache.write"] }, firstContext)).rejects.toMatchObject({ code: "insufficient_permission" });
+    const thirdRequest = { user_id: user.id, request_id: "request-three" } as const;
+    const thirdContext = createAuthorizationRequestContext(thirdRequest);
+    expect(thirdContext).not.toBeNull();
+    if (thirdContext === null) throw new Error("third request context was not created");
+    await expect(service.authorize(thirdRequest, { all: ["cache.write"] }, thirdContext)).resolves.toMatchObject({ user_id: user.id });
     expect(reads).toBe(3);
   });
 

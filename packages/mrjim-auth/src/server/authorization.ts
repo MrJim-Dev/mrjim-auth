@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   AuthRepository,
+  AuthorizationRepository,
   RepositoryOperationOptions,
 } from "../shared/contracts.js";
 import {
@@ -9,13 +10,207 @@ import {
   AuthProgrammingError,
 } from "../shared/errors.js";
 import {
-  permissionKeySchema,
-  scopeIdentifierSchema,
   type AuthorizationScope,
   type LowercaseKey,
+  type Permission,
+  type ScopeIdentifier,
   type UUID,
 } from "../shared/types.js";
-import type { AuthenticatedSubject } from "./users.js";
+
+/*
+ * Authorization is a security boundary. Capture the object/array operations
+ * used to inspect untrusted request and adapter values before any caller can
+ * replace their prototypes. All later collection work is numeric/manual.
+ */
+const reflectApply = Reflect.apply;
+const objectCreate = Object.create;
+const objectDefineProperty = Object.defineProperty;
+const objectFreeze = Object.freeze;
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const objectGetOwnPropertyNames = Object.getOwnPropertyNames;
+const objectGetOwnPropertySymbols = Object.getOwnPropertySymbols;
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectPrototype = Object.prototype;
+const arrayIsArray = Array.isArray;
+const numberIsSafeInteger = Number.isSafeInteger;
+const stringTrim = String.prototype.trim;
+const stringToLowerCase = String.prototype.toLowerCase;
+const regexpTest = RegExp.prototype.test;
+
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const MAX_REQUIREMENT_KEYS = 4096;
+const MAX_PERMISSION_ROWS = 100_000;
+const PERMISSION_FIELDS = [
+  "id",
+  "key",
+  "resource",
+  "action",
+  "description",
+  "created_at",
+  "updated_at",
+] as const;
+
+type DataProperty =
+  | { readonly valid: true; readonly present: false }
+  | { readonly valid: true; readonly present: true; readonly value: unknown }
+  | { readonly valid: false; readonly present: boolean };
+
+function invoke<T>(method: Function, receiver: unknown, args: readonly unknown[]): T {
+  return reflectApply(method, receiver, args as unknown[]) as T;
+}
+
+function ownDataProperty(value: object, key: PropertyKey): DataProperty {
+  try {
+    const descriptor = objectGetOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined) return { valid: true, present: false };
+    if (!("value" in descriptor)) return { valid: false, present: true };
+    return { valid: true, present: true, value: descriptor.value };
+  } catch {
+    return { valid: false, present: false };
+  }
+}
+
+function isPlainRecord(value: unknown): value is object {
+  if (value === null || typeof value !== "object") return false;
+  try {
+    const prototype = objectGetPrototypeOf(value);
+    return prototype === objectPrototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
+function containsNul(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "\u0000") return true;
+  }
+  return false;
+}
+
+function safePermissionKey(value: unknown): string | null {
+  if (typeof value !== "string" || !validPermissionKey(value)) return null;
+  return value;
+}
+
+function safeUserId(value: unknown): UUID | null {
+  if (typeof value !== "string") return null;
+  if (value.length !== 36) return null;
+  for (let index = 0; index < value.length; index += 1) {
+    const separator = index === 8 || index === 13 || index === 18 || index === 23;
+    if (separator) {
+      if (value[index] !== "-") return null;
+      continue;
+    }
+    if (!isHexCharacter(value[index])) return null;
+  }
+  return value as UUID;
+}
+
+function isHexCharacter(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return (
+    (value >= "0" && value <= "9") ||
+    (value >= "a" && value <= "f") ||
+    (value >= "A" && value <= "F")
+  );
+}
+
+function isLowerIdentifier(value: unknown, allowWildcard: boolean): value is string {
+  if (typeof value !== "string") return false;
+  if (allowWildcard && value === "*") return true;
+  if (value.length === 0) return false;
+  const first = value[0];
+  if (first === undefined || first < "a" || first > "z") return false;
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (
+      !(
+        character !== undefined &&
+        ((character >= "a" && character <= "z") ||
+        (character >= "0" && character <= "9") ||
+        character === "_" ||
+        character === "-")
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function validPermissionKey(value: string): boolean {
+  const separator = keySeparator(value);
+  if (separator <= 0 || separator >= value.length - 1) return false;
+  if (value[separator + 1] === ".") return false;
+  const resource = keyPart(value, 0, separator);
+  const action = keyPart(value, separator + 1, value.length);
+  if (resource === "*" && action === "*") return true;
+  return isLowerIdentifier(resource, false) && isLowerIdentifier(action, true);
+}
+
+function compareKeys(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function appendValue<T>(values: T[], value: T): void {
+  const index = values.length;
+  objectDefineProperty(values, `${index}`, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+}
+
+function appendUnique(values: string[], value: string): void {
+  for (let index = 0; index < values.length; index += 1) {
+    if (values[index] === value) return;
+  }
+  appendValue(values, value);
+}
+
+function sortKeys(values: string[]): void {
+  for (let index = 1; index < values.length; index += 1) {
+    const current = values[index];
+    if (current === undefined) continue;
+    let position = index - 1;
+    while (position >= 0) {
+      const previous = values[position];
+      if (previous === undefined || compareKeys(previous, current) <= 0) break;
+      values[position + 1] = previous;
+      position -= 1;
+    }
+    values[position + 1] = current;
+  }
+}
+
+function keySeparator(value: string): number {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === ".") return index;
+  }
+  return -1;
+}
+
+function keyPart(value: string, start: number, end: number): string {
+  let result = "";
+  for (let index = start; index < end; index += 1) {
+    result += value[index];
+  }
+  return result;
+}
+
+function validNow(clock: () => Date): Date {
+  let now: Date;
+  try {
+    now = clock();
+  } catch {
+    throw new AuthConfigurationError("authorization clock must return a valid Date");
+  }
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    throw new AuthConfigurationError("authorization clock must return a valid Date");
+  }
+  return now;
+}
 
 /** A permission requirement for an authoritative server-side authorization check. */
 export interface AuthorizationRequirement {
@@ -25,9 +220,10 @@ export interface AuthorizationRequirement {
 }
 
 /** A request-local subject accepted by the authorization guard. */
-export type AuthorizationSubject =
-  | (AuthenticatedSubject & { readonly request_id?: string })
-  | { readonly user_id: UUID; readonly request_id?: string };
+export interface AuthorizationSubject {
+  readonly user_id: UUID;
+  readonly request_id?: string;
+}
 
 /** Configuration for the server-only authorization service. */
 export interface AuthorizationServiceOptions {
@@ -35,32 +231,106 @@ export interface AuthorizationServiceOptions {
   readonly clock?: () => Date;
 }
 
-type PermissionCache = Map<string, Promise<readonly string[]>>;
+type NormalizedRequirement = {
+  readonly any?: readonly string[];
+  readonly all?: readonly string[];
+  readonly scope?: AuthorizationScope;
+};
 
-function compareKeys(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+type PermissionCacheEntry = {
+  readonly scope: AuthorizationScope | undefined;
+  readonly pending: Promise<readonly string[]>;
+};
+
+/** A cache explicitly owned by one immutable request subject. */
+export interface AuthorizationRequestContext {
+  readonly subject: AuthorizationSubject;
 }
 
-function validNow(clock: () => Date): Date {
-  const now = clock();
-  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
-    throw new AuthConfigurationError("authorization clock must return a valid Date");
-  }
-  return now;
+const requestContextBrand = Symbol("mrjim-auth.authorization-request-context");
+const requestContextLoader = Symbol("mrjim-auth.authorization-request-context-loader");
+
+type InternalAuthorizationRequestContext = AuthorizationRequestContext & {
+  readonly [requestContextBrand]: true;
+  readonly [requestContextLoader]: (
+    scope: AuthorizationScope | undefined,
+    loader: () => Promise<readonly string[]>,
+  ) => Promise<readonly string[]>;
+};
+
+function createContextFromSnapshot(subject: AuthorizationSubject): AuthorizationRequestContext {
+  const entries: PermissionCacheEntry[] = [];
+  const context = {
+    subject,
+    [requestContextLoader](scope: AuthorizationScope | undefined, loader: () => Promise<readonly string[]>) {
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        if (entry === undefined) return Promise.resolve([]);
+        if (sameScope(entry.scope, scope)) return entry.pending;
+      }
+
+      let pending: Promise<readonly string[]>;
+      try {
+        pending = loader();
+      } catch {
+        pending = Promise.resolve([]);
+      }
+      appendValue(entries, { scope, pending });
+      return pending;
+    },
+  } as InternalAuthorizationRequestContext;
+  objectDefineProperty(context, requestContextBrand, {
+    configurable: false,
+    enumerable: false,
+    value: true,
+    writable: false,
+  });
+  objectDefineProperty(context, requestContextLoader, {
+    configurable: false,
+    enumerable: false,
+    value: context[requestContextLoader],
+    writable: false,
+  });
+  return objectFreeze(context);
+}
+
+function isRequestContext(value: unknown): value is InternalAuthorizationRequestContext {
+  if (value === null || typeof value !== "object") return false;
+  const brand = ownDataProperty(value, requestContextBrand);
+  const loader = ownDataProperty(value, requestContextLoader);
+  return (
+    brand.valid &&
+    brand.present &&
+    brand.value === true &&
+    loader.valid &&
+    loader.present &&
+    typeof loader.value === "function"
+  );
+}
+
+/** Creates a frozen request-local authorization context bound to one UUID. */
+export function createAuthorizationRequestContext(
+  subject: unknown,
+): AuthorizationRequestContext | null {
+  const snapshot = snapshotAuthorizationSubject(subject);
+  return snapshot === null ? null : createContextFromSnapshot(snapshot);
+}
+
+function sameScope(
+  left: AuthorizationScope | undefined,
+  right: AuthorizationScope | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.type === right.type && left.id === right.id;
 }
 
 /** Parses one canonical lowercase `resource.action` permission key. */
 export function normalizePermissionKey(value: unknown): LowercaseKey {
-  const parsed = permissionKeySchema.safeParse(value);
-  if (!parsed.success) {
+  const parsed = safePermissionKey(value);
+  if (parsed === null) {
     throw new AuthProgrammingError("permission keys must be canonical lowercase resource.action values");
   }
-  return parsed.data;
-}
-
-function safePermissionKey(value: unknown): string | null {
-  const parsed = permissionKeySchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
+  return parsed as LowercaseKey;
 }
 
 /**
@@ -73,12 +343,13 @@ export function permissionMatchRank(granted: unknown, required: unknown): number
   if (grant === null || requirement === null) return 0;
   if (grant === requirement) return 3;
 
-  const grantSeparator = grant.indexOf(".");
-  const requiredSeparator = requirement.indexOf(".");
-  const grantResource = grant.slice(0, grantSeparator);
-  const grantAction = grant.slice(grantSeparator + 1);
-  const requiredResource = requirement.slice(0, requiredSeparator);
-  const requiredAction = requirement.slice(requiredSeparator + 1);
+  const grantSeparator = keySeparator(grant);
+  const requiredSeparator = keySeparator(requirement);
+  if (grantSeparator < 0 || requiredSeparator < 0) return 0;
+  const grantResource = keyPart(grant, 0, grantSeparator);
+  const grantAction = keyPart(grant, grantSeparator + 1, grant.length);
+  const requiredResource = keyPart(requirement, 0, requiredSeparator);
+  const requiredAction = keyPart(requirement, requiredSeparator + 1, requirement.length);
 
   if (
     grantAction === "*" &&
@@ -102,87 +373,226 @@ export function permissionMatches(granted: unknown, required: unknown): boolean 
   return permissionMatchRank(granted, required) > 0;
 }
 
-function normalizedScope(scope: AuthorizationScope | undefined): AuthorizationScope | null | undefined {
+function normalizedScope(scope: unknown): AuthorizationScope | null | undefined {
   if (scope === undefined) return undefined;
-  if (scope === null || typeof scope !== "object") return null;
-  if (typeof scope.type !== "string" || typeof scope.id !== "string") return null;
-  const type = scope.type.trim().toLowerCase();
-  const id = scopeIdentifierSchema.safeParse(scope.id.trim());
-  if (type.length === 0 || !id.success) return null;
-  return { type, id: id.data };
-}
+  if (!isPlainRecord(scope)) return null;
 
-function scopeCacheKey(scope: AuthorizationScope | undefined): string {
-  if (scope === undefined) return "global";
-  return `scope:${scope.type}\u0000${scope.id}`;
-}
-
-function requestId(subject: AuthorizationSubject): string {
-  const supplied = subject !== null && typeof subject === "object" ? subject.request_id : undefined;
-  if (typeof supplied === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(supplied)) {
-    return supplied;
-  }
-  return randomUUID();
-}
-
-/** Extracts the authenticated user UUID without exposing session internals. */
-export function subjectUserId(subject: AuthorizationSubject): UUID | null {
-  if (subject === null || typeof subject !== "object") return null;
-  if ("user_id" in subject) {
-    return typeof subject.user_id === "string" ? subject.user_id : null;
-  }
-  const userId = subject.session?.user?.id;
-  return typeof userId === "string" ? userId : null;
-}
-
-function safePermissionRecordKey(permission: unknown): string | null {
-  if (permission === null || typeof permission !== "object") return null;
-  const candidate = permission as {
-    readonly key?: unknown;
-    readonly resource?: unknown;
-    readonly action?: unknown;
-  };
-  const key = safePermissionKey(candidate.key);
+  const typeProperty = ownDataProperty(scope, "type");
+  const idProperty = ownDataProperty(scope, "id");
   if (
-    key === null ||
-    typeof candidate.resource !== "string" ||
-    typeof candidate.action !== "string" ||
-    key !== `${candidate.resource}.${candidate.action}`
+    !typeProperty.valid ||
+    !typeProperty.present ||
+    !idProperty.valid ||
+    !idProperty.present ||
+    typeof typeProperty.value !== "string" ||
+    typeof idProperty.value !== "string"
   ) {
     return null;
   }
-  return key;
-}
 
-function requirementKeys(values: readonly string[] | undefined): readonly string[] | null | undefined {
-  if (values === undefined) return undefined;
-  if (!Array.isArray(values) || values.length === 0) return null;
-  const normalized = new Set<string>();
-  for (const value of values) {
-    const key = safePermissionKey(value);
-    if (key === null) return null;
-    normalized.add(key);
+  try {
+    const trimmedType = invoke<string>(stringTrim, typeProperty.value, []);
+    const type = invoke<string>(stringToLowerCase, trimmedType, []);
+    const idValue = invoke<string>(stringTrim, idProperty.value, []);
+    if (type.length === 0 || containsNul(type) || containsNul(idValue)) return null;
+    if (idValue.length === 0) return null;
+    return objectFreeze({ type, id: idValue as ScopeIdentifier });
+  } catch {
+    return null;
   }
-  return [...normalized].sort(compareKeys);
 }
 
-function normalizedRequirement(
-  requirement: AuthorizationRequirement,
-): { readonly any?: readonly string[]; readonly all?: readonly string[]; readonly scope?: AuthorizationScope } | null {
-  if (requirement === null || typeof requirement !== "object") return null;
-  const any = requirementKeys(requirement.any);
-  const all = requirementKeys(requirement.all);
+function snapshotPermissionArray(value: unknown): unknown[] | null {
+  try {
+    if (!arrayIsArray(value)) return null;
+    const lengthProperty = ownDataProperty(value, "length");
+    if (
+      !lengthProperty.valid ||
+      !lengthProperty.present ||
+      typeof lengthProperty.value !== "number" ||
+      !numberIsSafeInteger(lengthProperty.value) ||
+      lengthProperty.value < 0 ||
+      lengthProperty.value > MAX_PERMISSION_ROWS
+    ) {
+      return null;
+    }
+
+    const snapshot: unknown[] = [];
+    for (let index = 0; index < lengthProperty.value; index += 1) {
+      const item = ownDataProperty(value, `${index}`);
+      if (!item.valid || !item.present) return null;
+      appendValue(snapshot, item.value);
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+function completePermissionRecord(value: unknown): Permission | null {
+  if (!isPlainRecord(value)) return null;
+
+  try {
+    const names = objectGetOwnPropertyNames(value);
+    for (let index = 0; index < names.length; index += 1) {
+      let known = false;
+      for (let fieldIndex = 0; fieldIndex < PERMISSION_FIELDS.length; fieldIndex += 1) {
+        if (names[index] === PERMISSION_FIELDS[fieldIndex]) {
+          known = true;
+          break;
+        }
+      }
+      if (!known) return null;
+    }
+    if (objectGetOwnPropertySymbols(value).length !== 0) return null;
+
+    const snapshot = objectCreate(null) as Record<string, unknown>;
+    for (let index = 0; index < PERMISSION_FIELDS.length; index += 1) {
+      const field = PERMISSION_FIELDS[index];
+      if (field === undefined) return null;
+      const property = ownDataProperty(value, field);
+      if (property.valid !== true || property.present !== true || !("value" in property)) return null;
+      objectDefineProperty(snapshot, field, {
+        configurable: true,
+        enumerable: true,
+        value: property.value,
+        writable: true,
+      });
+    }
+
+    const id = safeUserId(snapshot.id);
+    const key = safePermissionKey(snapshot.key);
+    const resource = snapshot.resource;
+    const action = snapshot.action;
+    if (
+      id === null ||
+      key === null ||
+      !isLowerIdentifier(resource, true) ||
+      !isLowerIdentifier(action, true) ||
+      (resource === "*" && action !== "*") ||
+      key !== `${resource}.${action}` ||
+      !(snapshot.description === null || typeof snapshot.description === "string") ||
+      typeof snapshot.created_at !== "string" ||
+      snapshot.created_at.length === 0 ||
+      typeof snapshot.updated_at !== "string" ||
+      snapshot.updated_at.length === 0
+    ) {
+      return null;
+    }
+    return {
+      id,
+      key: key as LowercaseKey,
+      resource: resource as LowercaseKey,
+      action: action as LowercaseKey,
+      description: snapshot.description,
+      created_at: snapshot.created_at,
+      updated_at: snapshot.updated_at,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizedRequirement(requirement: unknown): NormalizedRequirement | null {
+  if (!isPlainRecord(requirement)) return null;
+
+  const anyProperty = ownDataProperty(requirement, "any");
+  const allProperty = ownDataProperty(requirement, "all");
+  const scopeProperty = ownDataProperty(requirement, "scope");
+  if (!anyProperty.valid || !allProperty.valid || !scopeProperty.valid) return null;
+
+  const normalizeKeys = (
+    property: DataProperty,
+  ): readonly string[] | null | undefined => {
+    if (!property.present) return undefined;
+    if (property.valid !== true || !("value" in property)) return null;
+    let candidate: unknown[];
+    try {
+      if (!arrayIsArray(property.value)) return null;
+      candidate = property.value as unknown[];
+    } catch {
+      return null;
+    }
+    let length: number;
+    try {
+      const lengthProperty = ownDataProperty(candidate, "length");
+      if (
+        !lengthProperty.valid ||
+        !lengthProperty.present ||
+        typeof lengthProperty.value !== "number" ||
+        !numberIsSafeInteger(lengthProperty.value) ||
+        lengthProperty.value <= 0 ||
+        lengthProperty.value > MAX_REQUIREMENT_KEYS
+      ) {
+        return null;
+      }
+      length = lengthProperty.value;
+    } catch {
+      return null;
+    }
+
+    const normalized: string[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const item = ownDataProperty(candidate, `${index}`);
+      if (item.valid !== true || item.present !== true || !("value" in item) || typeof item.value !== "string") return null;
+      const key = safePermissionKey(item.value);
+      if (key === null) return null;
+      appendUnique(normalized, key);
+    }
+    if (normalized.length === 0) return null;
+    sortKeys(normalized);
+    return objectFreeze(normalized);
+  };
+
+  const any = normalizeKeys(anyProperty);
+  const all = normalizeKeys(allProperty);
   if (any === null || all === null || (any === undefined && all === undefined)) return null;
-  const scope = normalizedScope(requirement.scope);
+
+  const scope = scopeProperty.present ? normalizedScope(scopeProperty.value) : undefined;
   if (scope === null) return null;
-  return {
+  const normalized: NormalizedRequirement = {
     ...(any === undefined ? {} : { any }),
     ...(all === undefined ? {} : { all }),
     ...(scope === undefined ? {} : { scope }),
   };
+  return objectFreeze(normalized);
 }
 
-function insufficientPermission(subject: AuthorizationSubject): AuthApiError {
+/**
+ * Snapshots and validates the only identity accepted by authorization. The
+ * returned subject is frozen and contains an own UUID value, so later checks
+ * cannot observe caller-controlled getters or a changed user binding.
+ */
+export function snapshotAuthorizationSubject(subject: unknown): AuthorizationSubject | null {
+  if (!isPlainRecord(subject)) return null;
+  const userProperty = ownDataProperty(subject, "user_id");
+  if (!userProperty.valid || !userProperty.present) return null;
+  const userId = safeUserId(userProperty.value);
+  if (userId === null) return null;
+
+  const requestProperty = ownDataProperty(subject, "request_id");
+  if (!requestProperty.valid) return null;
+  const snapshot: { user_id: UUID; request_id?: string } = { user_id: userId };
+  if (
+    requestProperty.present &&
+    typeof requestProperty.value === "string" &&
+    invoke<boolean>(regexpTest, REQUEST_ID_PATTERN, [requestProperty.value])
+  ) {
+    snapshot.request_id = requestProperty.value;
+  }
+  return objectFreeze(snapshot);
+}
+
+/** Extracts a validated own user UUID without exposing session internals. */
+export function subjectUserId(subject: unknown): UUID | null {
+  return snapshotAuthorizationSubject(subject)?.user_id ?? null;
+}
+
+function requestId(subject: AuthorizationSubject | null): string {
+  return subject?.request_id ?? randomUUID();
+}
+
+function insufficientPermission(subject: AuthorizationSubject | null): AuthApiError {
   return new AuthApiError(
     "insufficient_permission",
     403,
@@ -191,27 +601,69 @@ function insufficientPermission(subject: AuthorizationSubject): AuthApiError {
   );
 }
 
-/**
- * Server-only dynamic authorization service.
- *
- * Permission snapshots are cached only by the identity of the request-local
- * subject object. There is no shared permission snapshot keyed by user ID, so
- * a new request object always observes the current database state.
- */
+function hasPermission(
+  permissions: readonly string[],
+  required: string,
+): boolean {
+  for (let index = 0; index < permissions.length; index += 1) {
+    if (permissionMatches(permissions[index], required)) return true;
+  }
+  return false;
+}
+
+function satisfiesRequirement(
+  permissions: readonly string[],
+  requirement: NormalizedRequirement,
+): boolean {
+  if (requirement.any !== undefined) {
+    let anySatisfied = false;
+    for (let index = 0; index < requirement.any.length; index += 1) {
+      const required = requirement.any[index];
+      if (required !== undefined && hasPermission(permissions, required)) {
+        anySatisfied = true;
+        break;
+      }
+    }
+    if (!anySatisfied) return false;
+  }
+
+  if (requirement.all !== undefined) {
+    for (let index = 0; index < requirement.all.length; index += 1) {
+      const required = requirement.all[index];
+      if (required === undefined || !hasPermission(permissions, required)) return false;
+    }
+  }
+  return true;
+}
+
+/** Server-only dynamic authorization service. */
 export class AuthorizationService {
-  private readonly repository: AuthRepository;
+  private readonly authorization: AuthorizationRepository;
+  private readonly effectivePermissions: AuthorizationRepository["effectivePermissions"];
   private readonly clock: () => Date;
-  private readonly requestCaches = new WeakMap<object, PermissionCache>();
 
   constructor(options: AuthorizationServiceOptions) {
     if (
+      options === null ||
+      typeof options !== "object" ||
       options.repository === null ||
-      typeof options.repository !== "object" ||
-      typeof options.repository.authorization?.effectivePermissions !== "function"
+      typeof options.repository !== "object"
     ) {
       throw new AuthConfigurationError("authorization repository is incomplete");
     }
-    this.repository = options.repository;
+    const authorization = options.repository.authorization;
+    if (
+      authorization === null ||
+      typeof authorization !== "object" ||
+      typeof authorization.effectivePermissions !== "function"
+    ) {
+      throw new AuthConfigurationError("authorization repository is incomplete");
+    }
+    if (options.clock !== undefined && typeof options.clock !== "function") {
+      throw new AuthConfigurationError("authorization clock must be a function");
+    }
+    this.authorization = authorization;
+    this.effectivePermissions = authorization.effectivePermissions;
     this.clock = options.clock ?? (() => new Date());
     validNow(this.clock);
   }
@@ -224,69 +676,90 @@ export class AuthorizationService {
     if (normalized === null) return [];
     const options: RepositoryOperationOptions = { now: validNow(this.clock) };
     try {
-      const records = await this.repository.authorization.effectivePermissions(
-        userId,
-        normalized,
-        options,
+      const records = await invoke<Promise<unknown>>(
+        this.effectivePermissions,
+        this.authorization,
+        [userId, normalized, options],
       );
-      const permissions = new Set<string>();
-      for (const record of records) {
-        const key = safePermissionRecordKey(record);
-        if (key !== null) permissions.add(key);
+      const snapshot = snapshotPermissionArray(records);
+      if (snapshot === null) return [];
+
+      const permissions: string[] = [];
+      for (let index = 0; index < snapshot.length; index += 1) {
+        const record = completePermissionRecord(snapshot[index]);
+        if (record === null) return [];
+        appendUnique(permissions, record.key);
       }
-      return [...permissions].sort(compareKeys);
+      sortKeys(permissions);
+      return objectFreeze(permissions);
     } catch {
-      // A missing/corrupt authorization row or an adapter failure must never
-      // become access. Returning no grants is the fail-closed result.
+      // Missing/corrupt authorization data and adapter failures are fail closed.
       return [];
     }
   }
 
-  private permissionsForSubject(
-    subject: AuthorizationSubject,
-    scope: AuthorizationScope | undefined,
-  ): Promise<readonly string[]> {
-    const userId = subjectUserId(subject);
-    if (userId === null) return Promise.resolve([]);
-    let cache = this.requestCaches.get(subject);
-    if (cache === undefined) {
-      cache = new Map<string, Promise<readonly string[]>>();
-      this.requestCaches.set(subject, cache);
-    }
-    const key = scopeCacheKey(scope);
-    const existing = cache.get(key);
-    if (existing !== undefined) return existing;
-    const pending = this.resolvePermissions(userId, scope);
-    cache.set(key, pending);
-    return pending;
+  private contextForUser(
+    context: AuthorizationRequestContext | undefined,
+    userId: UUID,
+  ): InternalAuthorizationRequestContext | null {
+    if (context === undefined) return null;
+    if (!isRequestContext(context)) return null;
+    const subjectProperty = ownDataProperty(context, "subject");
+    if (!subjectProperty.valid || !subjectProperty.present) return null;
+    const bound = snapshotAuthorizationSubject(subjectProperty.value);
+    if (bound === null || bound.user_id !== userId) return null;
+    return context;
   }
 
   /** Resolves normalized effective permission keys for a user and optional scope. */
-  async getPermissions(userId: UUID, scope?: AuthorizationScope): Promise<readonly string[]> {
-    return this.resolvePermissions(userId, scope);
+  async getPermissions(
+    userId: UUID,
+    scope?: AuthorizationScope,
+    context?: AuthorizationRequestContext,
+  ): Promise<readonly string[]> {
+    const validatedUserId = safeUserId(userId);
+    const normalized = normalizedScope(scope);
+    if (validatedUserId === null || normalized === null) return [];
+
+    const requestContext = this.contextForUser(context, validatedUserId);
+    if (context !== undefined && requestContext === null) return [];
+    if (requestContext !== null) {
+      return requestContext[requestContextLoader](
+        normalized,
+        () => this.resolvePermissions(validatedUserId, normalized),
+      );
+    }
+    return this.resolvePermissions(validatedUserId, normalized);
   }
 
   /**
-   * Authorizes a request-local subject and returns that same subject on success.
-   * Failure is a stable, redacted 403 with a bounded request identifier.
+   * Authorizes one validated request-local subject. A supplied context must
+   * be created for that same subject; without one, this check has no cache.
    */
-  async authorize<T extends AuthorizationSubject>(
-    subject: T,
+  async authorize(
+    subject: unknown,
     requirement: AuthorizationRequirement,
-  ): Promise<T> {
+    context?: AuthorizationRequestContext,
+  ): Promise<AuthorizationSubject> {
+    const boundSubject = snapshotAuthorizationSubject(subject);
     const normalized = normalizedRequirement(requirement);
-    const userId = subjectUserId(subject);
-    if (normalized === null || userId === null) {
-      throw insufficientPermission(subject);
+    if (boundSubject === null || normalized === null) {
+      throw insufficientPermission(boundSubject);
     }
-    const permissions = await this.permissionsForSubject(subject, normalized.scope);
-    const hasAny = normalized.any === undefined || normalized.any.some((required) =>
-      permissions.some((granted) => permissionMatches(granted, required)),
-    );
-    const hasAll = normalized.all === undefined || normalized.all.every((required) =>
-      permissions.some((granted) => permissionMatches(granted, required)),
-    );
-    if (!hasAny || !hasAll) throw insufficientPermission(subject);
-    return subject;
+
+    const requestContext = this.contextForUser(context, boundSubject.user_id);
+    if (context !== undefined && requestContext === null) {
+      throw insufficientPermission(boundSubject);
+    }
+    const permissions = requestContext === null
+      ? await this.resolvePermissions(boundSubject.user_id, normalized.scope)
+      : await requestContext[requestContextLoader](
+        normalized.scope,
+        () => this.resolvePermissions(boundSubject.user_id, normalized.scope),
+      );
+    if (!satisfiesRequirement(permissions, normalized)) {
+      throw insufficientPermission(boundSubject);
+    }
+    return requestContext?.subject ?? boundSubject;
   }
 }

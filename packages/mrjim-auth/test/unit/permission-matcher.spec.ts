@@ -1,9 +1,62 @@
 import { describe, expect, it } from "vitest";
 import {
+  AuthorizationService,
+  createAuthorizationRequestContext,
   normalizePermissionKey,
   permissionMatchRank,
   permissionMatches,
 } from "../../src/server/authorization.js";
+import { permissionsRoute } from "../../src/server/routes/permissions.js";
+import type { AuthRepository } from "../../src/shared/contracts.js";
+import {
+  lowercaseKeySchema,
+  permissionKeySchema,
+  scopeIdentifierSchema,
+  uuidSchema,
+  type AuthorizationScope,
+  type Permission,
+  type UUID,
+} from "../../src/shared/types.js";
+
+const NOW = new Date("2026-08-11T00:00:00.000Z");
+const USER_ID = uuidSchema.parse("00000000-0000-4000-8000-000000000001");
+const OTHER_USER_ID = uuidSchema.parse("00000000-0000-4000-8000-000000000002");
+
+function permission(key: string): Permission {
+  const [resource, action] = key.split(".");
+  return {
+    id: uuidSchema.parse("00000000-0000-4000-8000-000000000010"),
+    key: permissionKeySchema.parse(key),
+    resource: lowercaseKeySchema.parse(resource),
+    action: lowercaseKeySchema.parse(action),
+    description: null,
+    created_at: NOW.toISOString(),
+    updated_at: NOW.toISOString(),
+  };
+}
+
+function serviceFor(
+  effectivePermissions: (
+    userId: UUID,
+    scope?: AuthorizationScope,
+  ) => Promise<unknown> | unknown,
+): AuthorizationService {
+  const repository = {
+    authorization: { effectivePermissions },
+  } as unknown as AuthRepository;
+  return new AuthorizationService({ repository, clock: () => NOW });
+}
+
+function subject(userId: UUID = USER_ID): { readonly user_id: UUID; readonly request_id: string } {
+  return { user_id: userId, request_id: "req-authorization" };
+}
+
+async function expectInsufficient(operation: Promise<unknown>): Promise<void> {
+  await expect(operation).rejects.toMatchObject({
+    code: "insufficient_permission",
+    status: 403,
+  });
+}
 
 describe("authorization permission matching", () => {
   it("accepts canonical exact resource.action keys and rejects non-canonical keys", () => {
@@ -34,5 +87,259 @@ describe("authorization permission matching", () => {
     expect(permissionMatches("invoice.*.read", "invoice.read")).toBe(false);
     expect(permissionMatches("invoice.read", "Invoice.read")).toBe(false);
     expect(permissionMatchRank("*.*", "not-a-permission")).toBe(0);
+  });
+
+  it("rejects iterator-hidden and empty all/any requirements", async () => {
+    const service = serviceFor(() => []);
+    const all = ["invoice.read"] as string[];
+    Object.defineProperty(all, Symbol.iterator, {
+      configurable: true,
+      value: function* emptyIterator() {
+        // A non-empty caller array must not be normalized through this iterator.
+      },
+    });
+
+    await expectInsufficient(service.authorize(subject(), { all }));
+    await expectInsufficient(service.authorize(subject(), { all: [] }));
+    await expectInsufficient(service.authorize(subject(), { any: [] }));
+  });
+
+  it("rejects sparse, accessor-backed, inherited, and changing requirement objects", async () => {
+    const service = serviceFor(() => [permission("invoice.read")]);
+    const sparse = new Array<string>(1);
+    await expectInsufficient(service.authorize(subject(), { all: sparse }));
+
+    let fieldReads = 0;
+    const changingField = {} as { readonly all?: readonly string[] };
+    Object.defineProperty(changingField, "all", {
+      configurable: true,
+      get() {
+        fieldReads += 1;
+        return [fieldReads === 1 ? "invoice.read" : "secret.read"];
+      },
+    });
+    await expectInsufficient(service.authorize(subject(), changingField));
+    expect(fieldReads).toBe(0);
+
+    const throwingField = {} as { readonly all?: readonly string[] };
+    Object.defineProperty(throwingField, "all", {
+      configurable: true,
+      get() {
+        throw new Error("requirement getter must not run");
+      },
+    });
+    await expectInsufficient(service.authorize(subject(), throwingField));
+
+    const inherited = Object.create({ all: ["invoice.read"] }) as { readonly all?: readonly string[] };
+    await expectInsufficient(service.authorize(subject(), inherited));
+
+    const accessorElement = [] as string[];
+    Object.defineProperty(accessorElement, "0", {
+      configurable: true,
+      get() {
+        throw new Error("array element getter must not run");
+      },
+    });
+    await expectInsufficient(service.authorize(subject(), { all: accessorElement }));
+  });
+
+  it("requires one own UUID user_id and never invokes or rereads identity accessors", async () => {
+    const service = serviceFor((userId) => userId === USER_ID ? [permission("invoice.read")] : []);
+
+    const inherited = Object.create({ user_id: USER_ID }) as { readonly user_id: UUID };
+    await expectInsufficient(service.authorize(inherited, { all: ["invoice.read"] }));
+
+    await expectInsufficient(service.authorize(
+      { user_id: "not-a-uuid" } as unknown as { readonly user_id: UUID },
+      { all: ["invoice.read"] },
+    ));
+    await expectInsufficient(service.authorize(
+      { user_id: 123 } as unknown as { readonly user_id: UUID },
+      { all: ["invoice.read"] },
+    ));
+
+    let reads = 0;
+    const accessorSubject = {} as { readonly user_id: UUID };
+    Object.defineProperty(accessorSubject, "user_id", {
+      configurable: true,
+      get() {
+        reads += 1;
+        return USER_ID;
+      },
+    });
+    await expectInsufficient(service.authorize(accessorSubject, { all: ["invoice.read"] }));
+    expect(reads).toBe(0);
+  });
+
+  it("binds a changing route subject once instead of crossing users", async () => {
+    const service = serviceFor((userId) => userId === USER_ID ? [permission("invoice.read")] : []);
+    let reads = 0;
+    const changingSubject = new Proxy({ user_id: USER_ID } as { readonly user_id: UUID }, {
+      get(target, property, receiver) {
+        if (property === "user_id") {
+          reads += 1;
+          return reads === 1 ? USER_ID : OTHER_USER_ID;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    const response = await permissionsRoute(
+      service,
+      new Request("https://project.example.com/user/permissions"),
+      changingSubject,
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.permissions).toEqual(["invoice.read"]);
+    expect(reads).toBe(0);
+  });
+
+  it("rejects NUL scope identities instead of allowing cache-key collisions", async () => {
+    const service = serviceFor(() => [permission("invoice.read")]);
+    const first: AuthorizationScope = {
+      type: "tenant\u0000alpha",
+      id: scopeIdentifierSchema.parse("beta"),
+    };
+    const colliding: AuthorizationScope = {
+      type: "tenant",
+      id: scopeIdentifierSchema.parse("alpha\u0000beta"),
+    };
+
+    await expectInsufficient(service.authorize(subject(), { all: ["invoice.read"], scope: first }));
+    await expectInsufficient(service.authorize(subject(), { all: ["invoice.read"], scope: colliding }));
+  });
+
+  it("rejects non-array iterables and incomplete or inherited permission rows", async () => {
+    const valid = permission("invoice.read");
+
+    const iterableService = serviceFor(() => new Set([valid]));
+    expect(await iterableService.getPermissions(USER_ID)).toEqual([]);
+
+    const iteratorHidden = [valid] as Permission[];
+    Object.defineProperty(iteratorHidden, Symbol.iterator, {
+      configurable: true,
+      value: function* emptyIterator() {
+        // Adapter arrays are snapshotted numerically, never through this iterator.
+      },
+    });
+    const iteratorService = serviceFor(() => iteratorHidden);
+    expect(await iteratorService.getPermissions(USER_ID)).toEqual(["invoice.read"]);
+
+    const partialService = serviceFor(() => [{ key: valid.key, resource: valid.resource, action: valid.action }]);
+    expect(await partialService.getPermissions(USER_ID)).toEqual([]);
+
+    const inherited = Object.create(valid) as Partial<Permission>;
+    const inheritedService = serviceFor(() => [inherited]);
+    expect(await inheritedService.getPermissions(USER_ID)).toEqual([]);
+  });
+
+  it("rejects accessor-backed adapter rows and array elements without invoking them", async () => {
+    const valid = permission("invoice.read");
+    let rowReads = 0;
+    const row = { ...valid } as Record<string, unknown>;
+    Object.defineProperty(row, "key", {
+      configurable: true,
+      get() {
+        rowReads += 1;
+        return valid.key;
+      },
+    });
+    const rowService = serviceFor(() => [row]);
+    expect(await rowService.getPermissions(USER_ID)).toEqual([]);
+    expect(rowReads).toBe(0);
+
+    const rows = new Array<Permission>(1);
+    Object.defineProperty(rows, "0", {
+      configurable: true,
+      get() {
+        throw new Error("adapter array getter must not run");
+      },
+    });
+    const arrayService = serviceFor(() => rows);
+    expect(await arrayService.getPermissions(USER_ID)).toEqual([]);
+  });
+
+  it("does not depend on mutable Set or Array prototype methods", async () => {
+    const valid = permission("invoice.read");
+    const service = serviceFor(() => [valid]);
+    const originalAdd = Set.prototype.add;
+    const originalSome = Array.prototype.some;
+    const originalEvery = Array.prototype.every;
+    try {
+      Set.prototype.add = (() => {
+        throw new Error("Set.add was mutated");
+      }) as unknown as typeof Set.prototype.add;
+      expect(await service.getPermissions(USER_ID)).toEqual(["invoice.read"]);
+
+      Array.prototype.some = (() => {
+        throw new Error("Array.some was mutated");
+      }) as unknown as typeof Array.prototype.some;
+      Array.prototype.every = (() => {
+        throw new Error("Array.every was mutated");
+      }) as unknown as typeof Array.prototype.every;
+      let result: unknown;
+      let failure: unknown;
+      try {
+        result = await service.authorize(subject(), { all: ["invoice.read"] });
+      } catch (error) {
+        failure = error;
+      }
+      Set.prototype.add = originalAdd;
+      Array.prototype.some = originalSome;
+      Array.prototype.every = originalEvery;
+      expect(failure).toBeUndefined();
+      expect(result).toMatchObject({ user_id: USER_ID });
+    } finally {
+      Set.prototype.add = originalAdd;
+      Array.prototype.some = originalSome;
+      Array.prototype.every = originalEvery;
+    }
+  });
+
+  it("uses explicit request-local contexts and does not reuse stale or cross-user grants", async () => {
+    let revoked = false;
+    let reads = 0;
+    const service = serviceFor((userId) => {
+      reads += 1;
+      return !revoked && userId === USER_ID ? [permission("invoice.read")] : [];
+    });
+    const firstContext = createAuthorizationRequestContext(subject());
+    expect(firstContext).not.toBeNull();
+    if (firstContext === null) return;
+
+    await expect(service.authorize(subject(), { all: ["invoice.read"] }, firstContext)).resolves.toMatchObject({ user_id: USER_ID });
+    revoked = true;
+    await expect(service.authorize(subject(), { all: ["invoice.read"] }, firstContext)).resolves.toMatchObject({ user_id: USER_ID });
+
+    const freshContext = createAuthorizationRequestContext(subject());
+    expect(freshContext).not.toBeNull();
+    if (freshContext === null) return;
+    await expect(service.authorize(subject(), { all: ["invoice.read"] }, freshContext)).rejects.toMatchObject({ code: "insufficient_permission" });
+
+    const otherContext = createAuthorizationRequestContext(subject(OTHER_USER_ID));
+    expect(otherContext).not.toBeNull();
+    if (otherContext === null) return;
+    await expect(service.authorize(subject(), { all: ["invoice.read"] }, otherContext)).rejects.toMatchObject({ code: "insufficient_permission" });
+    expect(reads).toBe(2);
+  });
+
+  it("deduplicates concurrent authorization reads inside one request context", async () => {
+    let reads = 0;
+    const service = serviceFor(async () => {
+      reads += 1;
+      await Promise.resolve();
+      return [permission("invoice.read")];
+    });
+    const context = createAuthorizationRequestContext(subject());
+    expect(context).not.toBeNull();
+    if (context === null) return;
+
+    const results = await Promise.all([
+      service.authorize(subject(), { all: ["invoice.read"] }, context),
+      service.authorize(subject(), { all: ["invoice.read"] }, context),
+    ]);
+    expect(results[0]?.user_id).toBe(USER_ID);
+    expect(results[1]?.user_id).toBe(USER_ID);
+    expect(reads).toBe(1);
   });
 });

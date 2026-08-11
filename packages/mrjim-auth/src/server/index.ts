@@ -85,11 +85,13 @@ export {
 } from "./routes/oauth.js";
 export {
   AuthorizationService,
+  createAuthorizationRequestContext,
   normalizePermissionKey,
   permissionMatchRank,
   permissionMatches,
   subjectUserId,
   type AuthorizationRequirement,
+  type AuthorizationRequestContext,
   type AuthorizationServiceOptions,
   type AuthorizationSubject,
 } from "./authorization.js";

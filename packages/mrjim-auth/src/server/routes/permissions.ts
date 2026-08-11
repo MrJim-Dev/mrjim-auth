@@ -7,9 +7,11 @@ import {
 } from "../../shared/types.js";
 import {
   AuthorizationService,
-  subjectUserId,
+  createAuthorizationRequestContext,
   type AuthorizationSubject,
 } from "../authorization.js";
+
+const objectDefineProperty = Object.defineProperty;
 
 const scopeTypeSchema = z
   .string()
@@ -18,8 +20,6 @@ const scopeTypeSchema = z
   .max(64)
   .regex(/^[a-z][a-z0-9_-]*$/)
   .refine((value) => value === value.toLowerCase());
-
-const allowedQueryKeys = new Set(["scope_type", "scope_id"]);
 
 function requestId(request: Request): string | undefined {
   const value = request.headers.get("x-request-id");
@@ -61,15 +61,15 @@ function methodNotAllowed(request: Request): Response {
 function parseScope(request: Request): AuthorizationScope | undefined | null {
   const url = new URL(request.url);
   for (const key of url.searchParams.keys()) {
-    if (!allowedQueryKeys.has(key)) return null;
+    if (key !== "scope_type" && key !== "scope_id") return null;
   }
-  for (const key of allowedQueryKeys) {
-    if (url.searchParams.getAll(key).length > 1) return null;
-  }
+  if (url.searchParams.getAll("scope_type").length > 1) return null;
+  if (url.searchParams.getAll("scope_id").length > 1) return null;
   const type = url.searchParams.get("scope_type");
   const id = url.searchParams.get("scope_id");
   if (type === null && id === null) return undefined;
   if (type === null || id === null) return null;
+  if (type.includes("\u0000") || id.includes("\u0000")) return null;
   const parsedType = scopeTypeSchema.safeParse(type);
   const parsedId = scopeIdentifierSchema.safeParse(id);
   if (!parsedType.success || !parsedId.success || parsedType.data !== type || parsedId.data !== id) {
@@ -87,7 +87,8 @@ export async function permissionsRoute(
   if (request.method !== "GET") return methodNotAllowed(request);
   const scope = parseScope(request);
   if (scope === null) return invalidRequest(request);
-  if (subject === undefined || subjectUserId(subject) === null) {
+  const context = subject === undefined ? null : createAuthorizationRequestContext(subject);
+  if (context === null) {
     return resultResponse(authFailure(new AuthApiError(
       "unauthorized",
       401,
@@ -95,8 +96,17 @@ export async function permissionsRoute(
       requestId(request),
     )));
   }
-  const permissions = await service.getPermissions(subjectUserId(subject)!, scope);
-  return resultResponse(authSuccess({ permissions: [...permissions] }));
+  const permissions = await service.getPermissions(context.subject.user_id, scope, context);
+  const safePermissions: string[] = [];
+  for (let index = 0; index < permissions.length; index += 1) {
+    objectDefineProperty(safePermissions, `${index}`, {
+      configurable: true,
+      enumerable: true,
+      value: permissions[index],
+      writable: true,
+    });
+  }
+  return resultResponse(authSuccess({ permissions: safePermissions }));
 }
 
 /** Creates the framework-neutral user-permission route handler. */

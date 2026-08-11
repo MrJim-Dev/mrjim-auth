@@ -220,6 +220,7 @@ describe("package export boundaries", () => {
       "UserService",
       "authorizeRoute",
       "callbackRoute",
+      "createAuthorizationRequestContext",
       "createOAuthRoutes",
       "createPermissionRoutes",
       "exchangeRoute",
