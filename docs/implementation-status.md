@@ -289,9 +289,10 @@ JWKS/provider discovery, refresh-token logout, identities, permissions, and all
 other Task 9 routes are included; Task 10 browser behavior, Task 11 adapters,
 and Task 12 administration remain untouched.
 
-Task 9 remediation round 8 is the current bounded round from clean reviewed
-baseline `e18008ca983856a7c9db1a6b13557812380aa27a`. Raman’s same-reviewer
-verdict is `CHANGES_REQUIRED` (`019ff09f-5cc5-7870-b429-e651cb71ac1d`) with
+Task 9 remediation round 8 is the final approved round from clean reviewed
+baseline `e18008ca983856a7c9db1a6b13557812380aa27a`, implemented in
+`916d615ca8627d200e9261688bbbb5d8903d541e`. Raman’s initial same-reviewer
+verdict was `CHANGES_REQUIRED` (`019ff09f-5cc5-7870-b429-e651cb71ac1d`) with
 zero Critical, one Important, and one Minor finding. Exact RED was captured
 before production edits: the new prototype-boundary unit file reported 5
 failed tests, and the invalid-OIDC HTTP regression reported 1 failed test
@@ -315,8 +316,10 @@ matches independent verification; no dependency, package manifest, lockfile,
 migration, paid/hosted service, remote database, or generic `DATABASE_URL`
 changed. The scan-recorder blocker remains exactly
 `scan.target.snapshotDigest: expected a non-empty string`; it is tooling-only,
-not a pass. Task 9 remains awaiting same-reviewer round-8 re-review and is not
-approved; Tasks 10-14 remain pending and Task 10 has not started.
+not a pass. Raman’s same-reviewer re-review of the exact implementation commit
+is `APPROVED`, with zero Critical, zero Important, and zero Minor findings.
+Task 9 is complete and independently approved; Tasks 10-14 remain pending and
+Task 10 has not started.
 
 Task 9 remediation round 7 was the preceding bounded round from clean reviewed
 baseline `bb1138800879f55fc8e4b8a10dcd841991196dad`. Raman’s same-reviewer
@@ -436,7 +439,7 @@ database, external network, or paid SaaS service is required.
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
-| 9. HTTP and OpenAPI | Awaiting same-reviewer re-review — round-8 CHANGES_REQUIRED, not approved | Round-8 RED→GREEN regressions cover captured `Object.setPrototypeOf` repair for exported error subclasses, OIDC failure mapping, and stable HTTP redaction; prior provider allowlist, `Set.delete`, HTTP/body/CORS/OAuth/OpenAPI/constructor/permission boundaries remain closed. The full round-8 gate set is recorded in the Task 9 report; same-reviewer re-review remains required |
+| 9. HTTP and OpenAPI | Complete — round 8 independently approved | Raman approved `916d615ca8627d200e9261688bbbb5d8903d541e` with zero Critical, Important, or Minor findings after round-8 error-prototype, OIDC, HTTP, provider allowlist, `Set.delete`, packed, OpenAPI, migration, export, and full 318-test verification; evidence is recorded in the Task 9 report |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
@@ -467,19 +470,17 @@ Task 7 Fix Pass 4 blockers: none. The same independent reviewer approved the
 final range and closed every Task 7 finding. No paid or hosted service is
 needed for review or operation.
 
-Task 9 product blockers: none identified. The current same-reviewer verdict is
-`CHANGES_REQUIRED`; the controller is addressing that bounded round and does
-not claim approval. No new dependency, migration, paid/hosted service, or
-remote database is allowed or needed. The earlier independent scan recorder is
-also a tooling blocker with the exact
-`scan.target.snapshotDigest: expected a non-empty string` failure; it is not a
-clean scan or approval.
+Task 9 product blockers: none. Raman independently approved the final Task 9
+candidate with zero Critical, Important, or Minor findings. No new dependency,
+migration, paid/hosted service, or remote database was added or needed. The
+earlier independent scan recorder remains a tooling-evidence blocker with the
+exact `scan.target.snapshotDigest: expected a non-empty string` failure; it is
+not a clean scan and was not the source of approval.
 
 ## Remaining work
 
-Task 8's third post-pass route-boundary hardening resolution is complete and
-independently approved. Task 9 remains in the current remediation round,
-awaiting same-reviewer re-review and is not approved. Tasks 10-14 remain,
+Task 8's third post-pass route-boundary hardening resolution and Task 9 are
+complete and independently approved. Tasks 10-14 remain,
 with independent review after each task, followed by the whole-branch review
 and release handoff. In particular, later work must use the clean `auth`
 schema and explicit migration CLI from Task 3 for the browser/SSR surface,
