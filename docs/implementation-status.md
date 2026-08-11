@@ -488,9 +488,9 @@ The Pass 1 implementation commit is historical: `f674967` (`fix: harden task 6 a
 Pass 2 code/tests are historical and committed as `601599e`; Pass 2 docs SHA is
 `b42cc95`. Pass 3 code/tests are historical and committed as `ea8437b`; its
 documentation/report SHAs are `5068a60`, `0f06f1e`, `70d7fb4`, and `34e96e7`.
-Pass 4 code/tests are committed as `24a5ca6`; the documentation/status/report
-follow-up is committed as `e86b6ff` and remains pending same-reviewer
-re-review.
+Pass 4 code/tests are committed as `24a5ca6`; the initial
+documentation/status/report follow-up is `e86b6ff` with final evidence
+amended in `8d3a752`, and the range remains pending same-reviewer re-review.
 
 ## Task 3 scope and verification (historical)
 
