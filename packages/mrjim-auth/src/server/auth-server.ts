@@ -56,6 +56,7 @@ const nativeArrayPush = Array.prototype.push;
 const nativeSet = Set;
 const nativeSetHas = Set.prototype.has;
 const nativeSetAdd = Set.prototype.add;
+const nativeSetDelete = Set.prototype.delete;
 const authNumberIsFinite = Number.isFinite;
 const authNumberIsInteger = Number.isInteger;
 const authNumberIsSafeInteger = Number.isSafeInteger;
@@ -215,6 +216,10 @@ function setHasInternal<T>(set: Set<T>, value: T): boolean {
 
 function setAddInternal<T>(set: Set<T>, value: T): void {
   invoke(nativeSetAdd, set, [value]);
+}
+
+function setDeleteInternal<T>(set: Set<T>, value: T): boolean {
+  return invoke<boolean>(nativeSetDelete, set, [value]);
 }
 
 function readHeaderValue(headers: object, name: string): HeaderValue {
@@ -500,7 +505,7 @@ function snapshotValue(value: unknown, depth = 0, seen = new nativeSet<object>()
     }
     return output;
   } finally {
-    seen.delete(value);
+    setDeleteInternal(seen, value);
   }
 }
 

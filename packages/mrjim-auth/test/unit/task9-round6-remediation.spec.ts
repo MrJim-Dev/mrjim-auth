@@ -557,3 +557,70 @@ describe("Task 9 round 6 OAuth and permission route result boundaries", () => {
     expect(exchangeBody).not.toContain("round6-token-sentinel");
   });
 });
+
+describe("Task 9 round 7 provider discovery boundary", () => {
+  it("does not expose provider fields outside the documented discovery allowlist", async () => {
+    let clientSecretReads = 0;
+    const provider = {
+      name: "google",
+      scopes: ["openid"],
+      capabilities: { authorization_code: true, pkce: true, identity_linking: true },
+      token: {
+        value: "provider-token-sentinel",
+        nested: { verifier: "provider-verifier-sentinel", code: "provider-code-sentinel" },
+        payload: "provider-payload-sentinel",
+      },
+    };
+    Object.defineProperty(provider, "clientSecret", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        clientSecretReads += 1;
+        throw new Error("provider-secret-getter-sentinel");
+      },
+    });
+    const service = {
+      listProviders: () => [provider],
+      authorize: () => authSuccess(null),
+      callback: () => authSuccess(null),
+      exchangeCode: () => authSuccess(null),
+      listIdentities: () => authSuccess([]),
+      unlinkIdentity: () => authSuccess(null),
+    };
+
+    const response = providersRoute(service as never);
+    const responseBody = await response.text();
+    expect(response.status).toBe(200);
+    expect(responseBody).not.toContain("provider-secret-sentinel");
+    expect(responseBody).not.toContain("provider-token-sentinel");
+    expect(responseBody).not.toContain("provider-verifier-sentinel");
+    expect(responseBody).not.toContain("provider-code-sentinel");
+    expect(responseBody).not.toContain("provider-payload-sentinel");
+    expect(responseBody).not.toContain("provider-secret-getter-sentinel");
+    expect(clientSecretReads).toBe(0);
+    expect(responseBody).toContain('"name":"google"');
+    expect(responseBody).toContain('"scopes":["openid"]');
+    expect(responseBody).toContain('"capabilities":{"authorization_code":true,"pkce":true,"identity_linking":true}');
+  });
+
+  it("fails closed when an allowed provider scope string exceeds its bound", async () => {
+    const service = {
+      listProviders: () => [{
+        name: "google",
+        scopes: ["s".repeat(129)],
+        capabilities: { authorization_code: true, pkce: true, identity_linking: true },
+      }],
+      authorize: () => authSuccess(null),
+      callback: () => authSuccess(null),
+      exchangeCode: () => authSuccess(null),
+      listIdentities: () => authSuccess([]),
+      unlinkIdentity: () => authSuccess(null),
+    };
+
+    const response = providersRoute(service as never);
+    const responseBody = await response.json() as { readonly data?: unknown; readonly error?: { readonly code?: string } };
+    expect(response.status).toBe(500);
+    expect(responseBody.data).toBeNull();
+    expect(responseBody.error?.code).toBe("internal_error");
+  });
+});

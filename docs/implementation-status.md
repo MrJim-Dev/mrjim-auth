@@ -289,30 +289,44 @@ JWKS/provider discovery, refresh-token logout, identities, permissions, and all
 other Task 9 routes are included; Task 10 browser behavior, Task 11 adapters,
 and Task 12 administration remain untouched.
 
-Task 9 remediation round 6 is the current bounded round from clean reviewed
-baseline `0f672f7ec2e08ab8f2f03510b775d07396ecc745`. Raman’s same-reviewer
+Task 9 remediation round 7 is the current bounded round from clean reviewed
+baseline `bb1138800879f55fc8e4b8a10dcd841991196dad`. Raman’s same-reviewer
 verdict is `CHANGES_REQUIRED` (`019ff09f-5cc5-7870-b429-e651cb71ac1d`) with
-zero Critical, five Important, and zero Minor findings. Exact RED was
-captured before production edits: the focused round-6 file was 1 failed file
-with 9 failed tests, and the added discovery-failure regression was 1 failed
-with 9 skipped. GREEN is focused 10/10, HTTP 31/31, OpenAPI 3/3,
-OAuth-provider 14/14, OAuth integration 32/32, constructor/route/token/
-permission coverage 59/59, unit plus contract 203/203, full `pnpm test`
-22 files/308 tests, migration state 1/1, disposable local PostgreSQL
-migrations 23/23, and package export/browser 12/12. The round uses the
-shared captured-intrinsic and descriptor-only result boundary for trim,
-numeric and collection operations, OTP hashing, base-path normalization,
-provider error redaction, and OAuth/permission route shielding. The checked-in
-OpenAPI artifact remains byte-parity unchanged at 16 paths/17 operations/241
-references/0 unresolved/two path parameters. Frozen install, build, typecheck,
-lint, docs, deterministic OpenAPI, packed-consumer, protected-hash, diff, and
-clean-status gates passed. No
-dependency, package manifest, lockfile, migration, paid/hosted service,
-remote database, or generic `DATABASE_URL` changed. Task 9 remains awaiting
-same-reviewer re-review and is not approved; Tasks 10-14 remain pending and
-Task 10 has not started.
+zero Critical, two Important, and one Minor finding. Exact RED was captured
+before production edits: the direct provider allowlist regression was 1 failed
+with 10 skipped, the authenticated `Set.delete` regression was 1 failed with
+31 skipped, the packed provider regression was 1 failed with 22 skipped, and
+the additional overlong-scope regression was 1 failed with 11 skipped. The
+analogous AuthServer whole-result projection regression was added before its
+route fix and was 1 failed with 32 skipped (`500` instead of `200`). Final
+focused GREEN is provider allowlist 2/2, authenticated `Set.delete` 1/1,
+AuthServer provider projection 1/1, and packed provider allowlist 1/1. The bounded fix projects
+provider discovery through descriptor-only reads of exactly `name`, bounded
+string `scopes`, and the three documented capability booleans; it captures
+`Set.prototype.delete` at module initialization for AuthServer output
+snapshot unwinding. The previously closed HTTP/header/body/stream,
+Content-Encoding, CORS, OAuth wire/lifecycle, OpenAPI, authorization,
+constructor, provider-error, permission, export, migration, and Tasks 1–8
+behavior remains preserved. Final verification is 4 files/82 tests for
+HTTP/OpenAPI/OAuth, 5 files/71 tests for constructor/route/token/permission
+plus round 7, full `pnpm test` 22 files/312 tests, exports/browser 12/12,
+migration state/integration 24/24, frozen install, build, typecheck, lint,
+docs check, deterministic OpenAPI, packed consumer, protected hashes, and
+diff checks. No dependency, package manifest, lockfile, migration,
+paid/hosted service, remote database, or generic `DATABASE_URL` changed. The
+scan-recorder blocker remains exactly
+`scan.target.snapshotDigest: expected a non-empty string`; it is tooling-only,
+not a pass. Task 9 remains awaiting same-reviewer round-7 re-review and is not
+approved; Tasks 10-14 remain pending and Task 10 has not started.
 
-The current Task 9 remediation round is round 5 after the same reviewer’s
+Task 9 remediation round 6 is the preceding bounded round from clean reviewed
+baseline `0f672f7ec2e08ab8f2f03510b775d07396ecc745`. Raman’s same-reviewer
+verdict was `CHANGES_REQUIRED` (`019ff09f-5cc5-7870-b429-e651cb71ac1d`) with
+zero Critical, five Important, and zero Minor findings. Its exact RED/GREEN
+and final gates are retained in the Task 9 report below. Round 7 supersedes
+round 6 as the current remediation round.
+
+The round-5 Task 9 remediation record follows the same reviewer’s
 `CHANGES_REQUIRED` verdict (Raman `019ff09f-5cc5-7870-b429-e651cb71ac1d`, zero
 Critical and seven Important). It fixes the shared captured-intrinsic,
 descriptor-only boundary behind all seven findings: hostile collection and
@@ -326,7 +340,7 @@ Exact round-5 RED regressions are now GREEN: the initial five-file adversarial
 set is 55/55, OAuth discovery is 1/1, the provider-audience audit is 1/1,
 HTTP is 31/31, OpenAPI is 3/3, OAuth integration is 32/32,
 constructor/route/token coverage is 22/22, permission coverage is 37/37,
-and the current full suite is 21 files/298 tests. Frozen install, build,
+and that round’s full suite was 21 files/298 tests. Frozen install, build,
 typecheck, lint, docs, exports/browser 12/12, migration state/integration
 1/1 and 23/23, deterministic OpenAPI, packed-consumer, protected-hash, and
 diff gates pass. No dependency, lockfile, migration, paid service, hosted
@@ -393,7 +407,7 @@ database, external network, or paid SaaS service is required.
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
-| 9. HTTP and OpenAPI | Awaiting same-reviewer re-review — round-5 CHANGES_REQUIRED, not approved | Round-5 shared-boundary RED→GREEN regressions cover polluted intrinsics and hostile collections, provider-returned maps/JWKs/thenables, OpenAPI/CORS/runtime byte conversions, OAuth discovery, and route callback capture; current HTTP 31/31, OpenAPI 3/3, OAuth 32/32, provider-audience 1/1, constructor/route/token 22/22, permissions 37/37, full 21-file/298-test suite, exports/browser 12/12, migration, packed, protected-hash, and deterministic OpenAPI gates are recorded in the Task 9 report; independent same-reviewer re-review remains required |
+| 9. HTTP and OpenAPI | Awaiting same-reviewer re-review — round-7 CHANGES_REQUIRED, not approved | Round-7 RED→GREEN regressions cover provider-discovery output allowlisting in direct and packed consumers plus AuthServer `Set.delete` intrinsic capture; prior HTTP/body/CORS/OAuth/OpenAPI/constructor/permission boundaries remain closed. The full round-7 gate set is recorded in the Task 9 report; same-reviewer re-review remains required |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |

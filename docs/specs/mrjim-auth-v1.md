@@ -363,6 +363,14 @@ All routes use `/auth/v1` by default. The project may mount the handler elsewher
 | `PUT/DELETE /admin/users/:id/roles/:roleId` | role assignment | Secret/admin permission |
 | `GET /admin/audit` | audit search | Secret/admin permission |
 
+`GET /providers` returns a bounded deterministic array of public provider
+records containing only `name`, bounded string `scopes`, and the exact
+capability booleans `authorization_code`, `pkce`, and `identity_linking`.
+Provider credentials, tokens, verifiers, endpoint metadata, inherited or
+accessor-backed values, and other adapter fields are never part of the wire
+response; malformed public provider data fails closed with a redacted
+snake_case error envelope.
+
 The OpenAPI document is generated from the same Zod schemas used by route validation.
 
 ## 11. Canonical data model

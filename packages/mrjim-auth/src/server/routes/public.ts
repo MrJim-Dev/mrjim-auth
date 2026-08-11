@@ -24,6 +24,7 @@ import {
   verifyRequestSchema,
 } from "./contracts.js";
 import { safeStringSlice, safeStringStartsWith } from "../../shared/safe-intrinsics.js";
+import { mapProviderDiscoveryData } from "./oauth.js";
 
 function service(
   result: unknown,
@@ -175,7 +176,7 @@ export async function handlePublicRoute(
   }
 
   if (path === "/providers") {
-    const providers = context.services.oauth?.listProviders() ?? [];
+    const providers = mapProviderDiscoveryData(context.services.oauth?.listProviders() ?? []);
     return service(authSuccess(providers), mapProviders, providersSchema, { cache: "public" });
   }
 

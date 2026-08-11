@@ -14,9 +14,11 @@ import {
   boundaryHasThen,
   boundaryIsArray,
   boundaryOwnDataProperty,
+  captureBoundaryDenseArray,
   captureBoundaryDataValue,
   captureBoundaryMethodGroup,
   captureBoundaryStringArray,
+  defineBoundaryArrayValue,
   invokeBoundaryResult,
 } from "../callback-boundary.js";
 import { safeDefineData, safeCreateRecord, safeNumberIsInteger, safeOwnDataEntries } from "../../shared/safe-intrinsics.js";
@@ -259,6 +261,74 @@ function mapAuthorizeData(data: unknown): object {
   return output;
 }
 
+const PROVIDER_DISCOVERY_MAX = 128;
+const PROVIDER_DISCOVERY_STRING_MAX = 128;
+
+function requiredProviderString(value: unknown): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > PROVIDER_DISCOVERY_STRING_MAX) {
+    throw new AuthApiError("internal_error", 500, "Internal authentication error");
+  }
+  return value;
+}
+
+function boundedProviderScopes(value: unknown): readonly string[] {
+  const scopes = captureBoundaryStringArray(value, "OAuth provider scopes", 1, PROVIDER_DISCOVERY_MAX);
+  for (let index = 0; index < scopes.length; index += 1) {
+    const scope = scopes[index];
+    if (scope === undefined || scope.length < 1 || scope.length > PROVIDER_DISCOVERY_STRING_MAX) {
+      throw new AuthApiError("internal_error", 500, "Internal authentication error");
+    }
+  }
+  return scopes;
+}
+
+function requiredCapability(value: object, key: string): true {
+  const property = boundaryOwnDataProperty(value, key);
+  if (!property.valid || !property.present || property.value !== true) {
+    throw new AuthApiError("internal_error", 500, "Internal authentication error");
+  }
+  return true;
+}
+
+export function mapProviderDiscoveryData(data: unknown): readonly object[] {
+  const providers = captureBoundaryDenseArray(data, "OAuth provider discovery", 0, PROVIDER_DISCOVERY_MAX);
+  const output: object[] = [];
+  for (let index = 0; index < providers.length; index += 1) {
+    const provider = providers[index];
+    if (provider === null || typeof provider !== "object" || boundaryIsArray(provider, "OAuth provider discovery entry")) {
+      throw new AuthApiError("internal_error", 500, "Internal authentication error");
+    }
+    if (boundaryHasThen(provider, true)) {
+      throw new AuthApiError("internal_error", 500, "Internal authentication error");
+    }
+    const name = boundaryOwnDataProperty(provider, "name");
+    const scopes = boundaryOwnDataProperty(provider, "scopes");
+    const capabilities = boundaryOwnDataProperty(provider, "capabilities");
+    if (!name.valid || !name.present || !scopes.valid || !scopes.present || !capabilities.valid || !capabilities.present) {
+      throw new AuthApiError("internal_error", 500, "Internal authentication error");
+    }
+    const publicName = requiredProviderString(name.value);
+    const publicScopes = boundedProviderScopes(scopes.value);
+    if (capabilities.value === null || typeof capabilities.value !== "object" || boundaryIsArray(capabilities.value, "OAuth provider capabilities")) {
+      throw new AuthApiError("internal_error", 500, "Internal authentication error");
+    }
+    const capabilityRecord = capabilities.value as object;
+    if (boundaryHasThen(capabilityRecord, true)) {
+      throw new AuthApiError("internal_error", 500, "Internal authentication error");
+    }
+    const publicCapabilities = safeCreateRecord();
+    defineRouteData(publicCapabilities, "authorization_code", requiredCapability(capabilityRecord, "authorization_code"));
+    defineRouteData(publicCapabilities, "pkce", requiredCapability(capabilityRecord, "pkce"));
+    defineRouteData(publicCapabilities, "identity_linking", requiredCapability(capabilityRecord, "identity_linking"));
+    const publicProvider = safeCreateRecord();
+    defineRouteData(publicProvider, "name", publicName);
+    defineRouteData(publicProvider, "scopes", publicScopes);
+    defineRouteData(publicProvider, "capabilities", publicCapabilities);
+    defineBoundaryArrayValue(output, index, publicProvider, "OAuth provider discovery");
+  }
+  return output;
+}
+
 function validCallbackUrl(
   redirect: string,
   url: string,
@@ -367,8 +437,7 @@ export function providersRoute(service: OAuthService, request?: Request): Respon
   const capturedService = captureOAuthRouteService(service);
   if (request !== undefined && request.method !== "GET") return methodNotAllowed();
   try {
-    const providers = captureBoundaryDataValue(capturedService.listProviders(), "OAuth provider discovery");
-    return resultResponse(authSuccess(providers));
+    return resultResponse(authSuccess(capturedService.listProviders()), mapProviderDiscoveryData);
   } catch {
     return internalResponse();
   }

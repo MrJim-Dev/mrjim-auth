@@ -293,6 +293,41 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect((await body(jwks)).data.keys[0]).not.toHaveProperty("d");
   });
 
+  it("projects AuthServer provider discovery without reading extra fields", async () => {
+    const options = makeOptions([]);
+    let clientSecretReads = 0;
+    const provider = {
+      name: "google",
+      scopes: ["openid"],
+      capabilities: { authorization_code: true, pkce: true, identity_linking: true },
+      token: { value: "auth-server-provider-token-sentinel", verifier: "auth-server-provider-verifier-sentinel" },
+    };
+    Object.defineProperty(provider, "clientSecret", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        clientSecretReads += 1;
+        throw new Error("auth-server-provider-secret-sentinel");
+      },
+    });
+    const oauth = options.services.oauth;
+    if (oauth === undefined) throw new Error("OAuth service fixture is unavailable");
+    options.services.oauth = { ...oauth, listProviders: () => [provider] };
+    const auth = serverModule.createAuthServer(options);
+    const response = await auth.handle(request("/providers"));
+    const value = await body(response);
+    expect(response.status).toBe(200);
+    expect(clientSecretReads).toBe(0);
+    expect(value.data.providers).toEqual([{
+      name: "google",
+      scopes: ["openid"],
+      capabilities: { authorization_code: true, pkce: true, identity_linking: true },
+    }]);
+    expect(JSON.stringify(value)).not.toContain("auth-server-provider-token-sentinel");
+    expect(JSON.stringify(value)).not.toContain("auth-server-provider-verifier-sentinel");
+    expect(JSON.stringify(value)).not.toContain("auth-server-provider-secret-sentinel");
+  });
+
   it("does not expose provider state or server PKCE material on the authorize wire contract", async () => {
     const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
     const options = makeOptions(calls) as any;
@@ -728,6 +763,25 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     }));
     expect(thenableResponse.status).toBe(500);
     expect(thenCalls).toBe(0);
+  });
+
+  it("keeps an authenticated provider response stable when Set.delete is poisoned", async () => {
+    const auth = serverModule.createAuthServer(makeOptions([]));
+    const originalDelete = Set.prototype.delete;
+    try {
+      Set.prototype.delete = (() => { throw new Error("round7-set-delete-sentinel"); }) as typeof Set.prototype.delete;
+      const response = await auth.handle(request("/providers"));
+      const responseBody = await body(response);
+      expect(response.status).toBe(200);
+      expect(JSON.stringify(responseBody)).not.toContain("round7-set-delete-sentinel");
+      expect(responseBody.data.providers).toEqual([{
+        name: "google",
+        scopes: ["openid", "email"],
+        capabilities: { authorization_code: true, pkce: true, identity_linking: true },
+      }]);
+    } finally {
+      Set.prototype.delete = originalDelete;
+    }
   });
 
   it("captures every service and repository callback at construction", async () => {

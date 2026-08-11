@@ -1332,6 +1332,109 @@ describe("Task 3 PostgreSQL migrations", () => {
             if (typeof server.AuthorizationService !== "function") throw new Error("packed server import failed");
             if (typeof browser.generateCodeVerifier !== "function") throw new Error("packed browser import failed");
 
+            const packedProviderService = {
+              listProviders: () => [{
+                name: "google",
+                scopes: ["openid"],
+                capabilities: { authorization_code: true, pkce: true, identity_linking: true },
+                clientSecret: "packed-provider-secret-sentinel",
+                token: {
+                  value: "packed-provider-token-sentinel",
+                  verifier: "packed-provider-verifier-sentinel",
+                  code: "packed-provider-code-sentinel",
+                  payload: "packed-provider-payload-sentinel",
+                },
+              }],
+              authorize: () => ({ data: null, error: null }),
+              callback: () => ({ data: null, error: null }),
+              exchangeCode: () => ({ data: null, error: null }),
+              listIdentities: () => ({ data: [], error: null }),
+              unlinkIdentity: () => ({ data: null, error: null }),
+            };
+            const packedProviderResponse = server.providersRoute(packedProviderService);
+            const packedProviderBody = await packedProviderResponse.text();
+            if (packedProviderResponse.status !== 200 ||
+                packedProviderBody.includes("packed-provider-secret-sentinel") ||
+                packedProviderBody.includes("packed-provider-token-sentinel") ||
+                packedProviderBody.includes("packed-provider-verifier-sentinel") ||
+                packedProviderBody.includes("packed-provider-code-sentinel") ||
+                packedProviderBody.includes("packed-provider-payload-sentinel")) {
+              throw new Error("packed provider discovery allowlist leaked extra fields");
+            }
+            const packedServerProviderService = {
+              ...packedProviderService,
+              listProviders: () => [{
+                name: "google",
+                scopes: ["openid"],
+                capabilities: { authorization_code: true, pkce: true, identity_linking: true },
+              }],
+            };
+
+            const { createHmac: packedCreateHmac, generateKeyPairSync: packedGenerateKeyPairSync } = await import("node:crypto");
+            const packedApiKey = "pk_packed_round7";
+            const packedHashKey = new Uint8Array(32);
+            const packedEncryptionKey = new Uint8Array(32);
+            for (let packedIndex = 0; packedIndex < 32; packedIndex += 1) {
+              packedHashKey[packedIndex] = packedIndex + 1;
+              packedEncryptionKey[packedIndex] = packedIndex + 41;
+            }
+            const packedSigningPair = packedGenerateKeyPairSync("ec", { namedCurve: "P-256" });
+            const packedSigningKey = packedSigningPair.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+            const packedApiKeyRecord = {
+              id: "00000000-0000-4000-8000-000000000904",
+              prefix: packedApiKey.slice(0, 8),
+              kind: "publishable",
+              scopes: [],
+              key_hash: packedCreateHmac("sha256", packedHashKey).update("apikey" + String.fromCharCode(0) + packedApiKey).digest(),
+              expires_at: null,
+              revoked_at: null,
+            };
+            const packedNoop = async () => undefined;
+            const packedRepository = {
+              transaction: async (callback) => callback(packedRepository),
+              users: { findById: packedNoop, findByIdForUpdate: packedNoop, findByNormalizedEmail: packedNoop, findByNormalizedEmailForUpdate: packedNoop, create: packedNoop, createIfAvailable: packedNoop, update: packedNoop, softDelete: packedNoop },
+              identities: { findByProviderSubject: packedNoop, listByUserId: packedNoop, create: packedNoop, createIfAvailable: packedNoop, deleteById: packedNoop },
+              passwordCredentials: { findByUserId: packedNoop, upsert: packedNoop, deleteByUserId: packedNoop },
+              sessions: { create: packedNoop, findByIdForUpdate: packedNoop, findRefreshForUpdate: packedNoop, rotate: packedNoop, revokeSession: packedNoop, revokeFamily: packedNoop, revokeUserSessions: packedNoop },
+              oneTimeTokens: { issue: packedNoop, consume: packedNoop, consumeBound: packedNoop, recordFailure: packedNoop },
+              oauthStates: { create: packedNoop, consume: packedNoop },
+              authorization: { effectivePermissions: packedNoop, assignRole: packedNoop, unassignRole: packedNoop, setRolePermissions: packedNoop, setRoleInheritance: packedNoop },
+              roles: { list: packedNoop, findById: packedNoop, create: packedNoop, update: packedNoop, delete: packedNoop },
+              permissions: { list: packedNoop, findById: packedNoop, create: packedNoop, update: packedNoop, delete: packedNoop },
+              operations: { appendAudit: packedNoop, findApiKeyByHash: async () => packedApiKeyRecord },
+            };
+            const packedServer = server.createAuthServer({
+              environment: "test",
+              baseUrl: "https://project.example.com/auth/v1",
+              siteUrl: "https://project.example.com",
+              database: packedRepository,
+              signingKeys: { issuer: "https://project.example.com/auth/v1", audience: "project", activeKeyId: "test", keys: { test: packedSigningKey } },
+              secrets: { tokenHashKey: packedHashKey, encryptionKey: packedEncryptionKey },
+              email: { send: packedNoop },
+              redirects: { allowed: ["https://project.example.com/auth/callback"] },
+              services: {
+                users: { signUp: packedNoop, signIn: packedNoop, signInWithOtp: packedNoop, verifyOtp: packedNoop, resetPasswordForEmail: packedNoop, resend: packedNoop, updateUser: packedNoop },
+                sessions: { refresh: packedNoop, authorizeSession: packedNoop, signOut: packedNoop, revokeRefreshToken: packedNoop },
+                tokens: { verifyAccessToken: packedNoop, jwks: packedNoop },
+                authorization: { getPermissions: packedNoop, authorize: packedNoop },
+                oauth: packedServerProviderService,
+              },
+            });
+            const packedBaselineResponse = await packedServer.handle(new Request("https://project.example.com/auth/v1/providers", { headers: { apikey: packedApiKey } }));
+            if (packedBaselineResponse.status !== 200) throw new Error("packed AuthServer baseline failed: " + packedBaselineResponse.status);
+            const originalPackedSetDelete = Set.prototype.delete;
+            let packedServerResponse;
+            try {
+              Set.prototype.delete = () => { throw new Error("packed-set-delete-sentinel"); };
+              packedServerResponse = await packedServer.handle(new Request("https://project.example.com/auth/v1/providers", { headers: { apikey: packedApiKey } }));
+            } finally {
+              Set.prototype.delete = originalPackedSetDelete;
+            }
+            if (packedServerResponse?.status !== 200) throw new Error("packed AuthServer Set.delete boundary failed: " + String(packedServerResponse?.status ?? "none"));
+            const packedServerBody = await packedServerResponse.text();
+            if (packedServerBody.includes("packed-set-delete-sentinel")) {
+              throw new Error("packed AuthServer intrinsic sentinel escaped");
+            }
             const user = {
               user_id: "00000000-0000-4000-8000-000000000001",
               request_id: "packed-request",
