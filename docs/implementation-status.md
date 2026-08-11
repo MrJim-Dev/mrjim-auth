@@ -103,14 +103,16 @@ project-owned observability hook, and moves issuance rate-limit hooks before
 redirect validation. It also replaces the reset race fixture with the real
 recovery-reset transaction path and adds deterministic ban-vs-session races.
 Historical Review Fix Pass 3 added the adapter-error sanitization boundary and
-recovery-verification limiter ordering. Review Fix Pass 4 now makes the trusted
-failure marker an opaque frozen identity backed only by module-private
-`WeakMap` state and removes all exception/name/code/shape trust for
-`email_exists`. Only the exact trusted marker can restore a service-created
-policy error; every arbitrary adapter value maps to fixed `internal_error`,
-while the service-owned duplicate precheck retains its documented conflict.
-The current Pass 4 regression range is pending re-review and does not claim
-approval or a final blocker disposition.
+recovery-verification limiter ordering. Historical Review Fix Pass 4 moved the
+trusted failure payload out of marker fields and removed all
+exception/name/code/shape trust for `email_exists`, but its class marker still
+had a constructor-reachable registration path. Current Review Fix Pass 5
+replaces that class with a factory-created null-prototype exact-identity token.
+Only the exact marker can restore a service-created policy error; every
+arbitrary adapter value maps to fixed `internal_error`, while the service-owned
+duplicate precheck retains its documented conflict. Pass 5 is pending final
+same-reviewer re-review and does not claim approval or a final blocker
+disposition.
 
 ## Required dependency policy
 
@@ -154,7 +156,7 @@ local PostgreSQL 16 clusters.
 | 3. PostgreSQL schema and CLI | Complete — Review Fix Pass 3 | Review RED/GREEN integration, canonical catalog verification, packed-install CLI, full suite (52 tests), build, typecheck, lint, docs, frozen-install, and diff checks recorded in Task 3 report |
 | 4. PostgreSQL repositories | Complete — Review Fix Pass 2 | Immutable 0001-0003 history, explicit 0004 hardening upgrade, deterministic corruption restoration, review RED/GREEN adapter and migration integration, full suite, build, typecheck, lint, frozen-install, packed CLI, docs, and diff checks recorded in Task 4 report |
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
-| 6. Users and recovery | Review Fix Pass 4 pending re-review | Pass 4 RED/GREEN (29 focused, 47 mandated, 151 full), frozen install, build, typecheck, lint, docs, exports, migrations, and diff checks are recorded below; no approval or final blocker disposition is claimed |
+| 6. Users and recovery | Review Fix Pass 5 pending final re-review | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL race invocations, frozen install, build, typecheck, lint, docs, exports, migrations, and diff checks are recorded below; no approval or final blocker disposition is claimed |
 | 7. OAuth and identities | Pending | Not run |
 | 8. Dynamic authorization | Pending | Not run |
 | 9. HTTP and OpenAPI | Pending | Not run |
@@ -166,7 +168,7 @@ local PostgreSQL 16 clusters.
 
 ## Blockers
 
-Task 6 Review Fix Pass 4 is pending re-review by the same independent reviewer;
+Task 6 Review Fix Pass 5 is pending final re-review by the same independent reviewer;
 this status intentionally does not claim approval or a final blocker disposition.
 The scoped post-fix security scan did not finalize because its canonical manifest was missing the required
 `scan.target.snapshotDigest` value and the scanner returned exactly:
@@ -182,7 +184,7 @@ responsible for that review path.
 
 ## Remaining work
 
-Return this Pass 4 range to the same independent reviewer, then implement Tasks 7-14
+Return this Pass 5 range to the same independent reviewer, then implement Tasks 7-14
 with independent review after each task and complete the whole-branch review
 and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement
@@ -359,7 +361,7 @@ Strict TDD evidence for Review Fix Pass 2:
   remains `scan.target.snapshotDigest: expected a non-empty string`; no
   finalized no-findings result is claimed for either fix pass.
 
-## Task 6 scope and verification — Review Fix Pass 4 pending re-review
+## Task 6 scope and verification — Review Fix Pass 4 (historical)
 
 Task 6 implementation is present in this worktree and is pending the same
 independent review. The scope remains limited to
@@ -368,9 +370,11 @@ boundaries, and the narrow repository/session contracts needed by those flows.
 It does not add OAuth/provider adapters, RBAC APIs, HTTP routes, clients,
 framework adapters, administration APIs, or Task 7+ behavior.
 
-Historical Passes 1-3 fixed the earlier independent-review findings. Current
-Pass 4 fixes the mutable trusted-marker and forgeable `email_exists`
-classification findings:
+Historical Passes 1-3 fixed the earlier independent-review findings. Historical
+Pass 4 fixed the mutable trusted-marker payload and forgeable `email_exists`
+classification findings, but its class marker retained a constructor-reachable
+registration path. Current Pass 5 closes that residual marker-forging path and
+stabilizes the normalized-email race fixture:
 
 - validates and canonicalizes both configured redirect boundaries before any
   account lookup, preserving deep public-result equality for existing,
@@ -463,8 +467,8 @@ Review Fix Pass 4 regression evidence:
 - `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm typecheck`,
   `pnpm lint`, `pnpm docs:check`, package exports (11/11), migrations (24/24),
   and `git diff --check` passed. No migration, dependency, package manifest,
-  or lockfile change was made. Pass 4 is pending the same reviewer and does
-  not claim approval or a final blocker disposition.
+  or lockfile change was made. Pass 4 is historical and made no approval or
+  final blocker disposition claim.
 
 No schema change was required. Migrations `0001`-`0004`, their manifest
 checksums, schema contract, verifier, packing/copy checks, and incremental
@@ -488,9 +492,67 @@ The Pass 1 implementation commit is historical: `f674967` (`fix: harden task 6 a
 Pass 2 code/tests are historical and committed as `601599e`; Pass 2 docs SHA is
 `b42cc95`. Pass 3 code/tests are historical and committed as `ea8437b`; its
 documentation/report SHAs are `5068a60`, `0f06f1e`, `70d7fb4`, and `34e96e7`.
-Pass 4 code/tests are committed as `24a5ca6`; the initial
+Historical Pass 4 code/tests are committed as `24a5ca6`; the initial
 documentation/status/report follow-up is `e86b6ff` with final evidence
-amended in `8d3a752`, and the range remains pending same-reviewer re-review.
+amended in `8d3a752`. The final Pass 4 report-only follow-ups are `d2a7411`
+and `03483fd`; `03483fd` is the Pass 5 baseline.
+
+## Task 6 scope and verification — Review Fix Pass 5 pending final re-review
+
+Pass 5 is the fifth and final allowed fix pass for the Task 6 review range. It
+is limited to the constructor-reachable trusted-marker finding and the
+nondeterministic normalized-email race test. It does not add OAuth/provider
+adapters, RBAC APIs, HTTP routes, clients, framework adapters, administration
+APIs, or Task 7+ behavior. The same independent reviewer must re-review this
+range; this status does not claim approval or a no-blocker disposition.
+
+Pass 5 changes the trusted failure marker from a class instance to a fresh,
+frozen `Object.create(null)` token. The token has no constructor, prototype,
+own fields, symbols, error surface, or payload. A private `WeakMap` stores the
+trusted service error and exact identity lookup is the only restoration path;
+clones, proxies, wrappers, structured clones, serialized values, and forged
+objects map to fixed `internal_error`. The adapter failure marker uses the same
+constructorless identity design.
+
+The real disposable-PostgreSQL normalized-email race test now issues both
+tokens before installing a test-only transaction wrapper. For the exact target,
+the wrapper waits after each transaction-scoped duplicate precheck and releases
+only after both arrivals, with a bounded 10-second timeout and `finally`
+release. It asserts one success, one fixed `internal_error` race loser, one
+target owner, one consumed winner token, and one unconsumed/retryable loser;
+the committed duplicate precheck conflict test remains separate.
+
+Pass 5 TDD and verification evidence:
+
+- RED from clean baseline `03483fda554493b0a563e972dcd8f0c7e4762a6f`:
+  the focused two-file command collected 50 tests and had 1 failure/49
+  passes. The constructor-forged marker restored the injected `AuthApiError`;
+  the barrier lifecycle test passed because the barrier is a test-only
+  scheduling fixture.
+- GREEN: the focused and mandated two-file commands each passed with 2 files
+  and 50/50 tests (18 lifecycle, 32 enumeration).
+- The isolated race test passed 10/10 separate invocations, each 1/1 selected
+  test, against disposable PostgreSQL 16, with no sleeps or unbounded waits.
+- `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm test` (12 files,
+  154/154), `pnpm typecheck`, `pnpm lint`, `pnpm docs:check`, package exports
+  (11/11), migration/manifest/packing checks (24/24), and `git diff --check`
+  passed. The post-documentation diff check and clean-tree result are recorded
+  in the final Pass 5 report amendment.
+- Manual marker introspection/serialization/redaction, browser-boundary, and
+  dependency/license checks found no secret-bearing marker/public/audit data,
+  no Node leakage into browser exports, and only the existing exact-pinned MIT
+  `argon2@0.44.0` free/self-hostable dependency. No paid/hosted service or
+  remote database is required; the excluded scanner was not invoked.
+
+No migration, package manifest, lockfile, repository contract, or dependency
+change was required. Migrations `0001`-`0004`, their manifest/checksums, schema
+contract, verifier, packing/copy checks, and incremental tests remain unchanged;
+no `0005` migration was added.
+
+Pass 5 code/tests are committed as `6f29e9e`. The documentation/report commit
+and final clean-tree amendment SHAs are recorded in the Task 6 report and
+final handoff after those commits are created. The historical Pass 4
+report-only commits `d2a7411` and `03483fd` remain recorded above.
 
 ## Task 3 scope and verification (historical)
 
