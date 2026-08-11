@@ -217,7 +217,7 @@ expiry check; byte/checksum assertions preserve `0001–0004` unchanged. No
 callback code is kept in process memory or represented as a self-contained
 reusable token.
 
-Task 8 Fix Pass 3 is implemented pending fresh independent review. `AuthorizationService`
+Task 8 Fix Pass 4 is implemented pending fresh independent review. `AuthorizationService`
 now authenticates request contexts only through module-private `WeakMap`
 ownership, isolates each context cache by service instance, rejects reflected
 or caller-carried loaders, and preserves fresh-request revocation behavior.
@@ -225,20 +225,23 @@ Descriptor checks use captured own-data semantics, including under polluted
 `Object.prototype.value`; permission results use captured `Map` indexing and
 `Array.prototype.sort` for deterministic O(n) expected deduplication plus
 O(n log n) ordering and O(1)-style wildcard lookups. The permissions route
-uses a module-captured `URLSearchParams` iterator `next` intrinsic and numeric
-NUL scanning for manual fail-closed scope validation under prototype tampering.
-Fix Pass 3 focused RED was 5 failed/25 passed; the identical GREEN is 30/30.
-The full suite is 17 files and 228/228 tests. The repository/shared group is
-36/36, migration/state is 24/24, and the export/browser group is 12/12. The
-packed consumer covers installation, assets/CLI, direct root/server/browser
-imports, packed context-forgery/cache regressions, inherited-scope and
-request-ID hardening, iterator/NUL route tampering, and a deterministic
-100,000-row built-package result. Frozen install, build, typecheck, lint,
-docs check, diff check, and protected hashes pass. No migration, manifest,
-lockfile, dependency, direct-user-permission model, paid service, or
-runtime-network dependency changed. Normalized requirements and subject
-snapshots use null-prototype own fields, so inherited `scope`, `any`, `all`,
-and `request_id` values cannot affect authorization or denial redaction.
+uses captured native Request/URL/Headers accessors, captured URLSearchParams
+iterator stepping, and numeric fail-closed scope validation under prototype
+tampering. Request IDs and scope types use bounded manual ASCII validators;
+authorization configuration requires own data values and operation time is a
+fresh Date snapshot made with captured Date/Number intrinsics. Fix Pass 4
+focused RED was 3 failed/31 passed; the identical GREEN is 34/34. The full
+suite is 17 files and 232/232 tests. The repository/shared group is 36/36,
+migration/state is 24/24, and the export/browser group is 12/12. The packed
+consumer covers installation, assets/CLI, direct root/server/browser imports,
+all Fix Pass 4 request/URL/header/regex/time/configuration regressions, and a
+deterministic 100,000-row built-package result. Frozen install, build,
+typecheck, lint, docs check, diff check, and protected hashes pass. No
+migration, manifest, lockfile, dependency, direct-user-permission model, paid
+service, or runtime-network dependency changed. Normalized requirements and
+subject snapshots retain null-prototype own fields, so inherited `scope`,
+`any`, `all`, and `request_id` values cannot affect authorization or denial
+redaction.
 Corrupted-cycle read termination is not claimed beyond the recursive `UNION`
 CTE and write-time cycle guard. Fresh independent review remains pending.
 
@@ -318,7 +321,7 @@ database, external network, or paid SaaS service is required.
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
-| 8. Dynamic authorization | Complete — Fix Pass 3 implemented; independent review pending | 30/30 focused, 228/228 full, 24/24 migration/state, 36/36 repository/shared-contract, 12/12 export/browser, packed adversarial, frozen install, build, typecheck, lint, docs, diff, and protected-hash gates; evidence in Task 8 report |
+| 8. Dynamic authorization | Complete — Fix Pass 4 implemented; independent review pending | 34/34 focused, 232/232 full, 24/24 migration/state, 36/36 repository/shared-contract, 12/12 export/browser, packed adversarial, frozen install, build, typecheck, lint, docs, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Pending | Not run |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
@@ -352,7 +355,7 @@ needed for review or operation.
 
 ## Remaining work
 
-Task 8 Fix Pass 3 implementation is complete pending independent review.
+Task 8 Fix Pass 4 implementation is complete pending independent review.
 Tasks 9-14 remain, with independent review after each task; then complete the
 whole-branch review and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement

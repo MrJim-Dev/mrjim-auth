@@ -762,4 +762,268 @@ describe("authorization permission matching", () => {
     ));
     expect(validFailure).toMatchObject({ code: "insufficient_permission", status: 403, request_id: "req-valid" });
   });
+
+  it("uses bounded manual validators when RegExp test or exec is tampered", async () => {
+    const deniedService = serviceFor(() => []);
+    const grantedPermission = permission("invoice.read");
+    const grantedService = serviceFor(() => [grantedPermission]);
+    const originalTest = RegExp.prototype.test;
+    const originalExec = RegExp.prototype.exec;
+    const cases: readonly { readonly target: "test" | "exec"; readonly value: Function }[] = [
+      { target: "test", value: () => true },
+      { target: "test", value: () => false },
+      { target: "test", value: () => { throw new Error("test tampered"); } },
+      { target: "exec", value: () => ["forged"] },
+      { target: "exec", value: () => null },
+      { target: "exec", value: () => { throw new Error("exec tampered"); } },
+    ];
+
+    for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
+      const testCase = cases[caseIndex];
+      if (testCase === undefined) continue;
+      let invalidRequestId: unknown;
+      let validAuthorizationError: unknown;
+      let uppercaseScopeStatus: number | undefined;
+      let validScopeStatus: number | undefined;
+      let routeError: unknown;
+      let routeChecked = false;
+      try {
+        if (testCase.target === "test") {
+          RegExp.prototype.test = testCase.value as typeof RegExp.prototype.test;
+        } else {
+          RegExp.prototype.exec = testCase.value as typeof RegExp.prototype.exec;
+        }
+
+        invalidRequestId = await captureFailure(deniedService.authorize(
+          { user_id: USER_ID, request_id: "x".repeat(129) },
+          { all: ["invoice.read"] },
+        ));
+        try {
+          await grantedService.authorize(
+            { user_id: USER_ID, request_id: "A_valid-1" },
+            { all: ["invoice.read"] },
+          );
+        } catch (error) {
+          validAuthorizationError = error;
+        }
+        if (caseIndex === 3) {
+          routeChecked = true;
+          try {
+            uppercaseScopeStatus = (await permissionsRoute(
+              grantedService,
+              new Request("https://project.example.com/user/permissions?scope_type=TENANT&scope_id=one"),
+              subject(),
+            )).status;
+            validScopeStatus = (await permissionsRoute(
+              grantedService,
+              new Request("https://project.example.com/user/permissions?scope_type=tenant&scope_id=one"),
+              subject(),
+            )).status;
+          } catch (error) {
+            routeError = error;
+          }
+        }
+      } finally {
+        RegExp.prototype.test = originalTest;
+        RegExp.prototype.exec = originalExec;
+      }
+      expect(invalidRequestId).toMatchObject({ code: "insufficient_permission", status: 403 });
+      expect((invalidRequestId as { request_id?: string }).request_id?.length).toBeLessThanOrEqual(128);
+      expect(validAuthorizationError).toBeUndefined();
+      if (routeChecked) {
+        expect(routeError).toBeUndefined();
+        expect(uppercaseScopeStatus).toBe(400);
+        expect(validScopeStatus).toBe(200);
+      }
+    }
+  });
+
+  it("snapshots route accessors and native URL state before prototype tampering", async () => {
+    const service = serviceFor(() => [permission("invoice.read")]);
+    const nativeURL = URL;
+    const nativeRequest = Request;
+    const nativeHeaders = Headers;
+    const postRequest = new Request("https://project.example.com/user/permissions", { method: "POST" });
+    const unknownRequest = new Request(
+      "https://project.example.com/user/permissions?unknown=grant",
+      { headers: { "x-request-id": "req-original" } },
+    );
+    const requestMethod = Object.getOwnPropertyDescriptor(nativeRequest.prototype, "method");
+    const requestUrl = Object.getOwnPropertyDescriptor(nativeRequest.prototype, "url");
+    const requestHeaders = Object.getOwnPropertyDescriptor(nativeRequest.prototype, "headers");
+    const urlSearchParams = Object.getOwnPropertyDescriptor(nativeURL.prototype, "searchParams");
+    const urlSearch = Object.getOwnPropertyDescriptor(nativeURL.prototype, "search");
+    const headersGet = Object.getOwnPropertyDescriptor(nativeHeaders.prototype, "get");
+    const originalKeys = URLSearchParams.prototype.keys;
+    const iterator = originalKeys.call(new URLSearchParams("unknown=grant"));
+    const iteratorPrototype = Object.getPrototypeOf(iterator) as { next: () => IteratorResult<string> };
+    const originalNext = iteratorPrototype.next;
+    const globalURL = Object.getOwnPropertyDescriptor(globalThis, "URL");
+
+    try {
+      Object.defineProperty(nativeRequest.prototype, "method", {
+        configurable: true,
+        get: () => "GET",
+      });
+      Object.defineProperty(nativeRequest.prototype, "url", {
+        configurable: true,
+        get: () => "https://project.example.com/user/permissions",
+      });
+      Object.defineProperty(nativeRequest.prototype, "headers", {
+        configurable: true,
+        get: () => new nativeHeaders({ "x-request-id": "forged" }),
+      });
+      Object.defineProperty(nativeURL.prototype, "searchParams", {
+        configurable: true,
+        get: () => new URLSearchParams(),
+      });
+      Object.defineProperty(nativeURL.prototype, "search", {
+        configurable: true,
+        get: () => "",
+      });
+      Object.defineProperty(nativeHeaders.prototype, "get", {
+        configurable: true,
+        writable: true,
+        value: () => "forged",
+      });
+      URLSearchParams.prototype.keys = (() => (function* emptyKeys() {})()) as typeof URLSearchParams.prototype.keys;
+      iteratorPrototype.next = (() => ({ done: true, value: undefined })) as typeof iteratorPrototype.next;
+      Object.defineProperty(globalThis, "URL", {
+        configurable: true,
+        writable: true,
+        value: class FakeURL {
+          readonly searchParams = new URLSearchParams();
+        },
+      });
+
+      const postResponse = await permissionsRoute(service, postRequest, subject());
+      expect(postResponse.status).toBe(405);
+      const unknownResponse = await permissionsRoute(service, unknownRequest, subject());
+      expect(unknownResponse.status).toBe(400);
+      const unknownBody = await unknownResponse.json() as { readonly error?: { readonly request_id?: string } };
+      expect(unknownBody.error?.request_id).toBe("req-original");
+    } finally {
+      if (requestMethod === undefined) Reflect.deleteProperty(nativeRequest.prototype, "method");
+      else Object.defineProperty(nativeRequest.prototype, "method", requestMethod);
+      if (requestUrl === undefined) Reflect.deleteProperty(nativeRequest.prototype, "url");
+      else Object.defineProperty(nativeRequest.prototype, "url", requestUrl);
+      if (requestHeaders === undefined) Reflect.deleteProperty(nativeRequest.prototype, "headers");
+      else Object.defineProperty(nativeRequest.prototype, "headers", requestHeaders);
+      if (urlSearchParams === undefined) Reflect.deleteProperty(nativeURL.prototype, "searchParams");
+      else Object.defineProperty(nativeURL.prototype, "searchParams", urlSearchParams);
+      if (urlSearch === undefined) Reflect.deleteProperty(nativeURL.prototype, "search");
+      else Object.defineProperty(nativeURL.prototype, "search", urlSearch);
+      if (headersGet === undefined) Reflect.deleteProperty(nativeHeaders.prototype, "get");
+      else Object.defineProperty(nativeHeaders.prototype, "get", headersGet);
+      URLSearchParams.prototype.keys = originalKeys;
+      iteratorPrototype.next = originalNext;
+      if (globalURL === undefined) Reflect.deleteProperty(globalThis, "URL");
+      else Object.defineProperty(globalThis, "URL", globalURL);
+    }
+  });
+
+  it("requires own service configuration and ignores inherited or accessor options", async () => {
+    const effectivePermissions = async () => [];
+    const authorization = { effectivePermissions };
+    const repository = { authorization } as unknown as AuthRepository;
+
+    await withPrototypeProperty("repository", { configurable: true, enumerable: false, value: repository, writable: true }, async () => {
+      expect(() => new AuthorizationService({} as never)).toThrow();
+    });
+    await withPrototypeProperty("authorization", { configurable: true, enumerable: false, value: authorization, writable: true }, async () => {
+      expect(() => new AuthorizationService({ repository: {} } as never)).toThrow();
+    });
+    await withPrototypeProperty("effectivePermissions", { configurable: true, enumerable: false, value: effectivePermissions, writable: true }, async () => {
+      expect(() => new AuthorizationService({ repository: { authorization: {} } } as never)).toThrow();
+    });
+    await withPrototypeProperty("clock", { configurable: true, enumerable: false, value: () => new Date("invalid"), writable: true }, async () => {
+      expect(() => new AuthorizationService({ repository })).not.toThrow();
+    });
+
+    const accessorOptions = {} as Record<string, unknown>;
+    Object.defineProperty(accessorOptions, "repository", {
+      configurable: true,
+      get() { throw new Error("repository getter must not run"); },
+    });
+    expect(() => new AuthorizationService(accessorOptions as never)).toThrow();
+
+    const accessorRepository = {} as Record<string, unknown>;
+    Object.defineProperty(accessorRepository, "authorization", {
+      configurable: true,
+      get() { throw new Error("authorization getter must not run"); },
+    });
+    expect(() => new AuthorizationService({ repository: accessorRepository } as never)).toThrow();
+
+    const accessorAuthorization = {} as Record<string, unknown>;
+    Object.defineProperty(accessorAuthorization, "effectivePermissions", {
+      configurable: true,
+      get() { throw new Error("effectivePermissions getter must not run"); },
+    });
+    expect(() => new AuthorizationService({ repository: { authorization: accessorAuthorization } } as never)).toThrow();
+
+    const accessorClockOptions = { repository } as Record<string, unknown>;
+    Object.defineProperty(accessorClockOptions, "clock", {
+      configurable: true,
+      get() { throw new Error("clock getter must not run"); },
+    });
+    expect(() => new AuthorizationService(accessorClockOptions as never)).toThrow();
+  });
+
+  it("uses captured Date operations and fresh operation-time snapshots", async () => {
+    const seenTimes: Date[] = [];
+    const repository = {
+      authorization: {
+        effectivePermissions: async (_userId: UUID, _scope: AuthorizationScope | undefined, options?: { readonly now?: Date }) => {
+          if (options?.now !== undefined) seenTimes.push(options.now);
+          return [permission("time.read")];
+        },
+      },
+    } as unknown as AuthRepository;
+    const originalGetTime = Date.prototype.getTime;
+    const originalNumberIsFinite = Number.isFinite;
+    const originalDateDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Date");
+    const originalDate = Date;
+
+    try {
+      Date.prototype.getTime = (() => Number.POSITIVE_INFINITY) as typeof Date.prototype.getTime;
+      const getTimeService = new AuthorizationService({ repository, clock: () => NOW });
+      await expect(getTimeService.getPermissions(USER_ID)).resolves.toEqual(["time.read"]);
+
+      Number.isFinite = (() => false) as typeof Number.isFinite;
+      const finiteService = new AuthorizationService({ repository, clock: () => NOW });
+      await expect(finiteService.getPermissions(USER_ID)).resolves.toEqual(["time.read"]);
+
+      Object.defineProperty(globalThis, "Date", {
+        configurable: true,
+        writable: true,
+        value: class FakeDate {
+          constructor() { return {} as FakeDate; }
+        },
+      });
+      const reassignedDateService = new AuthorizationService({ repository, clock: () => NOW });
+      await expect(reassignedDateService.getPermissions(USER_ID)).resolves.toEqual(["time.read"]);
+      const defaultClockService = new AuthorizationService({ repository });
+      await expect(defaultClockService.getPermissions(USER_ID)).resolves.toEqual(["time.read"]);
+    } finally {
+      originalDate.prototype.getTime = originalGetTime;
+      Number.isFinite = originalNumberIsFinite;
+      if (originalDateDescriptor === undefined) Reflect.deleteProperty(globalThis, "Date");
+      else Object.defineProperty(globalThis, "Date", originalDateDescriptor);
+    }
+
+    const subclass = new (class extends originalDate {})(NOW.getTime());
+    expect(() => new AuthorizationService({ repository, clock: () => subclass })).not.toThrow();
+    expect(() => new AuthorizationService({ repository, clock: () => new Date(Number.NaN) })).toThrow();
+    expect(() => new AuthorizationService({ repository, clock: () => ({}) as Date })).toThrow();
+
+    const snapshotService = new AuthorizationService({ repository, clock: () => NOW });
+    await snapshotService.getPermissions(USER_ID);
+    await snapshotService.getPermissions(USER_ID);
+    expect(seenTimes.length).toBeGreaterThanOrEqual(2);
+    expect(seenTimes[0]).not.toBe(NOW);
+    expect(seenTimes[1]).not.toBe(NOW);
+    expect(seenTimes[1]).not.toBe(seenTimes[0]);
+    expect(originalGetTime.call(seenTimes[0])).toBe(originalGetTime.call(NOW));
+    expect(originalGetTime.call(seenTimes[1])).toBe(originalGetTime.call(NOW));
+  });
 });

@@ -34,18 +34,20 @@ const objectHasOwnProperty = Object.prototype.hasOwnProperty;
 const objectPrototype = Object.prototype;
 const arrayIsArray = Array.isArray;
 const arraySort = Array.prototype.sort;
+const dateConstructor = Date;
+const dateGetTime = Date.prototype.getTime;
 const mapConstructor = Map;
 const mapHas = Map.prototype.has;
 const mapSet = Map.prototype.set;
+const numberIsFinite = Number.isFinite;
 const numberIsSafeInteger = Number.isSafeInteger;
+const reflectConstruct = Reflect.construct;
 const stringTrim = String.prototype.trim;
 const stringToLowerCase = String.prototype.toLowerCase;
-const regexpTest = RegExp.prototype.test;
 const weakMapConstructor = WeakMap;
 const weakMapGet = WeakMap.prototype.get;
 const weakMapSet = WeakMap.prototype.set;
 
-const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const MAX_REQUIREMENT_KEYS = 100_000;
 const MAX_PERMISSION_ROWS = 100_000;
 const PERMISSION_FIELDS = [
@@ -125,6 +127,47 @@ function isHexCharacter(value: string | undefined): boolean {
   );
 }
 
+function isAsciiAlphaNumeric(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return (
+    (value >= "a" && value <= "z") ||
+    (value >= "A" && value <= "Z") ||
+    (value >= "0" && value <= "9")
+  );
+}
+
+function isRequestId(value: unknown): value is string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 128) return false;
+  if (!isAsciiAlphaNumeric(value[0])) return false;
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === undefined) return false;
+    if (!isAsciiAlphaNumeric(character) && character !== "_" && character !== "-") return false;
+  }
+  return true;
+}
+
+function isScopeType(value: unknown): value is string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 64) return false;
+  const first = value[0];
+  if (first === undefined || first < "a" || first > "z") return false;
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index];
+    if (
+      character === undefined ||
+      !(
+        (character >= "a" && character <= "z") ||
+        (character >= "0" && character <= "9") ||
+        character === "_" ||
+        character === "-"
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isLowerIdentifier(value: unknown, allowWildcard: boolean): value is string {
   if (typeof value !== "string") return false;
   if (allowWildcard && value === "*") return true;
@@ -192,16 +235,26 @@ function keyPart(value: string, start: number, end: number): string {
 }
 
 function validNow(clock: () => Date): Date {
-  let now: Date;
+  let now: unknown;
+  let epoch: number;
   try {
     now = clock();
+    epoch = invoke<number>(dateGetTime, now, []);
   } catch {
     throw new AuthConfigurationError("authorization clock must return a valid Date");
   }
-  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+  if (!invoke<boolean>(numberIsFinite, undefined, [epoch])) {
     throw new AuthConfigurationError("authorization clock must return a valid Date");
   }
-  return now;
+  try {
+    return invoke<Date>(reflectConstruct, undefined, [dateConstructor, [epoch]]);
+  } catch {
+    throw new AuthConfigurationError("authorization clock must return a valid Date");
+  }
+}
+
+function defaultClock(): Date {
+  return invoke<Date>(reflectConstruct, undefined, [dateConstructor, []]);
 }
 
 /** A permission requirement for an authoritative server-side authorization check. */
@@ -382,7 +435,7 @@ function normalizedScope(scope: unknown): AuthorizationScope | null | undefined 
     const trimmedType = invoke<string>(stringTrim, typeProperty.value, []);
     const type = invoke<string>(stringToLowerCase, trimmedType, []);
     const idValue = invoke<string>(stringTrim, idProperty.value, []);
-    if (type.length === 0 || containsNul(type) || containsNul(idValue)) return null;
+    if (!isScopeType(type) || containsNul(type) || containsNul(idValue)) return null;
     if (idValue.length === 0) return null;
     return objectFreeze({ type, id: idValue as ScopeIdentifier });
   } catch {
@@ -645,8 +698,7 @@ export function snapshotAuthorizationSubject(subject: unknown): AuthorizationSub
   if (
     requestProperty.valid &&
     requestProperty.present &&
-    typeof requestProperty.value === "string" &&
-    invoke<boolean>(regexpTest, REQUEST_ID_PATTERN, [requestProperty.value])
+    isRequestId(requestProperty.value)
   ) {
     objectDefineProperty(snapshot, "request_id", {
       configurable: false,
@@ -718,28 +770,49 @@ export class AuthorizationService {
   private readonly clock: () => Date;
 
   constructor(options: AuthorizationServiceOptions) {
+    if (options === null || typeof options !== "object") {
+      throw new AuthConfigurationError("authorization repository is incomplete");
+    }
+
+    const repositoryProperty = ownDataProperty(options, "repository");
+    if (!repositoryProperty.valid || !repositoryProperty.present) {
+      throw new AuthConfigurationError("authorization repository is incomplete");
+    }
+    const repository = repositoryProperty.value;
+    if (repository === null || (typeof repository !== "object" && typeof repository !== "function")) {
+      throw new AuthConfigurationError("authorization repository is incomplete");
+    }
+
+    const authorizationProperty = ownDataProperty(repository, "authorization");
+    if (!authorizationProperty.valid || !authorizationProperty.present) {
+      throw new AuthConfigurationError("authorization repository is incomplete");
+    }
+    const authorization = authorizationProperty.value;
+    if (authorization === null || (typeof authorization !== "object" && typeof authorization !== "function")) {
+      throw new AuthConfigurationError("authorization repository is incomplete");
+    }
+
+    const effectivePermissionsProperty = ownDataProperty(authorization, "effectivePermissions");
     if (
-      options === null ||
-      typeof options !== "object" ||
-      options.repository === null ||
-      typeof options.repository !== "object"
+      !effectivePermissionsProperty.valid ||
+      !effectivePermissionsProperty.present ||
+      typeof effectivePermissionsProperty.value !== "function"
     ) {
       throw new AuthConfigurationError("authorization repository is incomplete");
     }
-    const authorization = options.repository.authorization;
-    if (
-      authorization === null ||
-      typeof authorization !== "object" ||
-      typeof authorization.effectivePermissions !== "function"
-    ) {
-      throw new AuthConfigurationError("authorization repository is incomplete");
-    }
-    if (options.clock !== undefined && typeof options.clock !== "function") {
+
+    const clockProperty = ownDataProperty(options, "clock");
+    if (!clockProperty.valid) {
       throw new AuthConfigurationError("authorization clock must be a function");
     }
-    this.authorization = authorization;
-    this.effectivePermissions = authorization.effectivePermissions;
-    this.clock = options.clock ?? (() => new Date());
+    const configuredClock = clockProperty.present ? clockProperty.value : undefined;
+    if (configuredClock !== undefined && typeof configuredClock !== "function") {
+      throw new AuthConfigurationError("authorization clock must be a function");
+    }
+
+    this.authorization = authorization as AuthorizationRepository;
+    this.effectivePermissions = effectivePermissionsProperty.value as AuthorizationRepository["effectivePermissions"];
+    this.clock = configuredClock === undefined ? defaultClock : configuredClock as () => Date;
     validNow(this.clock);
   }
 

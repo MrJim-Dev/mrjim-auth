@@ -1556,6 +1556,181 @@ describe("Task 3 PostgreSQL migrations", () => {
             } finally {
               String.prototype.includes = originalIncludes;
             }
+
+            const originalRegExpTest = RegExp.prototype.test;
+            const originalRegExpExec = RegExp.prototype.exec;
+            const regexpCases = [
+              ["test", () => true],
+              ["test", () => false],
+              ["test", () => { throw new Error("packed test tampered"); }],
+              ["exec", () => ["forged"]],
+              ["exec", () => null],
+              ["exec", () => { throw new Error("packed exec tampered"); }],
+            ];
+            for (let caseIndex = 0; caseIndex < regexpCases.length; caseIndex += 1) {
+              const [target, value] = regexpCases[caseIndex];
+              try {
+                if (target === "test") RegExp.prototype.test = value;
+                else RegExp.prototype.exec = value;
+                let invalidRequestError;
+                try {
+                  await deniedService.authorize({ user_id: user.user_id, request_id: "x".repeat(129) }, { all: ["invoice.read"] });
+                } catch (error) {
+                  invalidRequestError = error;
+                }
+                if (invalidRequestError?.code !== "insufficient_permission" || invalidRequestError.request_id.length > 128) {
+                  throw new Error("packed manual request id validator failed");
+                }
+                await grantService.authorize({ user_id: user.user_id, request_id: "A_valid-1" }, { all: ["invoice.read"] });
+                if (caseIndex === 3) {
+                  const uppercaseResponse = await server.permissionsRoute(routeService, new Request("https://project.example.com/user/permissions?scope_type=TENANT&scope_id=one"), user);
+                  if (uppercaseResponse.status !== 400) throw new Error("packed manual scope type validator failed");
+                  const validScopeResponse = await server.permissionsRoute(routeService, new Request("https://project.example.com/user/permissions?scope_type=tenant&scope_id=one"), user);
+                  if (validScopeResponse.status !== 200) throw new Error("packed valid scope type rejected");
+                }
+              } finally {
+                RegExp.prototype.test = originalRegExpTest;
+                RegExp.prototype.exec = originalRegExpExec;
+              }
+            }
+
+            const nativeURL = URL;
+            const nativeRequest = Request;
+            const nativeHeaders = Headers;
+            const postRequest = new Request("https://project.example.com/user/permissions", { method: "POST" });
+            const unknownAccessorRequest = new Request(
+              "https://project.example.com/user/permissions?unknown=grant",
+              { headers: { "x-request-id": "packed-original" } },
+            );
+            const requestMethodDescriptor = Object.getOwnPropertyDescriptor(nativeRequest.prototype, "method");
+            const requestUrlDescriptor = Object.getOwnPropertyDescriptor(nativeRequest.prototype, "url");
+            const requestHeadersDescriptor = Object.getOwnPropertyDescriptor(nativeRequest.prototype, "headers");
+            const urlSearchParamsDescriptor = Object.getOwnPropertyDescriptor(nativeURL.prototype, "searchParams");
+            const urlSearchDescriptor = Object.getOwnPropertyDescriptor(nativeURL.prototype, "search");
+            const headersGetDescriptor = Object.getOwnPropertyDescriptor(nativeHeaders.prototype, "get");
+            const accessorOriginalKeys = URLSearchParams.prototype.keys;
+            const accessorIterator = accessorOriginalKeys.call(new URLSearchParams("unknown=grant"));
+            const accessorIteratorPrototype = Object.getPrototypeOf(accessorIterator);
+            const accessorOriginalNext = accessorIteratorPrototype.next;
+            const globalURLDescriptor = Object.getOwnPropertyDescriptor(globalThis, "URL");
+            const restoreDescriptor = (target, name, descriptor) => {
+              if (descriptor === undefined) Reflect.deleteProperty(target, name);
+              else Object.defineProperty(target, name, descriptor);
+            };
+            try {
+              Object.defineProperty(nativeRequest.prototype, "method", { configurable: true, get: () => "GET" });
+              Object.defineProperty(nativeRequest.prototype, "url", { configurable: true, get: () => "https://project.example.com/user/permissions" });
+              Object.defineProperty(nativeRequest.prototype, "headers", { configurable: true, get: () => new nativeHeaders({ "x-request-id": "packed-forged" }) });
+              Object.defineProperty(nativeURL.prototype, "searchParams", { configurable: true, get: () => new URLSearchParams() });
+              Object.defineProperty(nativeURL.prototype, "search", { configurable: true, get: () => "" });
+              Object.defineProperty(nativeHeaders.prototype, "get", { configurable: true, writable: true, value: () => "packed-forged" });
+              URLSearchParams.prototype.keys = (() => (function* emptyKeys() {})());
+              accessorIteratorPrototype.next = () => ({ done: true, value: undefined });
+              const FakeURL = function FakeURL() { return Object.create(nativeURL.prototype); };
+              Object.defineProperty(globalThis, "URL", { configurable: true, writable: true, value: FakeURL });
+
+              const postResponse = await server.permissionsRoute(routeService, postRequest, user);
+              if (postResponse.status !== 405) throw new Error("packed POST was converted to GET");
+              const unknownResponse = await server.permissionsRoute(routeService, unknownAccessorRequest, user);
+              if (unknownResponse.status !== 400) throw new Error("packed request accessor hid unknown query");
+              const unknownBody = await unknownResponse.json();
+              if (unknownBody.error?.request_id !== "packed-original") throw new Error("packed request accessor changed request id");
+            } finally {
+              restoreDescriptor(nativeRequest.prototype, "method", requestMethodDescriptor);
+              restoreDescriptor(nativeRequest.prototype, "url", requestUrlDescriptor);
+              restoreDescriptor(nativeRequest.prototype, "headers", requestHeadersDescriptor);
+              restoreDescriptor(nativeURL.prototype, "searchParams", urlSearchParamsDescriptor);
+              restoreDescriptor(nativeURL.prototype, "search", urlSearchDescriptor);
+              restoreDescriptor(nativeHeaders.prototype, "get", headersGetDescriptor);
+              URLSearchParams.prototype.keys = accessorOriginalKeys;
+              accessorIteratorPrototype.next = accessorOriginalNext;
+              restoreDescriptor(globalThis, "URL", globalURLDescriptor);
+            }
+
+            let invalidRouteThrew = false;
+            let invalidRouteResponse;
+            try {
+              invalidRouteResponse = await server.permissionsRoute(routeService, Object.create(Request.prototype), user);
+            } catch {
+              invalidRouteThrew = true;
+            }
+            if (invalidRouteThrew || invalidRouteResponse?.status !== 400) throw new Error("packed invalid request accessor was not fail closed");
+
+            const configurationRepository = { authorization: { effectivePermissions: async () => [permission] } };
+            await withObjectPrototypeProperty("repository", configurationRepository, async () => {
+              let rejected = false;
+              try { new server.AuthorizationService({}); } catch { rejected = true; }
+              if (!rejected) throw new Error("packed inherited repository was accepted");
+            });
+            await withObjectPrototypeProperty("authorization", configurationRepository.authorization, async () => {
+              let rejected = false;
+              try { new server.AuthorizationService({ repository: {} }); } catch { rejected = true; }
+              if (!rejected) throw new Error("packed inherited authorization was accepted");
+            });
+            await withObjectPrototypeProperty("effectivePermissions", configurationRepository.authorization.effectivePermissions, async () => {
+              let rejected = false;
+              try { new server.AuthorizationService({ repository: { authorization: {} } }); } catch { rejected = true; }
+              if (!rejected) throw new Error("packed inherited effectivePermissions was accepted");
+            });
+            await withObjectPrototypeProperty("clock", () => new Date("invalid"), async () => {
+              try { new server.AuthorizationService({ repository: configurationRepository }); } catch { throw new Error("packed inherited clock controlled service"); }
+            });
+
+            const accessorOptions = {};
+            Object.defineProperty(accessorOptions, "repository", { configurable: true, get() { throw new Error("packed repository getter"); } });
+            try { new server.AuthorizationService(accessorOptions); throw new Error("packed repository accessor was accepted"); } catch (error) { if (error?.message === "packed repository accessor was accepted") throw error; }
+            const accessorRepository = {};
+            Object.defineProperty(accessorRepository, "authorization", { configurable: true, get() { throw new Error("packed authorization getter"); } });
+            try { new server.AuthorizationService({ repository: accessorRepository }); throw new Error("packed authorization accessor was accepted"); } catch (error) { if (error?.message === "packed authorization accessor was accepted") throw error; }
+            const accessorAuthorization = {};
+            Object.defineProperty(accessorAuthorization, "effectivePermissions", { configurable: true, get() { throw new Error("packed effectivePermissions getter"); } });
+            try { new server.AuthorizationService({ repository: { authorization: accessorAuthorization } }); throw new Error("packed effectivePermissions accessor was accepted"); } catch (error) { if (error?.message === "packed effectivePermissions accessor was accepted") throw error; }
+            const accessorClockOptions = { repository: configurationRepository };
+            Object.defineProperty(accessorClockOptions, "clock", { configurable: true, get() { throw new Error("packed clock getter"); } });
+            try { new server.AuthorizationService(accessorClockOptions); throw new Error("packed clock accessor was accepted"); } catch (error) { if (error?.message === "packed clock accessor was accepted") throw error; }
+
+            const seenTimes = [];
+            const timeRepository = { authorization: { effectivePermissions: async (_userId, _scope, options) => { seenTimes.push(options?.now); return [permission]; } } };
+            const originalDate = Date;
+            const originalGetTime = Date.prototype.getTime;
+            const originalNumberIsFinite = Number.isFinite;
+            const originalDateDescriptor = Object.getOwnPropertyDescriptor(globalThis, "Date");
+            try {
+              Date.prototype.getTime = () => Number.POSITIVE_INFINITY;
+              const getTimeService = new server.AuthorizationService({ repository: timeRepository, clock: () => new Date("2026-08-11T00:00:00.000Z") });
+              if ((await getTimeService.getPermissions(user.user_id)).length !== 1) throw new Error("packed captured Date.getTime failed");
+              Number.isFinite = () => false;
+              const finiteService = new server.AuthorizationService({ repository: timeRepository, clock: () => new Date("2026-08-11T00:00:00.000Z") });
+              if ((await finiteService.getPermissions(user.user_id)).length !== 1) throw new Error("packed captured Number.isFinite failed");
+              Object.defineProperty(globalThis, "Date", { configurable: true, writable: true, value: class FakeDate { constructor() { return {}; } } });
+              const reassignedDateService = new server.AuthorizationService({ repository: timeRepository, clock: () => new originalDate("2026-08-11T00:00:00.000Z") });
+              if ((await reassignedDateService.getPermissions(user.user_id)).length !== 1) throw new Error("packed captured Date constructor failed");
+              const defaultClockService = new server.AuthorizationService({ repository: timeRepository });
+              if ((await defaultClockService.getPermissions(user.user_id)).length !== 1) throw new Error("packed default clock used live Date");
+            } finally {
+              originalDate.prototype.getTime = originalGetTime;
+              Number.isFinite = originalNumberIsFinite;
+              restoreDescriptor(globalThis, "Date", originalDateDescriptor);
+            }
+            class DateSubclass extends originalDate {}
+            try { new server.AuthorizationService({ repository: timeRepository, clock: () => new DateSubclass(originalGetTime.call(new originalDate("2026-08-11T00:00:00.000Z"))) }); } catch { throw new Error("packed Date subclass was rejected"); }
+            let invalidClockRejected = false;
+            try { new server.AuthorizationService({ repository: timeRepository, clock: () => new originalDate(Number.NaN) }); } catch { invalidClockRejected = true; }
+            if (!invalidClockRejected) throw new Error("packed invalid Date was accepted");
+            invalidClockRejected = false;
+            try { new server.AuthorizationService({ repository: timeRepository, clock: () => ({}) }); } catch { invalidClockRejected = true; }
+            if (!invalidClockRejected) throw new Error("packed custom clock value was accepted");
+
+            const expiryMillis = originalGetTime.call(new originalDate("2026-08-11T00:00:01.000Z"));
+            const expiryRepository = { authorization: { effectivePermissions: async (_userId, _scope, options) => originalGetTime.call(options.now) < expiryMillis ? [permission] : [] } };
+            const beforeExpiry = new server.AuthorizationService({ repository: expiryRepository, clock: () => new originalDate(expiryMillis - 1) });
+            if ((await beforeExpiry.getPermissions(user.user_id)).length !== 1) throw new Error("packed pre-expiry grant was denied");
+            const atExpiry = new server.AuthorizationService({ repository: expiryRepository, clock: () => new originalDate(expiryMillis) });
+            if ((await atExpiry.getPermissions(user.user_id)).length !== 0) throw new Error("packed expired grant was accepted");
+            const snapshotService = new server.AuthorizationService({ repository: timeRepository, clock: () => new originalDate("2026-08-11T00:00:00.000Z") });
+            await snapshotService.getPermissions(user.user_id);
+            await snapshotService.getPermissions(user.user_id);
+            if (seenTimes[0] === undefined || seenTimes[0] === seenTimes[1] || seenTimes[0] === new originalDate("2026-08-11T00:00:00.000Z")) throw new Error("packed operation time was not snapshotted");
           `,
         ],
         { cwd: consumerRoot },
