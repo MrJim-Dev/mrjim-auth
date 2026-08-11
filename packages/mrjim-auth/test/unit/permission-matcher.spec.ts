@@ -71,20 +71,28 @@ async function withPrototypeValue<T>(
   value: unknown,
   callback: () => Promise<T>,
 ): Promise<T> {
-  const original = Object.getOwnPropertyDescriptor(Object.prototype, "value");
-  Object.defineProperty(Object.prototype, "value", {
+  return withPrototypeProperty("value", {
     configurable: true,
     enumerable: false,
     value,
     writable: true,
-  });
+  }, callback);
+}
+
+async function withPrototypeProperty<T>(
+  key: PropertyKey,
+  descriptor: PropertyDescriptor,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(Object.prototype, key);
+  Object.defineProperty(Object.prototype, key, descriptor);
   try {
     return await callback();
   } finally {
     if (original === undefined) {
-      Reflect.deleteProperty(Object.prototype, "value");
+      Reflect.deleteProperty(Object.prototype, key);
     } else {
-      Object.defineProperty(Object.prototype, "value", original);
+      Object.defineProperty(Object.prototype, key, original);
     }
   }
 }
@@ -251,6 +259,67 @@ describe("authorization permission matching", () => {
 
     await expectInsufficient(service.authorize(subject(), { all: ["invoice.read"], scope: first }));
     await expectInsufficient(service.authorize(subject(), { all: ["invoice.read"], scope: colliding }));
+  });
+
+  it("does not inherit scope, any, or all from Object.prototype after normalization", async () => {
+    const scopedOnlyService = serviceFor((_userId, requestedScope) => (
+      requestedScope?.type === "tenant" && requestedScope.id === "tenant_1"
+        ? [permission("invoice.read")]
+        : []
+    ));
+    const pollutedScope: AuthorizationScope = {
+      type: "tenant",
+      id: scopeIdentifierSchema.parse("tenant_1"),
+    };
+    const unscopedFailure = await withPrototypeProperty(
+      "scope",
+      { configurable: true, enumerable: false, value: pollutedScope, writable: true },
+      () => captureFailure(scopedOnlyService.authorize(subject(), { all: ["invoice.read"] })),
+    );
+    expect(unscopedFailure).toMatchObject({ code: "insufficient_permission", status: 403 });
+
+    const grantService = serviceFor(() => [permission("invoice.read")]);
+    const anyPollutionFailure = await withPrototypeProperty(
+      "any",
+      { configurable: true, enumerable: false, value: ["secret.read"], writable: true },
+      () => captureFailure(grantService.authorize(subject(), { all: ["invoice.read"] })),
+    );
+    expect(anyPollutionFailure).toBeNull();
+
+    const allPollutionFailure = await withPrototypeProperty(
+      "all",
+      { configurable: true, enumerable: false, value: ["secret.read"], writable: true },
+      () => captureFailure(grantService.authorize(subject(), { any: ["invoice.read"] })),
+    );
+    expect(allPollutionFailure).toBeNull();
+  });
+
+  it("ignores throwing inherited scope, any, and all getters", async () => {
+    const service = serviceFor(() => [permission("invoice.read")]);
+    const throwing = () => {
+      throw new Error("inherited requirement getter must not run");
+    };
+
+    const scopeResult = await withPrototypeProperty(
+      "scope",
+      { configurable: true, enumerable: false, get: throwing },
+      () => captureFailure(service.authorize(subject(), { all: ["invoice.read"] })),
+    );
+    expect(scopeResult).toBeNull();
+
+    const anyResult = await withPrototypeProperty(
+      "any",
+      { configurable: true, enumerable: false, get: throwing },
+      () => captureFailure(service.authorize(subject(), { all: ["invoice.read"] })),
+    );
+    expect(anyResult).toBeNull();
+
+    const allResult = await withPrototypeProperty(
+      "all",
+      { configurable: true, enumerable: false, get: throwing },
+      () => captureFailure(service.authorize(subject(), { any: ["invoice.read"] })),
+    );
+    expect(allResult).toBeNull();
   });
 
   it("rejects non-array iterables and incomplete or inherited permission rows", async () => {
@@ -613,5 +682,84 @@ describe("authorization permission matching", () => {
       URLSearchParams.prototype.get = malformedOriginalGet;
     }
     expect(response.status).toBe(400);
+  });
+
+  it("rejects unknown and duplicate queries when URLSearchParams keys and next are tampered", async () => {
+    const service = serviceFor(() => [permission("invoice.read")]);
+    const originalKeys = URLSearchParams.prototype.keys;
+    const unknownRequest = new Request("https://project.example.com/user/permissions?unknown=grant");
+    const duplicateRequest = new Request("https://project.example.com/user/permissions?scope_type=tenant&scope_type=other&scope_id=one");
+    const iterator = originalKeys.call(new URLSearchParams("unknown=grant"));
+    const iteratorPrototype = Object.getPrototypeOf(iterator) as {
+      next: () => IteratorResult<string>;
+    };
+    const originalNext = iteratorPrototype.next;
+    let unknownResponse: Response;
+    let duplicateResponse: Response;
+    try {
+      URLSearchParams.prototype.keys = (() => {
+        throw new Error("URLSearchParams.keys was mutated");
+      }) as typeof URLSearchParams.prototype.keys;
+      iteratorPrototype.next = (() => ({ done: true, value: undefined })) as typeof iteratorPrototype.next;
+      unknownResponse = await permissionsRoute(service, unknownRequest, subject());
+      duplicateResponse = await permissionsRoute(service, duplicateRequest, subject());
+    } finally {
+      URLSearchParams.prototype.keys = originalKeys;
+      iteratorPrototype.next = originalNext;
+    }
+    expect(unknownResponse.status).toBe(400);
+    expect(duplicateResponse.status).toBe(400);
+  });
+
+  it("rejects NUL scope IDs when String.prototype.includes is tampered", async () => {
+    const service = serviceFor(() => [permission("invoice.read")]);
+    const originalIncludes = String.prototype.includes;
+    const request = new Request("https://project.example.com/user/permissions?scope_type=tenant&scope_id=tenant%00one");
+    let response: Response;
+    try {
+      String.prototype.includes = (() => false) as typeof String.prototype.includes;
+      response = await permissionsRoute(service, request, subject());
+    } finally {
+      String.prototype.includes = originalIncludes;
+    }
+    expect(response.status).toBe(400);
+  });
+
+  it("keeps insufficient-permission request IDs own, valid, and bounded", async () => {
+    const service = serviceFor(() => []);
+
+    const polluted = await withPrototypeProperty(
+      "request_id",
+      { configurable: true, enumerable: false, value: "x".repeat(1000), writable: true },
+      () => captureFailure(service.authorize({ user_id: USER_ID }, { all: ["invoice.read"] })),
+    );
+    expect(polluted).toMatchObject({ code: "insufficient_permission", status: 403 });
+    expect(typeof (polluted as { request_id?: unknown }).request_id).toBe("string");
+    expect((polluted as { request_id: string }).request_id.length).toBeLessThanOrEqual(128);
+
+    const inheritedGetter = await withPrototypeProperty(
+      "request_id",
+      { configurable: true, enumerable: false, get: () => { throw new Error("inherited request id getter must not run"); } },
+      () => captureFailure(service.authorize({ user_id: USER_ID }, { all: ["invoice.read"] })),
+    );
+    expect(inheritedGetter).toMatchObject({ code: "insufficient_permission", status: 403 });
+    expect((inheritedGetter as { request_id?: string }).request_id?.length).toBeLessThanOrEqual(128);
+
+    const accessorSubject = { user_id: USER_ID } as { user_id: UUID; request_id?: string };
+    Object.defineProperty(accessorSubject, "request_id", {
+      configurable: true,
+      get() {
+        throw new Error("own request id getter must not run");
+      },
+    });
+    const accessorFailure = await captureFailure(service.authorize(accessorSubject, { all: ["invoice.read"] }));
+    expect(accessorFailure).toMatchObject({ code: "insufficient_permission", status: 403 });
+    expect((accessorFailure as { request_id?: string }).request_id?.length).toBeLessThanOrEqual(128);
+
+    const validFailure = await captureFailure(service.authorize(
+      { user_id: USER_ID, request_id: "req-valid" },
+      { all: ["invoice.read"] },
+    ));
+    expect(validFailure).toMatchObject({ code: "insufficient_permission", status: 403, request_id: "req-valid" });
   });
 });

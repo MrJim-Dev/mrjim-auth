@@ -11,12 +11,21 @@ import {
 } from "../authorization.js";
 
 const objectDefineProperty = Object.defineProperty;
+const objectGetPrototypeOf = Object.getPrototypeOf;
 const reflectApply = Reflect.apply;
 const regexpTest = RegExp.prototype.test;
 const searchParamsGet = URLSearchParams.prototype.get;
 const searchParamsGetAll = URLSearchParams.prototype.getAll;
 const searchParamsKeys = URLSearchParams.prototype.keys;
 const stringTrim = String.prototype.trim;
+const searchParamsIteratorNext = (() => {
+  const iterator = reflectApply(searchParamsKeys, new URLSearchParams(), []) as Iterator<string>;
+  const prototype = objectGetPrototypeOf(iterator) as { readonly next?: unknown } | null;
+  if (prototype === null || typeof prototype.next !== "function") {
+    throw new Error("URLSearchParams iterator next is unavailable");
+  }
+  return prototype.next;
+})();
 
 const requestIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const scopeTypePattern = /^[a-z][a-z0-9_-]*$/;
@@ -31,6 +40,28 @@ function requestId(request: Request): string | undefined {
     return value !== null && invoke<boolean>(regexpTest, requestIdPattern, [value]) ? value : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function containsNul(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "\u0000") return true;
+  }
+  return false;
+}
+
+function hasOnlyAllowedScopeKeys(params: URLSearchParams): boolean {
+  try {
+    const iterator = invoke<Iterator<string>>(searchParamsKeys, params, []);
+    for (;;) {
+      const step = invoke<IteratorResult<string>>(searchParamsIteratorNext, iterator, []);
+      if (step === null || typeof step !== "object") return false;
+      if (step.done === true) return true;
+      if (typeof step.value !== "string") return false;
+      if (step.value !== "scope_type" && step.value !== "scope_id") return false;
+    }
+  } catch {
+    return false;
   }
 }
 
@@ -70,10 +101,7 @@ function parseScope(request: Request): AuthorizationScope | undefined | null {
   try {
     const url = new URL(request.url);
     const params = url.searchParams;
-    const keys = invoke<IterableIterator<string>>(searchParamsKeys, params, []);
-    for (const key of keys) {
-      if (key !== "scope_type" && key !== "scope_id") return null;
-    }
+    if (!hasOnlyAllowedScopeKeys(params)) return null;
     const types = invoke<readonly string[]>(searchParamsGetAll, params, ["scope_type"]);
     const ids = invoke<readonly string[]>(searchParamsGetAll, params, ["scope_id"]);
     if (types.length > 1 || ids.length > 1) return null;
@@ -81,7 +109,7 @@ function parseScope(request: Request): AuthorizationScope | undefined | null {
     const id = invoke<string | null>(searchParamsGet, params, ["scope_id"]);
     if (type === null && id === null) return undefined;
     if (type === null || id === null) return null;
-    if (type.includes("\u0000") || id.includes("\u0000")) return null;
+    if (containsNul(type) || containsNul(id)) return null;
 
     const trimmedType = invoke<string>(stringTrim, type, []);
     const trimmedId = invoke<string>(stringTrim, id, []);

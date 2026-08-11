@@ -590,11 +590,35 @@ function normalizedRequirement(requirement: unknown): NormalizedRequirement | nu
 
   const scope = scopeProperty.present ? normalizedScope(scopeProperty.value) : undefined;
   if (scope === null) return null;
-  const normalized: NormalizedRequirement = {
-    ...(any === undefined ? {} : { any }),
-    ...(all === undefined ? {} : { all }),
-    ...(scope === undefined ? {} : { scope }),
+  const normalized = objectCreate(null) as {
+    any?: readonly string[];
+    all?: readonly string[];
+    scope?: AuthorizationScope;
   };
+  if (any !== undefined) {
+    objectDefineProperty(normalized, "any", {
+      configurable: false,
+      enumerable: true,
+      value: any,
+      writable: false,
+    });
+  }
+  if (all !== undefined) {
+    objectDefineProperty(normalized, "all", {
+      configurable: false,
+      enumerable: true,
+      value: all,
+      writable: false,
+    });
+  }
+  if (scope !== undefined) {
+    objectDefineProperty(normalized, "scope", {
+      configurable: false,
+      enumerable: true,
+      value: scope,
+      writable: false,
+    });
+  }
   return objectFreeze(normalized);
 }
 
@@ -611,14 +635,25 @@ export function snapshotAuthorizationSubject(subject: unknown): AuthorizationSub
   if (userId === null) return null;
 
   const requestProperty = ownDataProperty(subject, "request_id");
-  if (!requestProperty.valid) return null;
-  const snapshot: { user_id: UUID; request_id?: string } = { user_id: userId };
+  const snapshot = objectCreate(null) as { user_id: UUID; request_id?: string };
+  objectDefineProperty(snapshot, "user_id", {
+    configurable: false,
+    enumerable: true,
+    value: userId,
+    writable: false,
+  });
   if (
+    requestProperty.valid &&
     requestProperty.present &&
     typeof requestProperty.value === "string" &&
     invoke<boolean>(regexpTest, REQUEST_ID_PATTERN, [requestProperty.value])
   ) {
-    snapshot.request_id = requestProperty.value;
+    objectDefineProperty(snapshot, "request_id", {
+      configurable: false,
+      enumerable: true,
+      value: requestProperty.value,
+      writable: false,
+    });
   }
   return objectFreeze(snapshot);
 }

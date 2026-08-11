@@ -1425,6 +1425,137 @@ describe("Task 3 PostgreSQL migrations", () => {
             if (largeResult.length !== 100000 || largeResult[0] !== "resource_0.read" || largeResult[99999] !== "resource_zzz.read") {
               throw new Error("packed indexed permission result was not deterministic");
             }
+
+            async function withObjectPrototypeProperty(name, descriptor, callback) {
+              const original = Object.getOwnPropertyDescriptor(Object.prototype, name);
+              Object.defineProperty(Object.prototype, name, descriptor);
+              try {
+                return await callback();
+              } finally {
+                if (original === undefined) {
+                  Reflect.deleteProperty(Object.prototype, name);
+                } else {
+                  Object.defineProperty(Object.prototype, name, original);
+                }
+              }
+            }
+
+            const scopedOnlyService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: async (_userId, scope) => scope?.type === "tenant" && scope.id === "tenant_1" ? [permission] : [] } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            let unscopedRejected = false;
+            await withObjectPrototypeProperty("scope", { configurable: true, enumerable: false, value: { type: "tenant", id: "tenant_1" }, writable: true }, async () => {
+              try {
+                await scopedOnlyService.authorize(user, { all: ["invoice.read"] });
+              } catch (error) {
+                unscopedRejected = error?.code === "insufficient_permission";
+              }
+            });
+            if (!unscopedRejected) throw new Error("packed normalized requirement inherited scope");
+
+            let pollutionPassed = true;
+            await withObjectPrototypeProperty("any", { configurable: true, enumerable: false, value: ["secret.read"], writable: true }, async () => {
+              try {
+                await grantService.authorize(user, { all: ["invoice.read"] });
+              } catch {
+                pollutionPassed = false;
+              }
+            });
+            await withObjectPrototypeProperty("all", { configurable: true, enumerable: false, value: ["secret.read"], writable: true }, async () => {
+              try {
+                await grantService.authorize(user, { any: ["invoice.read"] });
+              } catch {
+                pollutionPassed = false;
+              }
+            });
+            for (const name of ["scope", "any", "all"]) {
+              await withObjectPrototypeProperty(name, { configurable: true, enumerable: false, get() { throw new Error("packed inherited requirement getter"); } }, async () => {
+                try {
+                  await grantService.authorize(user, name === "all" ? { any: ["invoice.read"] } : { all: ["invoice.read"] });
+                } catch {
+                  pollutionPassed = false;
+                }
+              });
+            }
+            if (!pollutionPassed) throw new Error("packed normalized requirement inherited any/all");
+
+            const deniedService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: async () => [] } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            let pollutedRequestError;
+            await withObjectPrototypeProperty("request_id", { configurable: true, enumerable: false, value: "x".repeat(1000), writable: true }, async () => {
+              try {
+                await deniedService.authorize({ user_id: user.user_id }, { all: ["invoice.read"] });
+              } catch (error) {
+                pollutedRequestError = error;
+              }
+            });
+            if (pollutedRequestError?.code !== "insufficient_permission" || pollutedRequestError.request_id.length > 128) {
+              throw new Error("packed request id was inherited or unbounded");
+            }
+            let inheritedRequestGetterError;
+            await withObjectPrototypeProperty("request_id", { configurable: true, enumerable: false, get() { throw new Error("packed inherited request id getter"); } }, async () => {
+              try {
+                await deniedService.authorize({ user_id: user.user_id }, { all: ["invoice.read"] });
+              } catch (error) {
+                inheritedRequestGetterError = error;
+              }
+            });
+            if (inheritedRequestGetterError?.code !== "insufficient_permission" || inheritedRequestGetterError.request_id.length > 128) {
+              throw new Error("packed inherited request id getter escaped");
+            }
+            const ownRequestSubject = { user_id: user.user_id };
+            Object.defineProperty(ownRequestSubject, "request_id", { configurable: true, get() { throw new Error("packed own request id getter"); } });
+            let accessorRequestError;
+            try {
+              await deniedService.authorize(ownRequestSubject, { all: ["invoice.read"] });
+            } catch (error) {
+              accessorRequestError = error;
+            }
+            if (accessorRequestError?.code !== "insufficient_permission" || accessorRequestError.request_id.length > 128) {
+              throw new Error("packed own request id getter escaped");
+            }
+            let validRequestError;
+            try {
+              await deniedService.authorize({ user_id: user.user_id, request_id: "packed-valid" }, { all: ["invoice.read"] });
+            } catch (error) {
+              validRequestError = error;
+            }
+            if (validRequestError?.code !== "insufficient_permission" || validRequestError.request_id !== "packed-valid") {
+              throw new Error("packed valid request id was not preserved");
+            }
+
+            const routeService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: async () => [permission] } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            const routeUnknownRequest = new Request("https://project.example.com/user/permissions?unknown=grant");
+            const routeDuplicateRequest = new Request("https://project.example.com/user/permissions?scope_type=tenant&scope_type=other&scope_id=one");
+            const originalKeys = URLSearchParams.prototype.keys;
+            const iterator = originalKeys.call(new URLSearchParams("unknown=grant"));
+            const iteratorPrototype = Object.getPrototypeOf(iterator);
+            const originalNext = iteratorPrototype.next;
+            try {
+              URLSearchParams.prototype.keys = (() => { throw new Error("packed keys tampered"); });
+              iteratorPrototype.next = () => ({ done: true, value: undefined });
+              const unknownResponse = await server.permissionsRoute(routeService, routeUnknownRequest, user);
+              const duplicateResponse = await server.permissionsRoute(routeService, routeDuplicateRequest, user);
+              if (unknownResponse.status !== 400 || duplicateResponse.status !== 400) throw new Error("packed query iterator tampering bypassed validation");
+            } finally {
+              URLSearchParams.prototype.keys = originalKeys;
+              iteratorPrototype.next = originalNext;
+            }
+            const nulRequest = new Request("https://project.example.com/user/permissions?scope_type=tenant&scope_id=tenant%00one");
+            const originalIncludes = String.prototype.includes;
+            try {
+              String.prototype.includes = () => false;
+              const nulResponse = await server.permissionsRoute(routeService, nulRequest, user);
+              if (nulResponse.status !== 400) throw new Error("packed NUL scope validation bypassed");
+            } finally {
+              String.prototype.includes = originalIncludes;
+            }
           `,
         ],
         { cwd: consumerRoot },
