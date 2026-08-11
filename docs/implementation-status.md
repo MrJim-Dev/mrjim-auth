@@ -549,10 +549,10 @@ change was required. Migrations `0001`-`0004`, their manifest/checksums, schema
 contract, verifier, packing/copy checks, and incremental tests remain unchanged;
 no `0005` migration was added.
 
-Pass 5 code/tests are committed as `6f29e9e`. The documentation/report commit
-and final clean-tree amendment SHAs are recorded in the Task 6 report and
-final handoff after those commits are created. The historical Pass 4
-report-only commits `d2a7411` and `03483fd` remain recorded above.
+Pass 5 code/tests are committed as `6f29e9e`. The documentation/status/report
+commit is `cef8816b7be463b98ee8e50df7def9bb5d908191`; the final clean-tree
+documentation amendment SHA is supplied in the final handoff. The historical
+Pass 4 report-only commits `d2a7411` and `03483fd` remain recorded above.
 
 ## Task 3 scope and verification (historical)
 
