@@ -217,40 +217,40 @@ expiry check; byte/checksum assertions preserve `0001–0004` unchanged. No
 callback code is kept in process memory or represented as a self-contained
 reusable token.
 
-Task 8's second post-pass controller hardening resolution is implemented
+Task 8's third post-pass route-boundary hardening resolution is implemented
 pending fresh independent review against clean baseline
-`19cfb16eb9044616f0f54da9ef16694c6ea5cab9`. It closes exactly two Important
-findings. Adapter Promise returns are synchronously inspected and normalized
-through a package-owned native Promise bridge branded in a module-private
-`WeakSet`; only that bridge may be awaited, while raw sources, arbitrary
-thenables, custom subclass/species/constructor hooks, rejected values, and
-settlement thenables fail closed. A fully rebased subclass is honestly
-normalized behind the bridge because reflection cannot distinguish it from a
-native instance; the raw object is never trusted or cached. Ordinary native
-Promises from the PostgreSQL repository remain supported.
+`b81a12f83471b2b46a141d1c0b618228a5cd3771`. It closes exactly the two
+validated High findings. `permissionsRoute` now calls `getPermissions`
+synchronously inside a fail-closed boundary, snapshots direct arrays before
+any await, rejects own/inherited `then` properties without invoking them, and
+normalizes only screened native-compatible Promise sources through a
+package-owned native Promise bridge. Plain thenables, Promise subclasses,
+custom constructor/species shapes, malformed/sparse/accessor/oversized arrays,
+and rejection fail closed. The raw source is never awaited or cached.
 
-The permission route now catches the service call and descriptor-snapshots its
-result before any length or element indexing. Null, rejected, non-array,
-sparse, accessor-backed, oversized, and malformed results return a fixed
-no-store 500 `internal_error` with only the bounded request ID. Valid public
-arrays retain the exact 200 contract. Response-code sanitization admits
-`internal_error` only through this private fixed server-failure path; adapter
-errors cannot select it. Captured Response/JSON primitives and
-null-prototype response snapshots remain in force.
+The shared route response factory now adds an own immutable,
+non-enumerable `then: undefined` data property to every captured native
+Response before the async route boundary. Captured JSON/Response intrinsics
+and null-prototype snapshots preserve the exact 200/400/401/405/500 contracts;
+fixed service failures remain no-store 500 `internal_error` with bounded
+request IDs and no adapter value/message. Earlier blanket wording is narrowed:
+the route return boundary is protected; body reads are asserted after polluted
+prototypes are restored because Node/Undici has a separate internal stream
+reader boundary.
 
-Fix Pass 5's second post-pass RED was source 1 failed/39 passed and packed 1
-failed/22 skipped (23), both before production edits. The identical GREEN was
-source 40/40 and packed 1/1 (22 skipped). The full suite is 17 files and
-238/238 tests. Repository/shared is 36/36, migration/state is 24/24, and
-export/browser is 15/15. The deterministic 100,000-row/10,000-requirement
-source performance group is 2/2 in 589ms file time; the packed install,
-assets/CLI, direct root/server/browser imports, adversarial checks, and
-100,000-row result pass in 5.62s. Frozen install, build, typecheck, lint,
-docs check, diff check, and protected hashes pass. No migration, manifest,
-lockfile, dependency, direct-user-permission model, paid service, hosted
-service, or runtime-network dependency changed. Corrupted-cycle read
-termination remains unclaimed beyond the recursive `UNION` CTE and write-time
-cycle guard. Fresh independent review remains pending; approval is not claimed.
+Third post-pass RED was source 2 failed/40 passed across the 42-test focused
+group and packed 1 failed/22 skipped (23), before production edits. Identical
+GREEN is source 42/42 and packed 1/1 (22 skipped). The full suite is 17 files
+and 240/240 tests. Repository/shared is 36/36, migration/state is 24/24, and
+export/browser is 46/46. The deterministic 100,000-row/10,000-requirement
+source performance group is 2/2 in 709ms test time; the packed fresh
+install/import/adversarial run includes the deterministic 100,000-row result
+and passed in 9.14s. Frozen install, build, typecheck, lint, docs check,
+direct root/server/browser imports (3/3), packed install/import, diff check,
+and protected hashes pass. No migration, manifest, lockfile, dependency,
+direct-user-permission model, paid service, hosted service, or runtime-network
+dependency changed. Fresh independent review remains pending; approval is not
+claimed. Task 8 has no product blocker. Tasks 9-14 remain.
 
 Task 8 Fix Pass 1 was implemented pending fresh independent review. `AuthorizationService`
 consumes the existing PostgreSQL authorization repository, whose recursive CTE
@@ -328,7 +328,7 @@ database, external network, or paid SaaS service is required.
 | 5. JWT and sessions | Complete — Review Fix Pass 2 | Pass-2 RED/GREEN evidence, frozen install, build, full suite (93 tests), typecheck, lint, docs, package exports, and diff checks recorded below; post-fix security scan finalization remains blocked by missing `snapshotDigest` metadata and was not retried |
 | 6. Users and recovery | Complete — escalation resolved and approved | Pass 5 RED/GREEN (50 focused/mandated, 154 full), ten isolated PostgreSQL races, controller intrinsic-tampering regressions (52/52 mandated and 156/156 full), and final same-reviewer adversarial confirmation passed with no remaining Critical/Important findings |
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
-| 8. Dynamic authorization | Complete — second post-pass controller hardening implemented; independent review pending | 40/40 focused source, packed 1/1 (22 skipped), 238/238 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, diff, and protected-hash gates; evidence in Task 8 report |
+| 8. Dynamic authorization | Complete — third post-pass route-boundary hardening implemented; independent review pending | 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 46/46 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Pending | Not run |
 | 10. Browser client | Pending | Not run |
 | 11. Express and Next.js | Pending | Not run |
@@ -362,8 +362,8 @@ needed for review or operation.
 
 ## Remaining work
 
-Task 8's second post-pass controller hardening resolution is complete pending
-independent review. Tasks 9-14 remain, with independent review after each task; then complete the
+Task 8's third post-pass route-boundary hardening resolution is complete pending
+independent review. Task 8 implementation/re-review remains the current handoff state; Tasks 9-14 remain, with independent review after each task; then complete the
 whole-branch review and release handoff. In particular, later work must use
 the clean `auth` schema and explicit migration CLI from Task 3 to implement
 auth/session/OAuth/RBAC behavior, HTTP and browser/SSR surfaces,

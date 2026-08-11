@@ -1908,7 +1908,7 @@ describe("Task 3 PostgreSQL migrations", () => {
               restoreDescriptor(globalThis, "URL", globalURLDescriptor);
             }
 
-            const responseRequests = [
+            const shieldedResponseRequests = [
               { request: new Request("https://project.example.com/user/permissions"), subject: user },
               { request: new Request("https://project.example.com/user/permissions?unknown=grant"), subject: user },
               { request: new Request("https://project.example.com/user/permissions", { method: "POST" }), subject: user },
@@ -1916,8 +1916,8 @@ describe("Task 3 PostgreSQL migrations", () => {
             ];
             async function runResponseSet() {
               const results = [];
-              for (let index = 0; index < responseRequests.length; index += 1) {
-                const entry = responseRequests[index];
+              for (let index = 0; index < shieldedResponseRequests.length; index += 1) {
+                const entry = shieldedResponseRequests[index];
                 try {
                   const response = await server.permissionsRoute(routeService, entry.request, entry.subject);
                   results.push({ status: response.status, text: await response.text() });
@@ -2046,6 +2046,192 @@ describe("Task 3 PostgreSQL migrations", () => {
             }
             if (throwingIndexReads !== 0 || secretAccessorReads !== 0) {
               throw new Error("packed route permission accessors were invoked");
+            }
+
+            const directRouteService = (value) => ({ getPermissions: () => value });
+            const malformedRouteService = { getPermissions: () => null };
+            const packedRouteMarker = async (serviceLike) => {
+              try {
+                const result = await server.permissionsRoute(serviceLike, malformedRouteRequest, user);
+                if (!(result instanceof Response)) {
+                  return "non-response:" + (Array.isArray(result) ? result[0] : typeof result);
+                }
+                const body = await result.text();
+                return String(result.status) + ":" + body.includes('"code":"internal_error"') + ":" + body.includes("secret.read") + ":" + body.includes("invoice.read");
+              } catch (error) {
+                return "throw:" + (error?.message ?? "unknown");
+              }
+            };
+            const packedRouteResponse = (serviceLike) => server.permissionsRoute(serviceLike, malformedRouteRequest, user);
+            if (await packedRouteMarker(directRouteService(["invoice.read"])) !== "200:false:false:true" ||
+                await packedRouteMarker(directRouteService([])) !== "200:false:false:false") {
+              throw new Error("packed valid direct route array contract failed");
+            }
+            let packedOwnThenReads = 0;
+            const packedOwnThenArray = ["invoice.read"];
+            Object.defineProperty(packedOwnThenArray, "then", {
+              configurable: true,
+              get() {
+                packedOwnThenReads += 1;
+                throw new Error("packed own route array then getter must not run");
+              },
+            });
+            if (await packedRouteMarker(directRouteService(packedOwnThenArray)) !== "500:true:false:false" || packedOwnThenReads !== 0) {
+              throw new Error("packed own direct route then getter escaped");
+            }
+            const packedThenModes = ["throw", "resolve", "self"];
+            const originalArrayThenDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, "then");
+            const restoreArrayThen = () => {
+              if (originalArrayThenDescriptor === undefined) Reflect.deleteProperty(Array.prototype, "then");
+              else Object.defineProperty(Array.prototype, "then", originalArrayThenDescriptor);
+            };
+            for (let modeIndex = 0; modeIndex < packedThenModes.length; modeIndex += 1) {
+              const mode = packedThenModes[modeIndex];
+              let thenCalls = 0;
+              let response;
+              let thrown;
+              try {
+                Object.defineProperty(Array.prototype, "then", {
+                  configurable: true,
+                  enumerable: false,
+                  value(resolve) {
+                    thenCalls += 1;
+                    if (mode === "throw") throw new Error("packed route then hook must not run");
+                    if (mode === "resolve") {
+                      const forged = ["secret.read"];
+                      Object.setPrototypeOf(forged, null);
+                      resolve(forged);
+                      return;
+                    }
+                    if (thenCalls > 2) throw new Error("bounded packed self-resolving route then hook");
+                    resolve(this);
+                  },
+                  writable: true,
+                });
+                try {
+                  response = await packedRouteResponse(directRouteService(["invoice.read"]));
+                } catch (error) {
+                  thrown = error;
+                }
+              } finally {
+                restoreArrayThen();
+              }
+              if (thrown !== undefined || response?.status !== 500) throw new Error("packed Array.prototype.then route bypassed screening");
+              const body = await response.text();
+              if (!body.includes('"code":"internal_error"') || body.includes("secret.read") || thenCalls !== 0) {
+                throw new Error("packed Array.prototype.then route bypassed screening");
+              }
+            }
+            for (let modeIndex = 0; modeIndex < packedThenModes.length; modeIndex += 1) {
+              const mode = packedThenModes[modeIndex];
+              let thenCalls = 0;
+              const response = await withObjectPrototypeProperty("then", {
+                configurable: true,
+                enumerable: false,
+                value(resolve) {
+                  thenCalls += 1;
+                  if (mode === "throw") throw new Error("packed route then hook must not run");
+                  if (mode === "resolve") {
+                    const forged = ["secret.read"];
+                    Object.setPrototypeOf(forged, null);
+                    resolve(forged);
+                    return;
+                  }
+                  if (thenCalls > 2) throw new Error("bounded packed self-resolving route then hook");
+                  resolve(this);
+                },
+                writable: true,
+              }, () => packedRouteResponse(directRouteService(["invoice.read"])));
+              const body = await response.text();
+              if (response.status !== 500 || !body.includes('"code":"internal_error"') || body.includes("secret.read") || thenCalls !== 0) {
+                throw new Error("packed Object.prototype.then route bypassed screening");
+              }
+            }
+            const packedPlainThenable = { then(resolve) { resolve(["secret.read"]); } };
+            if (await packedRouteMarker(directRouteService(packedPlainThenable)) !== "500:true:false:false") {
+              throw new Error("packed plain route thenable was accepted");
+            }
+            class ForgedRoutePromise extends Promise {}
+            const packedSubclassPromise = new ForgedRoutePromise((resolve) => resolve(["invoice.read"]));
+            if (await packedRouteMarker(directRouteService(packedSubclassPromise)) !== "500:true:false:false") {
+              throw new Error("packed route Promise subclass was accepted");
+            }
+            if (await packedRouteMarker(directRouteService(Promise.resolve(["invoice.read"]))) !== "200:false:false:true") {
+              throw new Error("packed native route Promise was rejected");
+            }
+            if (await packedRouteMarker(directRouteService(Promise.reject(new Error("packed secret route rejection")))) !== "500:true:false:false") {
+              throw new Error("packed native route rejection escaped");
+            }
+
+            const responseRequests = [
+              { request: new Request("https://project.example.com/user/permissions"), subject: user },
+              { request: new Request("https://project.example.com/user/permissions?unknown=grant"), subject: user },
+              { request: new Request("https://project.example.com/user/permissions", { method: "POST" }), subject: user },
+              { request: new Request("https://project.example.com/user/permissions"), subject: undefined },
+              { request: new Request("https://project.example.com/user/permissions"), subject: user },
+            ];
+            const responseRouteService = new server.AuthorizationService({
+              repository: { authorization: { effectivePermissions: () => [permission] } },
+              clock: () => new Date("2026-08-11T00:00:00.000Z"),
+            });
+            const responseServices = [responseRouteService, responseRouteService, responseRouteService, responseRouteService, malformedRouteService];
+            const runShieldedResponseSet = async (capturedResponses) => {
+              const outputs = [];
+              for (let index = 0; index < responseRequests.length; index += 1) {
+                const entry = responseRequests[index];
+                try {
+                  const response = await server.permissionsRoute(responseServices[index], entry.request, entry.subject);
+                  if (!(response instanceof Response)) {
+                    outputs.push("non-response");
+                    continue;
+                  }
+                  capturedResponses.push(response);
+                  outputs.push(String(response.status));
+                } catch {
+                  outputs.push("threw");
+                }
+              }
+              return outputs.join("|");
+            };
+            for (let modeIndex = 0; modeIndex < packedThenModes.length; modeIndex += 1) {
+              const mode = packedThenModes[modeIndex];
+              let thenCalls = 0;
+              const capturedResponses = [];
+              const marker = await withObjectPrototypeProperty("then", {
+                configurable: true,
+                enumerable: false,
+                value(resolve) {
+                  thenCalls += 1;
+                  if (mode === "throw") throw new Error("packed response then hook must not run");
+                  if (mode === "resolve") {
+                    const forged = ["secret.read"];
+                    Object.setPrototypeOf(forged, null);
+                    resolve(forged);
+                    return;
+                  }
+                  if (thenCalls > 2) throw new Error("bounded packed self-resolving response then hook");
+                  resolve(this);
+                },
+                writable: true,
+              }, () => runShieldedResponseSet(capturedResponses));
+              if (marker !== "200|400|405|401|500" || thenCalls !== 0) {
+                throw new Error("packed response then shielding failed");
+              }
+              const bodyCodes = [];
+              for (let responseIndex = 0; responseIndex < capturedResponses.length; responseIndex += 1) {
+                const response = capturedResponses[responseIndex];
+                const body = await response.text();
+                bodyCodes.push(body.includes('"code":"internal_error"')
+                  ? "internal_error"
+                  : body.includes('"code":"invalid_request"')
+                    ? "invalid_request"
+                    : body.includes('"code":"unauthorized"')
+                      ? "unauthorized"
+                      : "success");
+              }
+              if (bodyCodes.join("|") !== "success|invalid_request|invalid_request|unauthorized|internal_error") {
+                throw new Error("packed response body contract changed");
+              }
             }
 
             let invalidRouteThrew = false;

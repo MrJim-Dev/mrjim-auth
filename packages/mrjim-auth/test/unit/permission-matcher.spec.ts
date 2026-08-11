@@ -1362,6 +1362,186 @@ describe("authorization permission matching", () => {
     expect(secretAccessorReads).toBe(0);
   });
 
+  it("screens direct and async route service output before thenable assimilation", async () => {
+    const request = new Request("https://project.example.com/user/permissions");
+    const routeServiceFor = (getPermissions: () => unknown): AuthorizationService => (
+      { getPermissions } as unknown as AuthorizationService
+    );
+    const routeMarker = async (service: AuthorizationService): Promise<string> => {
+      try {
+        const result: unknown = await permissionsRoute(service, request, subject());
+        if (!(result instanceof Response)) {
+          return `non-response:${Array.isArray(result) ? result[0] : typeof result}`;
+        }
+        const body = await result.text();
+        return `${result.status}:${body.includes('"code":"internal_error"')}:${body.includes("secret.read")}:${body.includes("invoice.read")}`;
+      } catch (error) {
+        return `throw:${error instanceof Error ? error.message : "unknown"}`;
+      }
+    };
+
+    const directSuccess = await routeMarker(routeServiceFor(() => ["invoice.read"]));
+    expect(directSuccess).toBe("200:false:false:true");
+    const emptySuccess = await routeMarker(routeServiceFor(() => []));
+    expect(emptySuccess).toBe("200:false:false:false");
+
+    let ownThenReads = 0;
+    const ownThenArray = ["invoice.read"];
+    Object.defineProperty(ownThenArray, "then", {
+      configurable: true,
+      get() {
+        ownThenReads += 1;
+        throw new Error("own route array then getter must not run");
+      },
+    });
+    expect(await routeMarker(routeServiceFor(() => ownThenArray))).toBe("500:true:false:false");
+    expect(ownThenReads).toBe(0);
+
+    const thenModes = ["throw", "resolve", "self"] as const;
+    for (const target of [Array.prototype, Object.prototype]) {
+      for (const mode of thenModes) {
+        let thenCalls = 0;
+        const originalThen = Object.getOwnPropertyDescriptor(target, "then");
+        let marker: string;
+        let response: Response | undefined;
+        let thrown: unknown;
+        try {
+          Object.defineProperty(target, "then", {
+            configurable: true,
+            enumerable: false,
+            value(this: unknown, resolve: (value: unknown) => void) {
+              thenCalls += 1;
+              if (mode === "throw") throw new Error("route then hook must not run");
+              if (mode === "resolve") {
+                const forged = ["secret.read"];
+                Object.setPrototypeOf(forged, null);
+                resolve(forged);
+                return;
+              }
+              if (thenCalls > 2) throw new Error("bounded self-resolving route then hook");
+              resolve(this);
+            },
+            writable: true,
+          });
+          try {
+            response = await permissionsRoute(routeServiceFor(() => ["invoice.read"]), request, subject());
+          } catch (error) {
+            thrown = error;
+          }
+        } finally {
+          if (originalThen === undefined) Reflect.deleteProperty(target, "then");
+          else Object.defineProperty(target, "then", originalThen);
+        }
+        if (thrown !== undefined) {
+          marker = `throw:${thrown instanceof Error ? thrown.message : "unknown"}`;
+        } else if (response === undefined) {
+          marker = "throw:missing response";
+        } else {
+          const body = await response.text();
+          marker = `${response.status}:${body.includes('"code":"internal_error"')}:${body.includes("secret.read")}:${body.includes("invoice.read")}`;
+        }
+        expect(marker, `${target === Array.prototype ? "array" : "object"}-${mode}`).toBe("500:true:false:false");
+        expect(thenCalls, `${target === Array.prototype ? "array" : "object"}-${mode}`).toBe(0);
+      }
+    }
+
+    const plainThenable = {
+      then(resolve: (value: unknown) => void) {
+        resolve(["secret.read"]);
+      },
+    };
+    expect(await routeMarker(routeServiceFor(() => plainThenable))).toBe("500:true:false:false");
+
+    class ForgedRoutePromise extends Promise<unknown> {}
+    const subclassPromise = new ForgedRoutePromise((resolve) => resolve(["invoice.read"]));
+    expect(await routeMarker(routeServiceFor(() => subclassPromise))).toBe("500:true:false:false");
+
+    expect(await routeMarker(routeServiceFor(() => Promise.resolve(["invoice.read"])))).toBe("200:false:false:true");
+    expect(await routeMarker(routeServiceFor(() => Promise.reject(new Error("secret route rejection"))))).toBe("500:true:false:false");
+  });
+
+  it("shields every route response from inherited then assimilation", async () => {
+    const service = serviceFor(() => [permission("invoice.read")]);
+    const malformedService = ({ getPermissions: () => null } as unknown) as AuthorizationService;
+    const requests = [
+      { request: new Request("https://project.example.com/user/permissions"), subject: subject() },
+      { request: new Request("https://project.example.com/user/permissions?unknown=grant"), subject: subject() },
+      { request: new Request("https://project.example.com/user/permissions", { method: "POST" }), subject: subject() },
+      { request: new Request("https://project.example.com/user/permissions"), subject: undefined },
+      { request: new Request("https://project.example.com/user/permissions"), subject: subject() },
+    ] as const;
+    const routeServices = [service, service, service, service, malformedService] as const;
+    const runResponseStatuses = async (capturedResponses: Response[]): Promise<string> => {
+      const outputs: string[] = [];
+      for (let index = 0; index < requests.length; index += 1) {
+        const entry = requests[index];
+        const routeService = routeServices[index];
+        if (entry === undefined || routeService === undefined) continue;
+        try {
+          const response = await permissionsRoute(
+            routeService,
+            entry.request,
+            entry.subject,
+          );
+          if (!(response instanceof Response)) {
+            outputs.push("non-response");
+            continue;
+          }
+          capturedResponses.push(response);
+          outputs.push(String(response.status));
+        } catch {
+          outputs.push("threw");
+        }
+      }
+      return outputs.join("|");
+    };
+
+    const thenModes = ["throw", "resolve", "self"] as const;
+    for (const mode of thenModes) {
+      let thenCalls = 0;
+      const capturedResponses: Response[] = [];
+      const marker = await withPrototypeProperty(
+        "then",
+        {
+          configurable: true,
+          enumerable: false,
+          value(this: unknown, resolve: (value: unknown) => void) {
+            thenCalls += 1;
+            if (mode === "throw") throw new Error("response then hook must not run");
+            if (mode === "resolve") {
+              const forged = ["secret.read"];
+              Object.setPrototypeOf(forged, null);
+              resolve(forged);
+              return;
+            }
+            if (thenCalls > 2) throw new Error("bounded self-resolving response then hook");
+            resolve(this);
+          },
+          writable: true,
+        },
+        () => runResponseStatuses(capturedResponses),
+      );
+      expect(marker).toBe("200|400|405|401|500");
+      const bodyCodes: string[] = [];
+      for (let index = 0; index < capturedResponses.length; index += 1) {
+        const response = capturedResponses[index];
+        if (response === undefined) continue;
+        const body = await response.text();
+        bodyCodes.push(
+          body.includes('"code":"internal_error"')
+            ? "internal_error"
+            : body.includes('"code":"invalid_request"')
+              ? "invalid_request"
+              : body.includes('"code":"unauthorized"')
+                ? "unauthorized"
+                : "success",
+        );
+      }
+      expect(bodyCodes.join("|")).toBe("success|invalid_request|invalid_request|unauthorized|internal_error");
+      expect(thenCalls).toBe(0);
+    }
+  }, 10_000);
+
   it("requires own service configuration and ignores inherited or accessor options", async () => {
     const effectivePermissions = async () => [];
     const authorization = { effectivePermissions };

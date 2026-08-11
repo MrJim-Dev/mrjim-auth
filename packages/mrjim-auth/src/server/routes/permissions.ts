@@ -17,8 +17,25 @@ const objectCreate = Object.create;
 const objectSetPrototypeOf = Object.setPrototypeOf;
 const objectHasOwnProperty = Object.prototype.hasOwnProperty;
 const reflectApply = Reflect.apply;
+const reflectConstruct = Reflect.construct;
 const arrayIsArray = Array.isArray;
 const numberIsSafeInteger = Number.isSafeInteger;
+const promiseConstructor = Promise;
+const promisePrototype = Promise.prototype;
+const promiseThen = Promise.prototype.then;
+const promiseSpeciesKey = Symbol.species;
+const promisePrototypeConstructorDescriptor = objectGetOwnPropertyDescriptor(
+  promisePrototype,
+  "constructor",
+);
+const promiseSpeciesDescriptor = objectGetOwnPropertyDescriptor(
+  promiseConstructor,
+  promiseSpeciesKey,
+);
+const weakSetConstructor = WeakSet;
+const weakSetAdd = WeakSet.prototype.add;
+const weakSetHas = WeakSet.prototype.has;
+const promiseSignalOwnership = new weakSetConstructor<object>();
 const nativeHeaders = Headers;
 const nativeRequest = Request;
 const nativeURL = URL;
@@ -90,6 +107,19 @@ function newNullPrototypeArray<T>(): T[] {
   const values: T[] = [];
   invoke<object>(objectSetPrototypeOf, undefined, [values, null]);
   return values;
+}
+
+function hasThenProperty(value: object): boolean {
+  let current: object | null = value;
+  for (let depth = 0; current !== null && depth < 8; depth += 1) {
+    try {
+      if (objectGetOwnPropertyDescriptor(current, "then") !== undefined) return true;
+      current = objectGetPrototypeOf(current);
+    } catch {
+      return true;
+    }
+  }
+  return current !== null;
 }
 
 function containsNul(value: string): boolean {
@@ -229,6 +259,102 @@ function safeStatus(value: unknown, fallback: number): number {
     : fallback;
 }
 
+function samePropertyDescriptor(
+  left: PropertyDescriptor | undefined,
+  right: PropertyDescriptor | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.configurable === right.configurable &&
+    left.enumerable === right.enumerable &&
+    left.writable === right.writable &&
+    left.value === right.value &&
+    left.get === right.get &&
+    left.set === right.set
+  );
+}
+
+type NativePromiseOutcome = {
+  readonly signal: Promise<void>;
+  readonly state: { rejected: boolean; value: unknown };
+};
+
+function isOwnedPromiseSignal(value: unknown): value is Promise<void> {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) return false;
+  try {
+    return invoke<boolean>(weakSetHas, promiseSignalOwnership, [value]);
+  } catch {
+    return false;
+  }
+}
+
+function nativePromiseOutcome(value: unknown): NativePromiseOutcome | null {
+  try {
+    if (
+      value === null ||
+      (typeof value !== "object" && typeof value !== "function") ||
+      objectGetPrototypeOf(value) !== promisePrototype ||
+      objectGetOwnPropertyDescriptor(value, "constructor") !== undefined ||
+      objectGetOwnPropertyDescriptor(value, "then") !== undefined ||
+      !samePropertyDescriptor(
+        objectGetOwnPropertyDescriptor(promisePrototype, "constructor"),
+        promisePrototypeConstructorDescriptor,
+      ) ||
+      !samePropertyDescriptor(
+        objectGetOwnPropertyDescriptor(promiseConstructor, promiseSpeciesKey),
+        promiseSpeciesDescriptor,
+      )
+    ) {
+      return null;
+    }
+
+    const state = objectCreate(null) as { rejected: boolean; value: unknown };
+    objectDefineProperty(state, "rejected", {
+      configurable: false,
+      enumerable: false,
+      value: false,
+      writable: true,
+    });
+    objectDefineProperty(state, "value", {
+      configurable: false,
+      enumerable: false,
+      value: undefined,
+      writable: true,
+    });
+
+    let settleSignal: ((value?: unknown) => void) | undefined;
+    const signal = invoke<Promise<void>>(reflectConstruct, undefined, [
+      promiseConstructor,
+      [
+        (resolve: (value?: unknown) => void) => {
+          settleSignal = resolve;
+        },
+      ],
+    ]);
+    invoke(weakSetAdd, promiseSignalOwnership, [signal]);
+    if (!isOwnedPromiseSignal(signal) || settleSignal === undefined) return null;
+    const resolveSignal = settleSignal;
+
+    // Reflection cannot distinguish a fully rebased Promise subclass from a
+    // native instance. Never await the raw source: captured native `then`
+    // transfers only settlement data into package-owned state, while this
+    // bridge settles with undefined so that data is never then-assimilated.
+    invoke<unknown>(promiseThen, value, [
+      (resolved: unknown) => {
+        state.value = resolved;
+        resolveSignal(undefined);
+      },
+      (_reason: unknown) => {
+        state.rejected = true;
+        resolveSignal(undefined);
+      },
+    ]);
+    return { signal, state };
+  } catch {
+    return null;
+  }
+}
+
 function snapshotResponsePermissions(value: unknown): string[] | null {
   const snapshot = newNullPrototypeArray<string>();
   if (!arrayIsArray(value)) return null;
@@ -252,6 +378,16 @@ function snapshotResponsePermissions(value: unknown): string[] | null {
     defineSafeProperty(snapshot, `${index}`, item.value);
   }
   return snapshot;
+}
+
+function snapshotDirectResponsePermissions(value: unknown): string[] | null {
+  if (!arrayIsArray(value)) return null;
+  try {
+    if (hasThenProperty(value)) return null;
+  } catch {
+    return null;
+  }
+  return snapshotResponsePermissions(value);
 }
 
 function snapshotSuccessData(value: unknown): object {
@@ -356,10 +492,32 @@ function json(value: object, status = 200): Response {
   const headers = objectCreate(null) as Record<string, string>;
   defineSafeProperty(headers, "content-type", "application/json; charset=utf-8");
   defineSafeProperty(headers, "cache-control", "no-store");
-  return new nativeResponse(serialized, {
+  const response = new nativeResponse(serialized, {
     status,
     headers,
   });
+  try {
+    objectDefineProperty(response, "then", {
+      configurable: false,
+      enumerable: false,
+      value: undefined,
+      writable: false,
+    });
+    const descriptor = objectGetOwnPropertyDescriptor(response, "then");
+    if (
+      descriptor === undefined ||
+      !reflectApply(objectHasOwnProperty, descriptor, ["value"]) ||
+      descriptor.value !== undefined ||
+      descriptor.configurable !== false ||
+      descriptor.enumerable !== false ||
+      descriptor.writable !== false
+    ) {
+      throw new Error("Response then shield was not established");
+    }
+  } catch {
+    throw new Error("Response then shield failed");
+  }
+  return response;
 }
 
 function resultResponse<T>(result: AuthResult<T>, allowInternalError = false): Response {
@@ -448,8 +606,21 @@ export async function permissionsRoute(
     )));
   }
   try {
-    const rawPermissions = await service.getPermissions(context.subject.user_id, scope, context);
-    const safePermissions = snapshotResponsePermissions(rawPermissions);
+    const getPermissions = service.getPermissions;
+    if (typeof getPermissions !== "function") return internalErrorResponse(requestSnapshot.requestId);
+    const rawPermissions = invoke<unknown>(getPermissions, service, [context.subject.user_id, scope, context]);
+    let safePermissions: string[] | null;
+    if (arrayIsArray(rawPermissions)) {
+      safePermissions = snapshotDirectResponsePermissions(rawPermissions);
+    } else {
+      const outcome = nativePromiseOutcome(rawPermissions);
+      if (outcome === null || !isOwnedPromiseSignal(outcome.signal)) {
+        return internalErrorResponse(requestSnapshot.requestId);
+      }
+      await outcome.signal;
+      if (outcome.state.rejected) return internalErrorResponse(requestSnapshot.requestId);
+      safePermissions = snapshotResponsePermissions(outcome.state.value);
+    }
     if (safePermissions === null) return internalErrorResponse(requestSnapshot.requestId);
     return resultResponse(authSuccess({ permissions: safePermissions }));
   } catch {
