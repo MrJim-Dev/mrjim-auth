@@ -1,18 +1,17 @@
-import { Buffer } from "node:buffer";
 import express, { type Express } from "express";
 import { Pool } from "pg";
 import { toExpressHandler, type ExpressRequest, type ExpressResponse } from "mrjim-auth/express";
 import { createPostgresAdapter } from "mrjim-auth/postgres";
 import { createAuthServer, PostgresRateLimiter } from "mrjim-auth/server";
-import { allowedRedirects, base64urlSecret, httpUrl, privateJwk, requiredEnv } from "./config.js";
+import { allowedRedirects, httpUrl, privateJwk, requiredEnv, secretBytes } from "./config.js";
 import { authorizationRequest, sampleInvoices } from "./example.js";
 
 const databaseUrl = requiredEnv("DATABASE_URL");
 const authBaseUrl = httpUrl("AUTH_BASE_URL");
 const siteUrl = httpUrl("AUTH_SITE_URL");
-const tokenHashKey = base64urlSecret("AUTH_TOKEN_HASH_KEY", 32);
-const encryptionKey = base64urlSecret("AUTH_ENCRYPTION_KEY");
-const rateLimitKey = Buffer.from(base64urlSecret("AUTH_RATE_LIMIT_HASH_KEY", 32), "base64url");
+const tokenHashKey = secretBytes("AUTH_TOKEN_HASH_KEY", undefined, 32);
+const encryptionKey = secretBytes("AUTH_ENCRYPTION_KEY");
+const rateLimitKey = secretBytes("AUTH_RATE_LIMIT_HASH_KEY", undefined, 32);
 const keyId = requiredEnv("AUTH_ES256_KEY_ID");
 const environment = process.env.AUTH_ENVIRONMENT === "production" ? "production" : "development";
 

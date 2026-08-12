@@ -13,14 +13,14 @@ export function httpUrl(name: string, value = requiredEnv(name)): string {
   return url.href.endsWith("/") ? url.href.slice(0, -1) : url.href;
 }
 
-export function base64urlSecret(name: string, exactBytes?: number): string {
-  const value = requiredEnv(name);
+export function secretBytes(name: string, input = process.env[name], exactBytes?: number): Uint8Array {
+  const value = requiredEnv(name, input);
   if (!/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error(`${name} must be unpadded base64url`);
   const bytes = Buffer.from(value, "base64url");
   if (bytes.byteLength < 32 || (exactBytes !== undefined && bytes.byteLength !== exactBytes)) {
     throw new Error(`${name} has invalid key length`);
   }
-  return value;
+  return Uint8Array.from(bytes);
 }
 
 export function privateJwk(): Readonly<Record<string, unknown>> {
