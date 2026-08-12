@@ -1431,6 +1431,16 @@ Frozen install, build, root typecheck/lint, docs, and diff checks pass. No
 product, paid-service, credential, or external blocker exists. Fresh Luna Max
 review remains; Task 13 is not yet approved and Task 14 has not started.
 
+Task 13 is complete and independently approved. Fresh Luna Max reviewer Godel
+first found one Important API-key HMAC encoding mismatch at `853ebce`: the CLI
+decoded canonical base64url while the Express server passed encoded text.
+RED `0f76ead` reproduced the missing decoder; fix `c06ad8d` passes decoded
+32-byte material consistently to server and CLI, with Express 4/4 and typecheck
+green. Godel's same-reviewer verdict on exact clean `c06ad8d` is `APPROVED`
+with zero Critical, zero Important, and zero Minor findings. All prior Task 13
+verification remains green. No product, paid-service, credential, or external
+blocker remains; Task 14 may begin.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
