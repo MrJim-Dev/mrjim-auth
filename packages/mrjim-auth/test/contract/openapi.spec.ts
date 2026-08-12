@@ -99,16 +99,24 @@ describe("Task 9 deterministic OpenAPI contract", () => {
 
   it("matches recovery password and proof bounds at the route contract boundary", () => {
     const valid = { email: "user@example.com", token: "x".repeat(128), password: "x".repeat(1024) };
+    const multibyte = "😀".repeat(300);
+    expect(new TextEncoder().encode(multibyte).byteLength).toBe(1_200);
     expect(recoverVerifyRequestSchema.safeParse(valid).success).toBe(true);
     expect(recoverVerifyRequestSchema.safeParse({ ...valid, token: "x".repeat(129) }).success).toBe(false);
     expect(recoverVerifyRequestSchema.safeParse({ ...valid, password: "x".repeat(7) }).success).toBe(false);
     expect(recoverVerifyRequestSchema.safeParse({ ...valid, password: "x".repeat(1025) }).success).toBe(false);
+    expect(recoverVerifyRequestSchema.safeParse({ ...valid, password: multibyte }).success).toBe(false);
 
     const document = generateOpenApiDocument() as any;
     const requestSchemaRef = document.paths["/recover/verify"].post.requestBody.content["application/json"].schema.$ref as string;
     const requestSchema = document.components.schemas[requestSchemaRef.slice("#/components/schemas/".length)] as any;
     expect(requestSchema.properties.token).toMatchObject({ minLength: 1, maxLength: 128 });
-    expect(requestSchema.properties.password).toMatchObject({ minLength: 8, maxLength: 1024 });
+    expect(requestSchema.properties.password).toMatchObject({
+      minLength: 8,
+      maxLength: 1024,
+      description: "Password containing at most 1,024 UTF-8 bytes",
+      "x-mrjim-maxUtf8Bytes": 1024,
+    });
   });
 
   it("does not depend on mutable post-import collection and string intrinsics", () => {

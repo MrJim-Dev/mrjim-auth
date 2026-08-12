@@ -279,6 +279,21 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     });
   });
 
+  it("rejects recovery passwords above the UTF-8 byte policy before service dispatch", async () => {
+    const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+    const auth = serverModule.createAuthServer(makeOptions(calls));
+    const password = "😀".repeat(300);
+    expect(new TextEncoder().encode(password).byteLength).toBe(1_200);
+    const response = await auth.handle(request("/recover/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "user@example.com", token: "recovery-token", password }),
+    }));
+    expect(response.status).toBe(400);
+    expect((await body(response)).error.code).toBe("invalid_request");
+    expect(calls.some(({ name }) => name === "resetPassword")).toBe(false);
+  });
+
   it("covers providers, OAuth authorize/callback/exchange, and JWKS", async () => {
     const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
     const auth = serverModule.createAuthServer(makeOptions(calls));
