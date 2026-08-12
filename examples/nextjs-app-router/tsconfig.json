@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2017",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
     "allowJs": false,
     "skipLibCheck": true,
     "strict": true,
@@ -12,16 +16,30 @@
     "ignoreDeprecations": "6.0",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
+    "jsx": "react-jsx",
     "incremental": true,
     "baseUrl": ".",
-    "types": ["node"],
-    "plugins": [{ "name": "next" }],
+    "types": [
+      "node"
+    ],
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
     "paths": {
-      "mrjim-auth": ["../../packages/mrjim-auth/dist/index.d.ts"],
-      "mrjim-auth/nextjs": ["../../packages/mrjim-auth/dist/adapters/nextjs-browser.d.ts"],
-      "mrjim-auth/nextjs/server": ["../../packages/mrjim-auth/dist/adapters/nextjs-server.d.ts"],
-      "mrjim-auth/*": ["../../packages/mrjim-auth/dist/*"]
+      "mrjim-auth": [
+        "../../packages/mrjim-auth/dist/index.d.ts"
+      ],
+      "mrjim-auth/nextjs": [
+        "../../packages/mrjim-auth/dist/adapters/nextjs-browser.d.ts"
+      ],
+      "mrjim-auth/nextjs/server": [
+        "../../packages/mrjim-auth/dist/adapters/nextjs-server.d.ts"
+      ],
+      "mrjim-auth/*": [
+        "../../packages/mrjim-auth/dist/*"
+      ]
     }
   },
   "include": [
@@ -29,7 +47,10 @@
     ".next/types/**/*.ts",
     "src/**/*.ts",
     "src/**/*.tsx",
-    "test/**/*.ts"
+    "test/**/*.ts",
+    ".next/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules"
+  ]
 }

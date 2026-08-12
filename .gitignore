@@ -2,6 +2,8 @@
 .superpowers/
 node_modules/
 dist/
+.next/
+*.tsbuildinfo
 coverage/
 artifacts/
 playwright-report/
@@ -11,4 +13,3 @@ test-results/
 !.env.example
 .DS_Store
 *.log
-

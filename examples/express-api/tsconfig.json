@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "ignoreDeprecations": "6.0",
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "mrjim-auth": ["../../packages/mrjim-auth/dist/index.d.ts"],
+      "mrjim-auth/server": ["../../packages/mrjim-auth/dist/server/index.d.ts"],
+      "mrjim-auth/postgres": ["../../packages/mrjim-auth/dist/postgres/index.d.ts"],
+      "mrjim-auth/express": ["../../packages/mrjim-auth/dist/adapters/express.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}
