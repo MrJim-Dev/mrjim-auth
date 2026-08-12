@@ -454,7 +454,7 @@ database, external network, or paid SaaS service is required.
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Complete — round 8 independently approved | Raman approved `916d615ca8627d200e9261688bbbb5d8903d541e` with zero Critical, Important, or Minor findings after round-8 error-prototype, OIDC, HTTP, provider allowlist, `Set.delete`, packed, OpenAPI, migration, export, and full 318-test verification; evidence is recorded in the Task 9 report |
-| 10. Browser client | Changes required — remediation round 2 | Same-reviewer re-review of `088a2e9`/`d6eca65` returned 0 Critical, 4 Important, 1 Minor: fallback acquisition-timeout overlap, non-atomic recovery mutation, post-disposal mutation, overstated docs, and recovery schema bounds; Task 11 remains gated |
+| 10. Browser client | Remediation round 2 green — re-review pending | The 0 Critical/4 Important/1 Minor re-review findings are locally addressed; combined focused 88/88, full 351/351 Vitest, 11/11 Chrome, browser repeat 22/22, frozen install, static gates, unchanged migrations, and bounded OpenAPI pass; same-reviewer approval and Task 11 remain gated |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
 | 13. Documentation and examples | Pending | Not run |
@@ -528,6 +528,18 @@ disconnect later callers, recovery proof consumption is not atomic with the
 password/session/audit mutation, abort-ignoring injected fetch can mutate
 storage after disposal, docs overstated closure, and recovery wire schemas do
 not match service bounds. Task 10 is not approved and Task 11 has not started.
+
+Remediation round 2 now addresses those residuals locally. The fallback chain
+survives an abandoned acquisition-timeout waiter, late abort-ignoring fetch
+responses cannot commit or clear after disposal, recovery inputs match service
+bounds, and password hashing precedes one adapter-owned transaction covering
+proof consumption, credential replacement, session revocation, and audit.
+Fresh Luna Max recovery tests cover invalid-password preservation, three
+rollback points, replay, and one concurrent winner. Combined evidence is 88/88
+focused, 351/351 full Vitest, 11/11 Chrome, and 22/22 browser repeat plus frozen
+install, build, typecheck, lint, docs, unchanged migration hashes, deterministic
+17-path/18-operation OpenAPI, and diff checks. Same-reviewer approval remains
+pending, so Task 10 is not approved and Task 11 has not started.
 
 ## Remaining work
 
@@ -1197,7 +1209,8 @@ The exact bounded remediation review target was
 `088a2e90d6596e2676174f1e7a1f6407629434be`; the docs-only ledger was
 `d6eca658ad7a0a16f77bf54fd740b4c7f1fa93a0`. Same-reviewer re-review returned
 `CHANGES_REQUIRED` (0 Critical, 4 Important, 1 Minor), so remediation round 2
-is required.
+was required. Its local GREEN is recorded above; same-reviewer re-review remains
+pending.
 
 Task 2 Review Fix Pass 1 final verification:
 
