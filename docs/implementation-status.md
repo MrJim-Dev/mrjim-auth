@@ -557,6 +557,11 @@ docs, unchanged migration hashes, deterministic OpenAPI, and diff checks.
 Same-reviewer approval remains pending; Task 10 is not approved and Task 11 has
 not started.
 
+Final-Minor exact product target:
+`074a4ca2172da18ee366474a714ab0788372e552`; verified GREEN ledger:
+`2d6e9504bd8d0e8ab6af3bbca94dbed8ef54ffe8`. The subsequent target-record
+commit is documentation-only.
+
 Remediation round-2 exact product target:
 `a3c880081fcce627021e57259b54ca2b4ad18f52`. Verified GREEN ledger:
 `607fae550d70547cd06f671911d4cc9a359da47f`. The subsequent target-record
