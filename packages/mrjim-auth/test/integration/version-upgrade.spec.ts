@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -154,7 +154,14 @@ function standardHomebrewPaths(version: PostgresMajor): readonly string[] {
 
 function describeCandidate(binDirectory: string, version: PostgresMajor): string | undefined {
   const requiredBinaries = ["initdb", "pg_ctl", "postgres"] as const;
-  const missing = requiredBinaries.filter((binary) => !existsSync(join(binDirectory, binary)));
+  const missing = requiredBinaries.filter((binary) => {
+    try {
+      accessSync(join(binDirectory, binary), constants.X_OK);
+      return false;
+    } catch {
+      return true;
+    }
+  });
   if (missing.length > 0) {
     return `missing ${missing.join(", ")}`;
   }
@@ -557,8 +564,14 @@ async function assertCurrentCatalog(pool: Pool): Promise<void> {
   expect(verification.postgresVersion ?? 0).toBeGreaterThanOrEqual(150000);
 
   const catalog = await readSchemaCatalog(pool);
+  const constraintBackedIndexes = REQUIRED_CONSTRAINTS
+    .filter((constraint) => constraint.constraintType === "p" || constraint.constraintType === "u")
+    .map((constraint) => constraint.constraintName);
+  const expectedIndexNames = [
+    ...new Set([...REQUIRED_INDEXES.map((index) => index.indexName), ...constraintBackedIndexes]),
+  ];
   expect(catalog.indexes.map((index) => index.index_name).sort()).toEqual(
-    REQUIRED_INDEXES.map((index) => index.indexName).sort(),
+    expectedIndexNames.sort(),
   );
   for (const expected of REQUIRED_INDEXES) {
     expect(
