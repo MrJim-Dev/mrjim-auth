@@ -1,6 +1,6 @@
 # mrjim-auth v1 Technical Specification
 
-**Status:** Proposed  
+**Status:** Implemented — local v0.1.0 release candidate
 **Date:** 2026-08-10  
 **Runtime:** Node.js 24 LTS, modern browsers, server-side JavaScript runtimes with Web `Request`/`Response` support  
 **Database:** PostgreSQL 15 or newer  

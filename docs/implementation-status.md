@@ -1,10 +1,30 @@
 # mrjim-auth Implementation Status
 
-**Plan:** `docs/superpowers/plans/2026-08-10-mrjim-auth-v1.md`  
-**Branch:** `feat/mrjim-auth-v1`  
+**Plan:** `docs/superpowers/plans/2026-08-10-mrjim-auth-v1.md`
+**Branch:** `feat/mrjim-auth-v1`
 **Last updated:** 2026-08-12
 
 ## Current state
+
+All fourteen implementation-plan tasks are complete on the clean local v0.1.0
+release candidate. The fresh 2026-08-12 `pnpm release:check` run passed 433
+Vitest tests, 11 real-Chrome tests, both runnable examples, the Next.js
+production build, PostgreSQL 15/16/17 migration upgrades, documentation checks,
+and inspection of 289 packed files. The SDK, clean `auth` schema, migrations,
+browser/server clients, Google OAuth and generic OIDC support, dynamic RBAC,
+admin APIs, adapters, examples, and release documentation are implemented.
+
+There is no local product, test, database, credential, or paid-service blocker.
+The core package requires only free/open-source dependencies and project-owned
+infrastructure. Public registry publication remains intentionally outside the
+local build: the owner must choose a public license and separately authorize
+publishing. Six final Luna Max whole-branch review attempts (including two on
+this fresh verification run) stalled or ended incomplete without a verdict or
+file change; this is recorded as a review-tooling limitation, not independent
+approval and not evidence of a product defect. Per-task independent reviews and
+the complete release gate remain recorded below.
+
+## Historical task record
 
 Task 1, its review fixes, Task 2, and Task 2 Review Fix Passes 1, 2, and 3 are
 complete in this worktree. The
@@ -1441,7 +1461,7 @@ with zero Critical, zero Important, and zero Minor findings. All prior Task 13
 verification remains green. No product, paid-service, credential, or external
 blocker remains; Task 14 may begin.
 
-## Task 14: release verification — in progress
+## Task 14: release verification — complete
 
 Task 14 begins from approved Task 13 ledger `6a99c88`. Fresh Luna Max workers
 own disjoint abuse-path, Supabase/browser-bundle, and PostgreSQL upgrade tests;
@@ -1478,6 +1498,14 @@ paid-service, credential, database, or tooling blocker remains. Public registry
 publication is the only authority blocker: choose a public license and
 separately authorize publication. Tasks 1-14 are implemented and locally
 release-ready.
+
+Two additional Luna Max whole-branch reviewers, Confucius
+(`019ff57c-77a7-7611-9983-e3e67cfeb28e`) and Feynman
+(`019ff582-ba63-7042-8e52-4247d55e45a4`), repeated the no-verdict tooling stall
+after the fresh release run. Both were interrupted, then closed while still
+reported as running; neither wrote a review file nor changed the candidate.
+The final-review attempt count is therefore six, with no substantive finding
+from those attempts and no claim of independent whole-branch approval.
 
 ## Task 7 final verification
 
