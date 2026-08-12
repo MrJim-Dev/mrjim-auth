@@ -8,7 +8,7 @@ stores the verifier; Google credentials stay on the auth server.
 Create a Web application OAuth client and register this exact redirect URI:
 
 ```text
-https://api.example.com/auth/v1/oauth/callback/google
+https://api.example.com/auth/v1/callback/google
 ```
 
 Set `oauth.google.clientId` and `oauth.google.clientSecret` only in server
