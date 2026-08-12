@@ -16,9 +16,9 @@ production so packaged migrations and runtime code move together.
 ## 2. Configure server-only environment variables
 
 ```dotenv
-AUTH_DATABASE_URL=postgres://app:password@127.0.0.1:5432/app
+DATABASE_URL=postgres://app:password@127.0.0.1:5432/app
 AUTH_BASE_URL=http://localhost:3000/auth/v1
-SITE_URL=http://localhost:5173
+AUTH_SITE_URL=http://localhost:5173
 AUTH_TOKEN_HASH_KEY=<at-least-32-random-bytes-as-unpadded-base64url>
 AUTH_ENCRYPTION_KEY=<at-least-32-random-bytes-as-unpadded-base64url>
 AUTH_ES256_PRIVATE_JWK=<server-only-private-JWK-JSON>
@@ -36,9 +36,9 @@ Migrations are explicit and forward-only. The server never mutates schema at
 startup.
 
 ```sh
-AUTH_DATABASE_URL="$AUTH_DATABASE_URL" pnpm exec mrjim-auth migrate status
-AUTH_DATABASE_URL="$AUTH_DATABASE_URL" pnpm exec mrjim-auth migrate up
-AUTH_DATABASE_URL="$AUTH_DATABASE_URL" pnpm exec mrjim-auth migrate verify
+DATABASE_URL="$DATABASE_URL" pnpm exec mrjim-auth migrate status
+DATABASE_URL="$DATABASE_URL" pnpm exec mrjim-auth migrate up
+DATABASE_URL="$DATABASE_URL" pnpm exec mrjim-auth migrate verify
 ```
 
 You can also call `migrate(pool, { direction: "up" })` from
