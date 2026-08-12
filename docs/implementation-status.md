@@ -1349,6 +1349,10 @@ Minor findings, but returned two Important Express residuals: reconstructed
 `null`/entity-length correctness and complete forwarding/Host normalization.
 Round-2 test-first remediation is active; Task 11 remains unapproved.
 
+Round-2 is locally green at 11/11 Express and 42/42 combined Task 11
+contracts, with typecheck and diff checks passing. Full release verification
+and same-reviewer closure remain; Task 11 is still unapproved.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.

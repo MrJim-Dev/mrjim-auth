@@ -17,7 +17,7 @@ type FakeResponse = ExpressResponse & {
 };
 
 function createRequest(input: Partial<ExpressRequest> = {}): ExpressRequest {
-  const body = input.body ?? null;
+  const body = Object.prototype.hasOwnProperty.call(input, "body") ? input.body : undefined;
   const request = {
     method: "POST",
     originalUrl: "/auth/v1/signup?invite=abc&invite=def",

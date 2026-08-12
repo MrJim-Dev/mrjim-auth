@@ -45,17 +45,19 @@ interface RequestTarget {
   readonly forwarded: boolean;
 }
 
-function requestHeaders(source: ExpressRequest["headers"], target: RequestTarget): Headers {
+function requestHeaders(source: ExpressRequest["headers"], target: RequestTarget, reconstructedBody: boolean): Headers {
   const output = new Headers();
   if (source !== undefined) {
     for (const [name, value] of Object.entries(source)) {
       const lower = name.toLowerCase();
-      if (value === undefined || lower === "x-real-ip" || lower === "x-forwarded-for"
-        || lower === "x-forwarded-host" || lower === "x-forwarded-proto") continue;
+      if (value === undefined || lower === "host" || lower === "x-real-ip" || lower === "forwarded"
+        || lower.startsWith("x-forwarded-")
+        || (reconstructedBody && (lower === "content-length" || lower === "transfer-encoding"))) continue;
       if (typeof value === "string") output.append(name, value);
       else for (const item of value) output.append(name, item);
     }
   }
+  output.set("host", target.host);
   output.set("x-real-ip", target.clientIp);
   if (target.forwarded) {
     output.set("x-forwarded-for", target.clientIp);
@@ -114,20 +116,30 @@ function formBody(value: object): string {
   return params.toString();
 }
 
-function requestBody(request: ExpressRequest, method: string): RequestInit["body"] | undefined {
-  if (method === "GET" || method === "HEAD") return undefined;
-  if (request.body === undefined || request.body === null) {
-    if (request instanceof Readable) return Readable.toWeb(request) as RequestInit["body"];
-    return undefined;
+interface TranslatedBody {
+  readonly body: RequestInit["body"] | undefined;
+  readonly reconstructed: boolean;
+}
+
+function requestBody(request: ExpressRequest, method: string): TranslatedBody {
+  if (method === "GET" || method === "HEAD") return { body: undefined, reconstructed: false };
+  const value = request.body;
+  const rawContentType = headerValue(request.headers, "content-type");
+  const contentType = rawContentType?.split(";", 1)[0]?.trim().toLowerCase();
+  if (value === undefined) {
+    if (request instanceof Readable) return { body: Readable.toWeb(request) as RequestInit["body"], reconstructed: false };
+    return { body: undefined, reconstructed: false };
   }
-  if (typeof request.body === "string") return request.body;
-  if (request.body instanceof Uint8Array) return new Uint8Array(request.body).buffer;
-  if (request.body instanceof ArrayBuffer) return request.body;
-  if (typeof request.body === "object") {
-    const rawContentType = headerValue(request.headers, "content-type");
-    const contentType = rawContentType?.split(";", 1)[0]?.trim().toLowerCase();
-    if (contentType === "application/json" || contentType?.endsWith("+json") === true) return JSON.stringify(request.body);
-    if (contentType === "application/x-www-form-urlencoded") return formBody(request.body);
+  if (value === null) {
+    if (contentType === "application/json" || contentType?.endsWith("+json") === true) return { body: "null", reconstructed: true };
+    throw new TypeError("Request body is malformed");
+  }
+  if (typeof value === "string") return { body: value, reconstructed: true };
+  if (value instanceof Uint8Array) return { body: new Uint8Array(value).buffer, reconstructed: true };
+  if (value instanceof ArrayBuffer) return { body: value, reconstructed: true };
+  if (typeof value === "object") {
+    if (contentType === "application/json" || contentType?.endsWith("+json") === true) return { body: JSON.stringify(value), reconstructed: true };
+    if (contentType === "application/x-www-form-urlencoded") return { body: formBody(value), reconstructed: true };
   }
   throw new TypeError("Request body is malformed");
 }
@@ -210,11 +222,11 @@ export function toExpressHandler(server: WebAuthServer, options: ExpressAdapterO
       const method = (request.method ?? "GET").toUpperCase();
       if (!/^[A-Z]{3,16}$/u.test(method)) throw new TypeError("Method is malformed");
       const target = requestTarget(request, options);
-      const body = requestBody(request, method);
+      const translated = requestBody(request, method);
       webRequest = new Request(target.url, {
         method,
-        headers: requestHeaders(request.headers, target),
-        ...(body === undefined ? {} : { body, duplex: "half" }),
+        headers: requestHeaders(request.headers, target, translated.reconstructed),
+        ...(translated.body === undefined ? {} : { body: translated.body, duplex: "half" }),
       } as RequestInit);
     } catch {
       fail(response, 400);
