@@ -17,11 +17,12 @@ import {
 } from "../../src/postgres/migrate.js";
 
 const packageVersion = "0.1.0";
-const task4BaseMigrationChecksums = {
+const immutableMigrationChecksums = {
   "0001_core": "542cb353f119e1e0d5f655d7611edefd301eb3cdc6cb9afcef0211f398ba3c4f",
   "0002_authorization": "c203903f1c7e00ed8a0ecc5e4b6de743447bd1e2c88f21682df6761381a887d6",
   "0003_oauth_operations": "af1c65925dbb63c0dacb332ff429b4cc6911482dc7cd1f560a73221016850b58",
   "0004_repository_hardening": "22aa84110fb82deaaf79d2640c78141aca7e1bd88c0de97616af7dbb7a4b2909",
+  "0005_oauth_callback": "acc1e42358d6aa1b5b2cbb8bdd4ed97fd6838f6ef0b3a2796c8ff2d20e91f500",
 } as const;
 const packageRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -44,6 +45,7 @@ const requiredTables = [
   "user_roles",
   "api_keys",
   "audit_log",
+  "rate_limit_buckets",
   "schema_migrations",
 ] as const;
 
@@ -156,6 +158,7 @@ const expectedColumns: Record<(typeof requiredTables)[number], readonly string[]
     "expires_at",
     "revoked_at",
     "created_at",
+    "name",
   ],
   audit_log: [
     "id",
@@ -170,6 +173,15 @@ const expectedColumns: Record<(typeof requiredTables)[number], readonly string[]
     "metadata",
     "outcome",
     "occurred_at",
+  ],
+  rate_limit_buckets: [
+    "key_digest",
+    "bucket",
+    "window_start",
+    "window_end",
+    "count",
+    "created_at",
+    "updated_at",
   ],
   schema_migrations: ["version", "migration_order", "checksum", "applied_at", "package_version"],
 };
@@ -315,11 +327,11 @@ async function queryRows(query: string, values: readonly unknown[] = []): Promis
   return result.rows as Record<string, unknown>[];
 }
 
-async function applyTask4BaseHistory(legacyPool: Pool): Promise<void> {
+async function applyTask11BaseHistory(legacyPool: Pool): Promise<void> {
   const client = await legacyPool.connect();
   try {
     await client.query("BEGIN");
-    for (const migration of MIGRATIONS.slice(0, 4)) {
+    for (const migration of MIGRATIONS.slice(0, 5)) {
       await client.query(migration.sql);
       await client.query(
         `INSERT INTO auth.schema_migrations
@@ -473,37 +485,41 @@ describe("Task 3 PostgreSQL migrations", () => {
     expect(await authSchemaExists()).toBe(false);
   });
 
-  it("upgrades the immutable 0001-0004 history with only OAuth callback 0005", async () => {
+  it("upgrades the immutable 0001-0005 history with only admin/rate-limit migration 0006", async () => {
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
       "0001_core",
       "0002_authorization",
       "0003_oauth_operations",
       "0004_repository_hardening",
       "0005_oauth_callback",
+      "0006_admin_operations",
     ]);
     expect(MIGRATIONS.find((migration) => migration.version === "0001_core")?.checksum).toBe(
-      task4BaseMigrationChecksums["0001_core"],
+      immutableMigrationChecksums["0001_core"],
     );
     expect(MIGRATIONS.find((migration) => migration.version === "0002_authorization")?.checksum).toBe(
-      task4BaseMigrationChecksums["0002_authorization"],
+      immutableMigrationChecksums["0002_authorization"],
     );
     expect(MIGRATIONS.find((migration) => migration.version === "0003_oauth_operations")?.checksum).toBe(
-      task4BaseMigrationChecksums["0003_oauth_operations"],
+      immutableMigrationChecksums["0003_oauth_operations"],
     );
     expect(MIGRATIONS.find((migration) => migration.version === "0004_repository_hardening")?.checksum).toBe(
-      task4BaseMigrationChecksums["0004_repository_hardening"],
+      immutableMigrationChecksums["0004_repository_hardening"],
     );
-    expect(MIGRATIONS.slice(0, 4).every((migration) => migration.introducedIn === packageVersion)).toBe(true);
+    expect(MIGRATIONS.find((migration) => migration.version === "0005_oauth_callback")?.checksum).toBe(
+      immutableMigrationChecksums["0005_oauth_callback"],
+    );
+    expect(MIGRATIONS.slice(0, 5).every((migration) => migration.introducedIn === packageVersion)).toBe(true);
 
     const legacy = await startDisposablePostgres("mja4-inc");
     try {
-      await applyTask4BaseHistory(legacy.pool);
+      await applyTask11BaseHistory(legacy.pool);
       const before = await migrationStatus(legacy.pool);
-      expect(before.slice(0, 4).every((migration) => migration.state === "applied")).toBe(true);
-      expect(before[4]?.state).toBe("pending");
+      expect(before.slice(0, 5).every((migration) => migration.state === "applied")).toBe(true);
+      expect(before[5]?.state).toBe("pending");
 
       const result = await migrate(legacy.pool, { direction: "up" });
-      expect(result.applied).toEqual(["0005_oauth_callback"]);
+      expect(result.applied).toEqual(["0006_admin_operations"]);
 
       const after = await migrationStatus(legacy.pool);
       expect(after.map((migration) => migration.version)).toEqual(
@@ -1174,6 +1190,7 @@ describe("Task 3 PostgreSQL migrations", () => {
             WHEN '0003_oauth_operations' THEN 3
             WHEN '0004_repository_hardening' THEN 4
             WHEN '0005_oauth_callback' THEN 5
+            WHEN '0006_admin_operations' THEN 6
           END`,
     );
     try {

@@ -38,6 +38,7 @@ const migrationAssetFiles = [
   "dist/postgres/migrations/0003_oauth_operations.sql",
   "dist/postgres/migrations/0004_repository_hardening.sql",
   "dist/postgres/migrations/0005_oauth_callback.sql",
+  "dist/postgres/migrations/0006_admin_operations.sql",
 ] as const;
 const nodeOnlyImportPattern = /^(?:node:)?(?:assert|buffer|child_process|cluster|crypto|dgram|dns|events|fs|http|https|module|net|os|path|perf_hooks|process|readline|stream|string_decoder|timers|tls|tty|url|util|v8|vm|worker_threads|zlib)(?:\/.*)?$/;
 const serverOnlyDependencyPattern = /^(?:@node-rs\/argon2|argon2|kysely|pg|pg-native|postgres|postgresjs)(?:\/.*)?$/;
@@ -220,6 +221,13 @@ describe("package export boundaries", () => {
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
         introducedIn: "0.1.0",
       },
+      {
+        migrationOrder: 6,
+        version: "0006_admin_operations",
+        fileName: "0006_admin_operations.sql",
+        checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+        introducedIn: "0.1.0",
+      },
     ]);
     expect(Object.isFrozen(postgres.MIGRATIONS)).toBe(true);
     expect(postgres.MIGRATIONS.every((migration) => Object.isFrozen(migration))).toBe(true);
@@ -232,17 +240,29 @@ describe("package export boundaries", () => {
     const server = await import("mrjim-auth/server");
     expect(Object.keys(server).sort()).toEqual([
       "ARGON2ID_PASSWORD_POLICY",
+      "ADMIN_MUTATION_RATE_LIMIT_POLICY",
       "AuthServer",
       "AuthorizationService",
       "ES256_ALGORITHM",
       "EmailService",
       "GenericOidcProvider",
       "GoogleOAuthProvider",
+      "InMemoryRateLimiter",
+      "LOGIN_IDENTIFIER_RATE_LIMIT_POLICY",
+      "LOGIN_IP_RATE_LIMIT_POLICY",
+      "OAUTH_START_RATE_LIMIT_POLICY",
       "OAuthProviderError",
       "OAuthService",
       "OidcOAuthProvider",
       "OneTimeTokenService",
+      "OTP_ISSUE_RATE_LIMIT_POLICY",
+      "OTP_VERIFY_RATE_LIMIT_POLICY",
+      "PostgresRateLimiter",
       "PasswordService",
+      "RATE_LIMIT_POLICIES",
+      "RECOVERY_RATE_LIMIT_POLICY",
+      "RESEND_RATE_LIMIT_POLICY",
+      "SIGNUP_RATE_LIMIT_POLICY",
       "SessionService",
       "TokenService",
       "UserService",
