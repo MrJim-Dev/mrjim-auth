@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { Buffer } from "node:buffer";
 import { createClient } from "../../src/index.js";
 import { createBrowserClient } from "../../src/adapters/nextjs-browser.js";
 import { createServerClient } from "../../src/adapters/nextjs-server.js";
-import type { Cookie, CookieToSet } from "../../src/server/cookies.js";
+import { createCookieStorage, type Cookie, type CookieToSet } from "../../src/server/cookies.js";
 import type { Session, User } from "../../src/shared/types.js";
 
 const AUTH_URL = "https://project.example.test/auth/v1";
@@ -151,6 +152,18 @@ describe("Next.js browser and SSR adapter contracts", () => {
     expect(jar.writes.filter((cookie) => cookie.value.length > 0).every((cookie) => cookie.options.secure)).toBe(true);
   });
 
+  it("does not permit an HTTPS auth client to disable Secure cookies", async () => {
+    const jar = createCookieJar();
+    const client = createServerClient(AUTH_URL, KEY, {
+      cookies: jar.adapter,
+      secure: false,
+      global: { fetch: async () => response(session()) },
+    });
+
+    await expect(client.auth.setSession(session())).resolves.toMatchObject({ error: null });
+    expect(jar.writes.filter((cookie) => cookie.value.length > 0).every((cookie) => cookie.options.secure)).toBe(true);
+  });
+
   it("allows read-only cookie access but fails closed when a session mutation requires a write", async () => {
     const fetch = async () => response(session());
     const client = createServerClient(AUTH_URL, KEY, { cookies: { getAll: async () => [] }, global: { fetch } });
@@ -218,6 +231,30 @@ describe("Next.js browser and SSR adapter contracts", () => {
       cookieName: "x".repeat(126),
       global: { fetch: async () => response(session()) },
     })).toThrow(/cookie name/i);
+  });
+
+  it("rejects oversized storage input before allocating an encoded copy", async () => {
+    const storage = createCookieStorage({ adapter: createCookieJar().adapter, storageKey: "default", secure: true });
+    const original = Buffer.from;
+    let calls = 0;
+    try {
+      Buffer.from = ((value: string, encoding: BufferEncoding) => {
+        calls += 1;
+        return original(value, encoding);
+      }) as typeof Buffer.from;
+      await expect(storage.setItem("mrjim-auth:default", "x".repeat(400_000))).rejects.toThrow(/oversized/i);
+    } finally {
+      Buffer.from = original;
+    }
+    expect(calls).toBe(0);
+  });
+
+  it("expires non-canonical stale chunk suffixes during the next write", async () => {
+    const jar = createCookieJar([{ name: "mrjim-auth.01", value: "stale" }]);
+    const storage = createCookieStorage({ adapter: jar.adapter, storageKey: "default", secure: true });
+
+    await expect(storage.setItem("mrjim-auth:default", "x".repeat(4_000))).resolves.toBeUndefined();
+    expect(jar.writes.some((cookie) => cookie.name === "mrjim-auth.01" && cookie.value === "" && cookie.options.maxAge === 0)).toBe(true);
   });
 
   it("isolates parallel request-local clients and their cookie state", async () => {

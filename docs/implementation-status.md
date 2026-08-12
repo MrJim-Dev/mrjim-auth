@@ -1329,6 +1329,13 @@ bounded checkpoint requests; its narrowed replacement repeated the silent
 `running` failure even after an interrupting immediate-verdict request. A third
 static Luna Max review remains mandatory. Tasks 12–14 remain.
 
+Gibbs's completed independent review supersedes that pending-review statement
+with `CHANGES_REQUIRED`: one Critical, six Important, and one Minor finding.
+Test-first remediation is active for the SSR authorization-proof warning,
+parsed-body content types, multi-value cookies, forwarded-header
+canonicalization, response backpressure, HTTPS Secure enforcement,
+pre-encoding bounds, and stale suffix cleanup. Task 11 is not approved.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.

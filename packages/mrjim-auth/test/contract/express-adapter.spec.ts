@@ -174,6 +174,24 @@ describe("Express adapter contract", () => {
     expect(response.statusCode).toBe(200);
   });
 
+  it("serializes parsed bodies only when their content type has a lossless supported mapping", async () => {
+    const { server, requests } = createServer(() => new Response("ok"));
+    await toExpressHandler(server)(createRequest({
+      headers: { host: "direct.example.test", "content-type": "application/x-www-form-urlencoded" },
+      body: { email: "user@example.test", tags: ["one", "two"] },
+    }), createResponse());
+
+    expect(requests[0]!.body).toBe("email=user%40example.test&tags=one&tags=two");
+
+    const rejected = createResponse();
+    await toExpressHandler(server)(createRequest({
+      headers: { host: "direct.example.test", "content-type": "multipart/form-data; boundary=parsed" },
+      body: { email: "cannot-reconstruct-boundary" },
+    }), rejected);
+    expect(rejected.statusCode).toBe(400);
+    expect(requests).toHaveLength(1);
+  });
+
   it("uses direct socket host/proto/ip and does not trust forwarded headers by default", async () => {
     const { server, requests } = createServer(() => new Response("ok"));
     const response = createResponse();
@@ -189,7 +207,9 @@ describe("Express adapter contract", () => {
 
     expect(requests[0]!.url).toBe("http://direct.example.test/auth/v1/signup?invite=abc&invite=def");
     expect(requests[0]!.headers.get("x-real-ip")).toBe("192.0.2.10");
-    expect(requests[0]!.headers.get("x-forwarded-for")).toBe("203.0.113.9");
+    expect(requests[0]!.headers.get("x-forwarded-for")).toBeNull();
+    expect(requests[0]!.headers.get("x-forwarded-host")).toBeNull();
+    expect(requests[0]!.headers.get("x-forwarded-proto")).toBeNull();
   });
 
   it("uses forwarded host/proto/ip only when explicitly trusted", async () => {
@@ -209,6 +229,9 @@ describe("Express adapter contract", () => {
 
     expect(requests[0]!.url).toBe("https://public.example.test/auth/v1/signup?invite=abc&invite=def");
     expect(requests[0]!.headers.get("x-real-ip")).toBe("203.0.113.9");
+    expect(requests[0]!.headers.get("x-forwarded-for")).toBe("203.0.113.9");
+    expect(requests[0]!.headers.get("x-forwarded-host")).toBe("public.example.test");
+    expect(requests[0]!.headers.get("x-forwarded-proto")).toBe("https");
   });
 
   it("does not trust an attacker-controlled prefix beyond the configured proxy hops", async () => {
@@ -256,5 +279,62 @@ describe("Express adapter contract", () => {
     expect(response.body).toBe(JSON.stringify({ error: "Internal authentication error" }));
     expect(response.body).not.toContain(secret);
     expect(response.body).not.toContain("Error");
+  });
+
+  it("fails closed rather than comma-joining cookies when the multi-value API is unavailable", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(Headers.prototype, "getSetCookie");
+    expect(descriptor).toBeDefined();
+    const response = createResponse();
+    try {
+      Object.defineProperty(Headers.prototype, "getSetCookie", { ...descriptor, value: undefined });
+      await toExpressHandler({
+        async handle() {
+          return new Response("secret-body", { headers: [["set-cookie", "a=1; Path=/"], ["set-cookie", "b=2; Path=/"]] });
+        },
+      })(createRequest(), response);
+    } finally {
+      Object.defineProperty(Headers.prototype, "getSetCookie", descriptor!);
+    }
+
+    expect(response.statusCode).toBe(500);
+    expect(response.headers.get("set-cookie")).toBeUndefined();
+    expect(response.body).toBe(JSON.stringify({ error: "Internal authentication error" }));
+    expect(response.body).not.toContain("secret-body");
+  });
+
+  it("waits for response drain before writing the next streamed chunk", async () => {
+    const events: string[] = [];
+    let statusCode = 200;
+    let writes = 0;
+    const response = {
+      set statusCode(value: number) { statusCode = value; },
+      get statusCode() { return statusCode; },
+      setHeader() {},
+      write() {
+        writes += 1;
+        events.push(`write-${writes}`);
+        return writes !== 1;
+      },
+      once(event: string, listener: () => void) {
+        if (event === "drain") setTimeout(() => { events.push("drain"); listener(); }, 0);
+        return this;
+      },
+      off() { return this; },
+      end() { events.push("end"); },
+    } as ExpressResponse & { once(event: string, listener: () => void): unknown; off(event: string, listener: () => void): unknown };
+    await toExpressHandler({
+      async handle() {
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("one"));
+            controller.enqueue(new TextEncoder().encode("two"));
+            controller.close();
+          },
+        }));
+      },
+    })(createRequest(), response);
+
+    expect(events).toEqual(["write-1", "drain", "write-2", "end"]);
+    expect(statusCode).toBe(200);
   });
 });

@@ -292,6 +292,12 @@ describe("package export boundaries", () => {
     expect(guide).toContain(FORBIDDEN_AUTH_NAMES.join(", "));
   });
 
+  it("warns that SSR cookie sessions are not authorization proof", async () => {
+    const guide = await readFile(resolve(packageRoot, "../../docs/guides/framework-adapters.md"), "utf8");
+    expect(guide).toMatch(/getSession\(\).*not.*authorization proof/is);
+    expect(guide).toMatch(/getUser\(\).*validated/is);
+  });
+
   it("does not expose unfinished behavior from later-task subpaths", async () => {
     for (const exportKey of requiredExportKeys
       .slice(1)
