@@ -243,7 +243,10 @@ describe("Task 12 rate-limit adapters", () => {
     expect(expired.rows[0]?.count).toBe(0);
 
     const malformed: RateLimitQueryExecutor = {
-      query: async () => ({ rows: [{ allowed: "yes" }] as readonly Record<string, unknown>[] }),
+      query: async <Row extends object = Record<string, unknown>>(
+        _sql: string,
+        _values?: readonly unknown[],
+      ): Promise<{ readonly rows: readonly Row[] }> => ({ rows: [] }),
     };
     const malformedLimiter = new PostgresRateLimiter({ pool: malformed, hmacKey: HMAC_KEY });
     await expect(malformedLimiter.consume("adapter-caller", policy())).rejects.toThrow(/adapter|decision/i);
