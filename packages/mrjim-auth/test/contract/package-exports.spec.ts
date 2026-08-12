@@ -133,7 +133,7 @@ describe("package export boundaries", () => {
     }
   });
 
-  it("exposes only the documented temporary root scaffold", async () => {
+  it("exposes the browser-safe Task 10 client from the package root", async () => {
     const root = await import(manifest.name);
     expect(Object.keys(root)).toEqual(["createClient"]);
 
@@ -142,7 +142,33 @@ describe("package export boundaries", () => {
       "publishable-key",
     );
     expect(Object.isFrozen(client)).toBe(true);
-    expect(Object.keys(client)).toEqual([]);
+    expect(Object.keys(client)).toEqual(["auth"]);
+    expect(Object.isFrozen(client.auth)).toBe(true);
+    expect(Object.keys(client.auth).sort()).toEqual([
+      "dispose",
+      "exchangeCodeForSession",
+      "getPermissions",
+      "getSession",
+      "getUser",
+      "getUserIdentities",
+      "linkIdentity",
+      "onAuthStateChange",
+      "refreshSession",
+      "resend",
+      "resetPasswordForEmail",
+      "setSession",
+      "signInWithOAuth",
+      "signInWithOtp",
+      "signInWithPassword",
+      "signOut",
+      "signUp",
+      "startAutoRefresh",
+      "stopAutoRefresh",
+      "unlinkIdentity",
+      "updateUser",
+      "verifyOtp",
+    ].sort());
+    client.auth.dispose();
   });
 
   it("exposes the Task 3 PostgreSQL migration API and keeps SQL in built output", async () => {

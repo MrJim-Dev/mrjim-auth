@@ -1,17 +1,20 @@
+import { createAuthClient } from "./client/auth-client.js";
+import type { MrJimAuthClient } from "./client/auth-client.js";
+import type { ClientOptions } from "./shared/types.js";
+
 /**
- * Creates the browser-safe Task 1 client scaffold.
+ * Creates a browser-safe or isomorphic authentication client for a
+ * project-owned mrjim-auth HTTP endpoint.
+ *
+ * @param authUrl - Absolute URL of the project's `/auth/v1` endpoint.
+ * @param publishableKey - Optional project publishable key sent as `apikey`.
+ * @param options - Session, PKCE, storage, lock, debug, fetch, and header options.
+ * @returns An immutable client with an immutable `auth` namespace.
  *
  * @remarks
- * Compatibility status: experimental Task 1 scaffold only. The returned
- * object is immutable and intentionally has no `auth` methods, network calls,
- * storage behavior, or expected authentication-operation failures. The full
- * Supabase-inspired client contract is planned for a later task. When that
- * contract is implemented, expected failures must use `{ data, error }`.
- *
- * @param _baseUrl - Project-owned `/auth/v1` URL reserved for the future client.
- * @param _publishableKey - Project publishable key reserved for the future client.
- * @param _options - Future client options; ignored by the Task 1 scaffold.
- * @returns An immutable empty object with no authentication operations.
+ * Expected HTTP and authentication failures resolve as `{ data, error }`.
+ * Malformed configuration or method input throws synchronously. Browser
+ * authorization data is advisory; backend authorization remains authoritative.
  *
  * @example
  * ```ts
@@ -22,17 +25,56 @@
  *   "publishable-key",
  * );
  *
- * // Task 1 scaffold: no auth methods are exposed yet.
- * console.log(Object.keys(client)); // []
+ * const { data, error } = await client.auth.signInWithPassword({
+ *   email: "user@example.com",
+ *   password: "correct horse battery staple",
+ * });
  * ```
  *
  * @since 0.1.0
- * @experimental
  */
 export function createClient(
-  _baseUrl: string,
-  _publishableKey?: string,
-  _options?: unknown,
-): Readonly<Record<string, never>> {
-  return Object.freeze({});
+  authUrl: string,
+  publishableKey?: string,
+  options?: ClientOptions,
+): MrJimAuthClient {
+  return createAuthClient(authUrl, publishableKey, options);
 }
+
+export type {
+  AuthMethodOptions,
+  AuthNamespace,
+  ClientAuthOptions,
+  ClientGlobalOptions,
+  EmailOtpType,
+  MrJimAuthClient,
+  NullableSessionData,
+  OAuthData,
+  OAuthInput,
+  OAuthOptions,
+  OtpSignInInput,
+  PasswordSignInInput,
+  PermissionScope,
+  RecoveryOptions,
+  ResendInput,
+  ResendType,
+  SessionData,
+  SignOutScope,
+  SignUpInput,
+  UpdateUserAttributes,
+  VerifyOtpInput,
+} from "./client/auth-client.js";
+export type { AuthStateCallback, AuthSubscription } from "./client/events.js";
+export type { AuthError } from "./shared/errors.js";
+export type { AuthResult } from "./shared/result.js";
+export type {
+  AuthChangeEvent,
+  ClientOptions,
+  Identity,
+  JsonObject,
+  JsonValue,
+  LockFunction,
+  Session,
+  SupportedStorage,
+  User,
+} from "./shared/types.js";

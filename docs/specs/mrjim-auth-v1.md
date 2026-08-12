@@ -281,7 +281,7 @@ Error messages for login, signup conflict, recovery, OTP, and lookup must not di
 | `getUser(jwt?)` | Ask the auth server for an authoritative current user |
 | `setSession({ access_token, refresh_token })` | Validate or refresh and persist a supplied session |
 | `refreshSession(session?)` | Rotate refresh token and return a new session |
-| `updateUser(attributes)` | Update password, email, phone, or user metadata under policy |
+| `updateUser(attributes)` | In v1, update email or user metadata under policy; password and phone mutation remain reserved until matching server routes are added |
 | `getUserIdentities()` | Return linked login identities without provider secrets |
 | `linkIdentity({ provider, options })` | Start authenticated OAuth identity linking |
 | `unlinkIdentity(identity)` | Remove identity only when another login method remains |

@@ -454,7 +454,7 @@ database, external network, or paid SaaS service is required.
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Complete — round 8 independently approved | Raman approved `916d615ca8627d200e9261688bbbb5d8903d541e` with zero Critical, Important, or Minor findings after round-8 error-prototype, OIDC, HTTP, provider allowlist, `Set.delete`, packed, OpenAPI, migration, export, and full 318-test verification; evidence is recorded in the Task 9 report |
-| 10. Browser client | In progress | Task 10 brief committed from approved Task 9 baseline; method-shape and local browser lifecycle RED/GREEN evidence pending |
+| 10. Browser client | Implementation candidate complete; independent review pending | 20/20 focused client, 338/338 full Vitest, 8/8 real Chrome, 12/12 exports, frozen install, build, typecheck, lint, docs, packed consumer, browser bundle, protected hashes, and diff checks pass; Luna Max review is capacity-blocked and approval is not claimed |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
 | 13. Documentation and examples | Pending | Not run |
@@ -491,19 +491,23 @@ earlier independent scan recorder remains a tooling-evidence blocker with the
 exact `scan.target.snapshotDigest: expected a non-empty string` failure; it is
 not a clean scan and was not the source of approval.
 
-Task 10 product blockers: none identified at kickoff. The plan calls for a
-real local browser lifecycle suite; an exact-pinned free/open-source Playwright
-test dependency is permitted if required, but no paid browser grid, hosted
-application, remote database, live OAuth provider, or generic `DATABASE_URL`
-may be used.
+Task 10 product blockers: none found in local implementation and verification.
+The exact-pinned Apache-2.0 `@playwright/test` `1.62.1` development dependency
+runs the real lifecycle suite against installed local Chrome; it is absent from
+the published runtime/browser graph. Independent Luna Max review is pending
+because subagent capacity is exhausted until the tool's reported retry time of
+2026-08-18 08:00. No credits or paid application will be purchased. This is a
+review/tooling blocker, so Task 10 is not approved and Task 11 has not started.
+No paid browser grid, hosted application, remote database, live OAuth provider,
+live mail, telemetry SaaS, or generic `DATABASE_URL` was used.
 
 ## Remaining work
 
 Task 8's third post-pass route-boundary hardening resolution and Task 9 are
-complete and independently approved. Task 10 is in progress; Tasks 11-14
-remain,
-with independent review after each task, followed by the whole-branch review
-and release handoff. In particular, later work must use the clean `auth`
+complete and independently approved. Task 10's implementation candidate and
+local release gates are complete, but independent review is pending; Tasks
+11-14 remain, with independent review after each task, followed by the
+whole-branch review and release handoff. In particular, later work must use the clean `auth`
 schema and explicit migration CLI from Task 3 for the browser/SSR surface,
 framework adapters, administration, examples, and release verification.
 
@@ -1101,6 +1105,57 @@ Task 2 original final verification before Review Fix Pass 1:
 - `pnpm lint` — passed.
 - `pnpm docs:check` — passed; 2 required documents found.
 - `git diff --check` — passed with no whitespace errors.
+
+## Task 10: browser-safe client — in progress
+
+Task 10 is scoped to the browser/isomorphic `createClient`, complete public
+`client.auth` methods/events, strict client boundaries, PKCE URL handling,
+auto-refresh, local browser lifecycle verification, and browser-safe exports.
+Tasks 11–14 remain out of scope. The authoritative clean implementation
+baseline is `4cb2ada9baef7f031cee2196186d611df5ce17bf`; `305de41f4d2420ed14cbac4d533141da4d9bd3d2` is the approved Task 9 docs-ledger parent
+used to author the brief.
+
+### RED evidence
+
+- Tests were written before Task 10 production edits.
+- `pnpm vitest run packages/mrjim-auth/test/unit/auth-client.spec.ts` — 1
+  file, 16 tests, 16 failures on the scaffold because `auth` and its methods
+  were absent; synchronous URL/adapter boundary assertions also failed.
+- `pnpm playwright test packages/mrjim-auth/test/browser/session-lifecycle.spec.ts`
+  — exit 254 because the local Playwright runner was not installed.
+
+The exact RED evidence and implementation ledger are in
+`.superpowers/sdd/2026-08-10-mrjim-auth-v1/task-10-report.md` and
+`progress.md`.
+
+### Local implementation and GREEN evidence
+
+The browser-safe root now exposes immutable `createClient(...).auth` with all
+22 Task 10 operations. The implementation includes strict transport/output
+boundaries, versioned sync/async storage, client-held PKCE, ordered lifecycle
+events, token-free cross-tab signaling, Web Locks and local fallback locking,
+single-winner refresh convergence, visibility-aware scheduling, callback URL
+cleanup, and idempotent disposal. The specification now records that v1
+`updateUser` supports email, user metadata, and redirect intent; password and
+phone mutation remain unsupported until corresponding server routes exist.
+
+- Focused unit client — 1 file, 20/20 passed.
+- `pnpm test` — fresh build, 24 Vitest files and 338/338 tests, then 8/8
+  real local Chrome lifecycle tests passed.
+- Browser repeat — 16/16 passed across two repetitions.
+- Frozen install, typecheck, lint, docs check, package exports 12/12,
+  fresh packed root/server/PKCE imports, source and packed browser bundles,
+  protected migration/OpenAPI hashes, and `git diff --check` passed.
+- Browser bundles had 12 inputs and zero server, PostgreSQL, Node builtin,
+  Argon2, `pg`, Kysely, JOSE, or OpenID Client inputs.
+
+The only new dependency is exact-pinned dev-only `@playwright/test` `1.62.1`
+(Apache-2.0), using installed local Chrome. No browser binary, paid/hosted
+service, remote database, live OAuth/mail, or external application write is
+included. Product blockers are zero. Independent Luna Max review is pending
+because subagent capacity is exhausted until the reported retry time; therefore
+Task 10 is not approved and Task 11 has not started. Exact hashes and full gate
+evidence are in the Task 10 report.
 
 Task 2 Review Fix Pass 1 final verification:
 
