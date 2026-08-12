@@ -1374,6 +1374,13 @@ missing API-key name and HMAC-digested durable rate-limit buckets; `0001–0005`
 remain immutable. No paid application or remote service is required. RED tests,
 implementation, release evidence, and independent review remain pending.
 
+Initial Task 12 RED is now captured: both planned admin/audit suites fail at
+the missing Node modules before any tests execute. A Luna Max architecture
+auditor stalled without output; this is documented as tooling-only. Two
+disjoint implementation slices—rate-limit/migration and API-key/audit/admin
+client—are being delegated while transactional admin policy remains on the
+controller path.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
