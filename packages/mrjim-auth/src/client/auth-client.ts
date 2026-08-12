@@ -54,11 +54,16 @@ const clientMathFloor = Math.floor;
 const clientMathMax = Math.max;
 const clientMathMin = Math.min;
 const clientNumberIsSafeInteger = Number.isSafeInteger;
+const clientTextEncoder = TextEncoder;
+const clientEncoder = new clientTextEncoder();
+const clientEncode = captureMethod(clientTextEncoder.prototype, "encode", "TextEncoder.encode", "configuration").method;
+const clientUint8Array = Uint8Array;
 
 const DEFAULT_STORAGE_KEY = "default";
 const MAX_STORAGE_KEY = 128;
 const MAX_EMAIL = 320;
 const MAX_PASSWORD = 1024;
+const MAX_RECOVERY_TOKEN = 128;
 const MAX_PROVIDER = 128;
 const AUTO_REFRESH_SKEW_MS = 30_000;
 const MIN_RETRY_MS = 1_000;
@@ -391,6 +396,20 @@ function requiredString(value: object, key: string, label: string, maximum: numb
   const property = ownData(value, key);
   if (!property.ok || !property.present) throw new AuthProgrammingError(`${label} is required`);
   return trimString(property.value, label, maximum);
+}
+
+function recoveryPassword(value: object): string {
+  const password = requiredString(value, "password", "password", MAX_PASSWORD);
+  let encoded: unknown;
+  try {
+    encoded = invoke<unknown>(clientEncode, clientEncoder, [password]);
+  } catch {
+    throw new AuthProgrammingError("password is malformed");
+  }
+  if (password.length < 8 || !(encoded instanceof clientUint8Array) || encoded.byteLength > MAX_PASSWORD) {
+    throw new AuthProgrammingError("password is malformed");
+  }
+  return password;
 }
 
 function optionalString(value: object, key: string, label: string, maximum: number): string | undefined {
@@ -735,9 +754,11 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
   };
 
   const clearSession = async (emit: boolean): Promise<boolean> => {
+    if (disposed) return false;
     const hadSession = currentSession !== null;
     try {
       const revision = await storage.clearSession();
+      if (disposed) return false;
       currentSession = null;
       lastRevision = revision;
       stopTimer();
@@ -1062,8 +1083,8 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
   const resetPassword = (input: ResetPasswordInput): Promise<AuthResult<{ readonly user: User }>> => {
     const value = validateInput(input, "resetPassword input");
     const email = requiredString(value, "email", "email", MAX_EMAIL);
-    const token = requiredString(value, "token", "recovery token", 512);
-    const password = requiredString(value, "password", "password", MAX_PASSWORD);
+    const token = requiredString(value, "token", "recovery token", MAX_RECOVERY_TOKEN);
+    const password = recoveryPassword(value);
     const optionsValue = optionalObject(value, "options", "recovery options");
     const redirect = redirectFrom(optionsValue);
     return contain(async () => {

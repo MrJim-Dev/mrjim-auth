@@ -69,15 +69,22 @@ function withTimeout<T>(value: Promise<T>, timeoutMs: number): Promise<T> {
 async function fallbackLock<T>(name: string, timeoutMs: number, callback: () => Promise<T>): Promise<T> {
   const previous = lockMapGet.call(queues, name) ?? lockPromiseResolve();
   let release: (() => void) | undefined;
+  let acquired = false;
   const current = new lockPromise<void>((resolve) => { release = resolve; });
   const queued = lockReflectApply(lockPromiseThen, previous, [() => current, () => current]) as Promise<void>;
   lockMapSet.call(queues, name, queued);
   try {
     await withTimeout(previous, timeoutMs);
+    acquired = true;
     return await callback();
   } finally {
-    release?.();
-    if (lockMapGet.call(queues, name) === queued) lockMapDelete.call(queues, name);
+    const releaseCurrent = (): void => { release?.(); };
+    if (acquired) releaseCurrent();
+    else lockReflectApply(lockPromiseThen, previous, [releaseCurrent, releaseCurrent]);
+    const cleanup = (): void => {
+      if (lockMapGet.call(queues, name) === queued) lockMapDelete.call(queues, name);
+    };
+    lockReflectApply(lockPromiseThen, queued, [cleanup, cleanup]);
   }
 }
 

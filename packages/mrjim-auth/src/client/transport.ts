@@ -370,10 +370,12 @@ export function createTransport(options: TransportOptions): Transport {
         signal,
       }]);
       const response = await awaitSafe(result, "fetch");
+      if (disposed) return authFailure(internalError());
       if (!isObjectLike(response)) return authFailure(internalError());
       const status = responseStatus(response);
       if (status === null || !transportNumberIsSafeInteger(status) || status < 100 || status > 599) return authFailure(internalError());
       const text = await boundedResponseText(response);
+      if (disposed) return authFailure(internalError());
       if (text === null) return authFailure(internalError());
       let parsed: unknown;
       try {
