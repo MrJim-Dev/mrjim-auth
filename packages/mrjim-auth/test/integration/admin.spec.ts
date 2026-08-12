@@ -57,11 +57,25 @@ describe("server-only admin client contract", () => {
     });
     expect(seen!.url).toBe(`${AUTH_URL}/admin/users?page=2&per_page=25`);
     expect(seen!.headers.get("apikey")).toBe(SECRET_KEY);
+    expect(seen!.headers.get("authorization")).toBeNull();
     expect(seen!.headers.get("origin")).toBeNull();
 
     expect(() => createAdminClient(AUTH_URL, SECRET_KEY, {
       global: { fetch: async () => success(null), headers: { origin: "https://browser.example" } },
     })).toThrow(/browser|origin/i);
+  });
+
+  it("uses the strict server endpoint/body shapes for find, invite, and scoped role assignment", async () => {
+    const requests: Request[] = [];
+    const client = createAdminClient(AUTH_URL, SECRET_KEY, {
+      global: { fetch: async (input, init) => { requests.push(new Request(input, init)); return success(null); } },
+    });
+    await client.auth.admin.findUser({ email: "user@example.test" });
+    await client.auth.admin.inviteUserByEmail("user@example.test", { redirect_to: "https://project.example.test/welcome" });
+    await client.auth.admin.assignRole("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", { type: "organization", id: "org_1" });
+    expect(requests[0]!.url).toBe(`${AUTH_URL}/admin/users/find?email=user%40example.test`);
+    expect(await requests[1]!.json()).toEqual({ email: "user@example.test", options: { redirect_to: "https://project.example.test/welcome" } });
+    expect(requests[2]!.url).toBe(`${AUTH_URL}/admin/users/11111111-1111-4111-8111-111111111111/roles/22222222-2222-4222-8222-222222222222?scope_type=organization&scope_id=org_1`);
   });
 
   it("maps stable HTTP errors without leaking response bodies or the secret key", async () => {
