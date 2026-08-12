@@ -1441,6 +1441,18 @@ with zero Critical, zero Important, and zero Minor findings. All prior Task 13
 verification remains green. No product, paid-service, credential, or external
 blocker remains; Task 14 may begin.
 
+## Task 14: release verification — in progress
+
+Task 14 begins from approved Task 13 ledger `6a99c88`. Fresh Luna Max workers
+own disjoint abuse-path, Supabase/browser-bundle, and PostgreSQL upgrade tests;
+the controller owns `pnpm release:check`, package inspection, platform matrix,
+readiness docs, and review. The candidate adds package-local README/license
+files and truthfully marks v0.1.0 `UNLICENSED`; a public license and registry
+publication remain separate authority decisions. Only PostgreSQL 16.14 is
+currently installed, so free local 15/17 binaries are an active environmental
+prerequisite for the required no-skip matrix. No paid/hosted dependency is
+needed. Implementation and verification are in progress.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.

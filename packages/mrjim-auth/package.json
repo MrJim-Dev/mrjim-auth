@@ -1,6 +1,8 @@
 {
   "name": "mrjim-auth",
   "version": "0.1.0",
+  "description": "Project-owned Node.js and PostgreSQL authentication with a Supabase-shaped client API",
+  "license": "UNLICENSED",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -44,7 +46,9 @@
   },
   "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "dependencies": {
     "argon2": "0.44.0",

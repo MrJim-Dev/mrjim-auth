@@ -11,7 +11,8 @@
     "typecheck": "tsc -p packages/mrjim-auth/tsconfig.json --noEmit",
     "test": "pnpm build && vitest run --exclude 'packages/mrjim-auth/test/browser/**/*.spec.ts' && playwright test",
     "lint": "tsc -p packages/mrjim-auth/tsconfig.json --noEmit",
-    "docs:check": "node scripts/check-docs.mjs"
+    "docs:check": "node scripts/check-docs.mjs",
+    "release:check": "node scripts/release-check.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
