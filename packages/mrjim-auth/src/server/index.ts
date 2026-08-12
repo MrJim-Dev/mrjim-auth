@@ -127,3 +127,8 @@ export {
   type PostgresRateLimiterOptions,
   type RateLimitQueryExecutor,
 } from "./rate-limit.js";
+export type {
+  RateLimitDecision,
+  RateLimitPolicy,
+  RateLimiter,
+} from "../shared/contracts.js";

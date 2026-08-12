@@ -257,7 +257,7 @@ export interface PostgresRateLimiterOptions {
 function findDataMethod(value: object, name: string): (...args: unknown[]) => unknown {
   let current: object | null = value;
   try {
-    while (current !== null) {
+    while (current !== null && current !== Object.prototype) {
       const descriptor = objectGetOwnPropertyDescriptor(current, name);
       if (descriptor !== undefined) {
         if (!("value" in descriptor) || typeof descriptor.value !== "function") {

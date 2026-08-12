@@ -71,9 +71,9 @@ export interface ApiKeyStore {
 
 /** Optional actor context accepted for audit-aware callers. It is never persisted by this slice. */
 export interface ApiKeyActor {
-  readonly userId?: UUID | null;
-  readonly keyId?: UUID | null;
-  readonly sessionId?: UUID | null;
+  readonly userId?: string | null;
+  readonly keyId?: string | null;
+  readonly sessionId?: string | null;
 }
 
 /** Input for one-time API-key generation. */
@@ -438,7 +438,7 @@ export class ApiKeyService {
   }
 
   /** Revokes one API key. Raw values and digests never appear in the result. */
-  async revoke(id: UUID): Promise<AuthResult<ApiKeyRevokeData>> {
+  async revoke(id: string): Promise<AuthResult<ApiKeyRevokeData>> {
     let keyId: UUID;
     let revokedAt: Date;
     try {
@@ -457,7 +457,7 @@ export class ApiKeyService {
   }
 
   /** Performs a best-effort last-use update; authentication success remains authoritative. */
-  async touchLastUsed(id: UUID, usedAt = this.clock()): Promise<void> {
+  async touchLastUsed(id: string, usedAt = this.clock()): Promise<void> {
     try {
       const keyId = validUuid(id, "API-key id");
       const time = validDate(usedAt, "API-key last-use time", false);
