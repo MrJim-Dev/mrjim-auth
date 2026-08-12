@@ -1188,6 +1188,10 @@ hashes, and full gate evidence are in the Task 10 report. The exact bounded impl
 target is `343a602fd21e638a665710dc4345e3f0ed0b5b19`; the subsequent docs-ledger commit
 changes no product code.
 
+The exact bounded remediation review target is
+`088a2e90d6596e2676174f1e7a1f6407629434be`. Same-reviewer re-review is pending;
+the subsequent ledger commit changes documentation only.
+
 Task 2 Review Fix Pass 1 final verification:
 
 - `pnpm vitest run packages/mrjim-auth/test/unit/shared-contracts.spec.ts` —
