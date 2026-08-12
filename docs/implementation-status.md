@@ -1325,8 +1325,9 @@ Independent fresh Luna Max review, final lint/docs/diff checks, and a clean
 review commit remain before approval. Two Luna implementation agents stalled;
 their tooling failure is recorded but is not a product or paid-service
 blocker. A first fresh Luna reviewer also stalled without a verdict after
-bounded checkpoint requests; replacement review remains mandatory. Tasks
-12–14 remain.
+bounded checkpoint requests; its narrowed replacement repeated the silent
+`running` failure even after an interrupting immediate-verdict request. A third
+static Luna Max review remains mandatory. Tasks 12–14 remain.
 
 ## Task 7 final verification
 
