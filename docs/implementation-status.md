@@ -454,7 +454,7 @@ database, external network, or paid SaaS service is required.
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Complete — round 8 independently approved | Raman approved `916d615ca8627d200e9261688bbbb5d8903d541e` with zero Critical, Important, or Minor findings after round-8 error-prototype, OIDC, HTTP, provider allowlist, `Set.delete`, packed, OpenAPI, migration, export, and full 318-test verification; evidence is recorded in the Task 9 report |
-| 10. Browser client | Remediation round 2 green — re-review pending | The 0 Critical/4 Important/1 Minor re-review findings are locally addressed; combined focused 88/88, full 351/351 Vitest, 11/11 Chrome, browser repeat 22/22, frozen install, static gates, unchanged migrations, and bounded OpenAPI pass; same-reviewer approval and Task 11 remain gated |
+| 10. Browser client | Changes required — one Minor contract mismatch | Same-reviewer round-2 re-review closed all Critical/Important findings and left one Minor: recovery HTTP/OpenAPI must enforce and document the authoritative 1,024 UTF-8-byte password cap; Task 11 remains gated |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
 | 13. Documentation and examples | Pending | Not run |
@@ -540,6 +540,13 @@ focused, 351/351 full Vitest, 11/11 Chrome, and 22/22 browser repeat plus frozen
 install, build, typecheck, lint, docs, unchanged migration hashes, deterministic
 17-path/18-operation OpenAPI, and diff checks. Same-reviewer approval remains
 pending, so Task 10 is not approved and Task 11 has not started.
+
+Confucius's round-2 re-review closed every Critical and Important finding and
+left one Minor contract mismatch. A 1,200-byte multibyte password passes the
+route's character-only schema even though the password service safely rejects
+it before proof consumption. Recovery HTTP validation must add the UTF-8 byte
+predicate and deterministic OpenAPI must document the authoritative byte cap.
+Task 10 and Task 11 remain gated pending this final fix and re-review.
 
 Remediation round-2 exact product target:
 `a3c880081fcce627021e57259b54ca2b4ad18f52`. Verified GREEN ledger:
