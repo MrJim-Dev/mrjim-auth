@@ -454,8 +454,8 @@ database, external network, or paid SaaS service is required.
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Complete — round 8 independently approved | Raman approved `916d615ca8627d200e9261688bbbb5d8903d541e` with zero Critical, Important, or Minor findings after round-8 error-prototype, OIDC, HTTP, provider allowlist, `Set.delete`, packed, OpenAPI, migration, export, and full 318-test verification; evidence is recorded in the Task 9 report |
-| 10. Browser client | Final Minor green — re-review pending | Recovery HTTP now rejects passwords above 1,024 UTF-8 bytes before dispatch and deterministic OpenAPI documents the byte cap; focused 39/39 and full 352/352 plus 11/11 Chrome pass; Task 11 remains gated pending same-reviewer approval |
-| 11. Express and Next.js | Pending | Not run |
+| 10. Browser client | Complete — independently approved | Confucius approved exact HEAD `ccd91dc5d0ad3660bcc2a3540311330f7fe38145` with 0 Critical/0 Important/0 Minor after 89/89 targeted, 352/352 full Vitest, 11/11 Chrome, UTF-8/OpenAPI, migration-hash, export-isolation, and no-paid-service verification |
+| 11. Express and Next.js | In progress | Task 10 gate cleared; RED/GREEN adapter implementation and independent review pending |
 | 12. Administration controls | Pending | Not run |
 | 13. Documentation and examples | Pending | Not run |
 | 14. Release verification | Pending | Not run |
@@ -561,6 +561,10 @@ Final-Minor exact product target:
 `074a4ca2172da18ee366474a714ab0788372e552`; verified GREEN ledger:
 `2d6e9504bd8d0e8ab6af3bbca94dbed8ef54ffe8`. The subsequent target-record
 commit is documentation-only.
+
+Task 10 final blockers: none. Confucius independently approved exact HEAD
+`ccd91dc5d0ad3660bcc2a3540311330f7fe38145` with zero Critical, Important, or
+Minor findings. Task 11 may now begin. No paid or hosted service is required.
 
 Remediation round-2 exact product target:
 `a3c880081fcce627021e57259b54ca2b4ad18f52`. Verified GREEN ledger:
