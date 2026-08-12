@@ -1155,7 +1155,9 @@ service, remote database, live OAuth/mail, or external application write is
 included. Product blockers are zero. Independent Luna Max review is pending
 because subagent capacity is exhausted until the reported retry time; therefore
 Task 10 is not approved and Task 11 has not started. Exact hashes and full gate
-evidence are in the Task 10 report.
+evidence are in the Task 10 report. The exact bounded implementation review
+target is `343a602fd21e638a665710dc4345e3f0ed0b5b19`; the subsequent docs-ledger commit
+changes no product code.
 
 Task 2 Review Fix Pass 1 final verification:
 
