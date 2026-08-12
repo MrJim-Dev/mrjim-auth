@@ -29,6 +29,9 @@ function capture(command, args) {
   return result.stdout;
 }
 
+const initialStatus = capture("git", ["status", "--porcelain", "--untracked-files=all"]);
+if (initialStatus.trim() !== "") throw new Error("release:check requires a clean checkout");
+
 run("pnpm", ["install", "--frozen-lockfile"]);
 run("pnpm", ["build"]);
 run("pnpm", ["lint"]);
@@ -58,6 +61,10 @@ const required = [
   "dist/index.d.ts",
   "dist/index.js.map",
   "dist/postgres/migrations/0001_core.sql",
+  "dist/postgres/migrations/0002_authorization.sql",
+  "dist/postgres/migrations/0003_oauth_operations.sql",
+  "dist/postgres/migrations/0004_repository_hardening.sql",
+  "dist/postgres/migrations/0005_oauth_callback.sql",
   "dist/postgres/migrations/0006_admin_operations.sql",
 ];
 for (const path of required) {
@@ -73,4 +80,6 @@ for (const path of files) {
 }
 
 run("git", ["diff", "--check"]);
+const finalStatus = capture("git", ["status", "--porcelain", "--untracked-files=all"]);
+if (finalStatus.trim() !== "") throw new Error("release:check generated or found uncommitted files");
 console.log(`\nrelease:check passed (${files.size} packed files inspected)`);

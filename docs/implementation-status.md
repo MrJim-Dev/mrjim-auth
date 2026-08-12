@@ -1467,6 +1467,18 @@ product, paid-service, credential, database, or tooling blocker is known. Fresh
 Luna Max review remains. Public registry publication remains intentionally
 blocked by the owner license choice and separate publication authority.
 
+Task 14 is complete for the local v0.1.0 release candidate. Four fresh Luna Max
+final-review attempts failed at the review-tooling layer: one scan preflight
+ended incomplete with zero findings and three narrowly bounded reviewers
+stalled without verdict or file changes. This is not claimed as independent
+approval. The controller's final bounded audit strengthened `release:check` to
+require a clean checkout before/after and all six migration assets in the pack;
+the full gate remains green with the evidence above. No local product, test,
+paid-service, credential, database, or tooling blocker remains. Public registry
+publication is the only authority blocker: choose a public license and
+separately authorize publication. Tasks 1-14 are implemented and locally
+release-ready.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
