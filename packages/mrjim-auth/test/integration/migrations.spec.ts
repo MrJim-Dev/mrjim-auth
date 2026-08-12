@@ -553,6 +553,27 @@ describe("Task 3 PostgreSQL migrations", () => {
     expect(MIGRATIONS.map((migration) => migration.sql).join(" ")).not.toMatch(forbiddenPattern);
   });
 
+  it("accepts dotted dynamic permission resources while preserving legacy resources", async () => {
+    await pool.query(
+      `INSERT INTO auth.permissions (key, resource, action)
+       VALUES ('auth.roles.manage', 'auth.roles', 'manage'), ('users.read', 'users', 'read')`,
+    );
+    await expectDatabaseError(
+      () => pool.query(
+        `INSERT INTO auth.permissions (key, resource, action)
+         VALUES ('Auth.roles.manage', 'Auth.roles', 'manage')`,
+      ),
+      /permissions_(resource|key)_check/i,
+    );
+    await expectDatabaseError(
+      () => pool.query(
+        `INSERT INTO auth.permissions (key, resource, action)
+         VALUES ('auth.roles/invalid.manage', 'auth.roles/invalid', 'manage')`,
+      ),
+      /permissions_(resource|key)_check/i,
+    );
+  });
+
   it("records ordered checksums, is idempotent, and verifies the schema", async () => {
     const firstStatus = await migrationStatus(pool);
     expect(firstStatus.map((migration) => migration.version)).toEqual(
@@ -774,8 +795,8 @@ describe("Task 3 PostgreSQL migrations", () => {
     );
     await expectDatabaseError(
       () => pool.query(
-        `INSERT INTO auth.api_keys (prefix, key_hash, kind, created_at, expires_at)
-         VALUES ('sk_expired', $1, 'secret', now(), now() - interval '1 second')`,
+        `INSERT INTO auth.api_keys (prefix, key_hash, kind, name, created_at, expires_at)
+         VALUES ('sk_expired', $1, 'secret', 'expired-key', now(), now() - interval '1 second')`,
         [Buffer.alloc(32, 36)],
       ),
       /api_keys_expiry_check/i,
@@ -854,8 +875,8 @@ describe("Task 3 PostgreSQL migrations", () => {
     const roleId = await createRole("cascade_role");
     const sessionId = await createSession(userId);
     const apiKeyRows = await queryRows(
-      `INSERT INTO auth.api_keys (prefix, key_hash, kind, scopes)
-       VALUES ('pk_test', $1, 'publishable', ARRAY['invoice.read'])
+      `INSERT INTO auth.api_keys (prefix, key_hash, kind, name, scopes)
+       VALUES ('pk_test', $1, 'publishable', 'test-key', ARRAY['invoice.read'])
        RETURNING id`,
       [Buffer.alloc(32, 7)],
     );
@@ -1170,7 +1191,7 @@ describe("Task 3 PostgreSQL migrations", () => {
     );
     await pool.query(
       `INSERT INTO auth.schema_migrations (version, migration_order, checksum, package_version)
-       VALUES ('0004_unknown', 6, repeat('a', 64), $1)`,
+       VALUES ('0004_unknown', 7, repeat('a', 64), $1)`,
       [packageVersion],
     );
 
@@ -1205,6 +1226,7 @@ describe("Task 3 PostgreSQL migrations", () => {
       }
     }
 
+    await pool.query("UPDATE auth.schema_migrations SET migration_order = 8 WHERE version = '0006_admin_operations'");
     await pool.query("UPDATE auth.schema_migrations SET migration_order = 6 WHERE version = '0002_authorization'");
     await pool.query("UPDATE auth.schema_migrations SET migration_order = 7 WHERE version = '0003_oauth_operations'");
     try {
@@ -1213,6 +1235,7 @@ describe("Task 3 PostgreSQL migrations", () => {
       await pool.query("UPDATE auth.schema_migrations SET migration_order = migration_order + 10 WHERE version IN ('0002_authorization', '0003_oauth_operations')");
       await pool.query("UPDATE auth.schema_migrations SET migration_order = 2 WHERE version = '0002_authorization'");
       await pool.query("UPDATE auth.schema_migrations SET migration_order = 3 WHERE version = '0003_oauth_operations'");
+      await pool.query("UPDATE auth.schema_migrations SET migration_order = 6 WHERE version = '0006_admin_operations'");
     }
   });
 

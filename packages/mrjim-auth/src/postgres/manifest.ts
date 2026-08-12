@@ -19,6 +19,7 @@ const migrationFileNames = [
   ["0003_oauth_operations", "0003_oauth_operations.sql", "0.1.0"],
   ["0004_repository_hardening", "0004_repository_hardening.sql", "0.1.0"],
   ["0005_oauth_callback", "0005_oauth_callback.sql", "0.1.0"],
+  ["0006_admin_operations", "0006_admin_operations.sql", "0.1.0"],
 ] as const;
 
 function readPackageVersion(): string {

@@ -239,8 +239,8 @@ describe("package export boundaries", () => {
   it("exposes the Node-only lifecycle and OAuth services without browser dependencies", async () => {
     const server = await import("mrjim-auth/server");
     expect(Object.keys(server).sort()).toEqual([
-      "ARGON2ID_PASSWORD_POLICY",
       "ADMIN_MUTATION_RATE_LIMIT_POLICY",
+      "ARGON2ID_PASSWORD_POLICY",
       "AuthServer",
       "AuthorizationService",
       "ES256_ALGORITHM",
@@ -253,12 +253,12 @@ describe("package export boundaries", () => {
       "OAUTH_START_RATE_LIMIT_POLICY",
       "OAuthProviderError",
       "OAuthService",
-      "OidcOAuthProvider",
-      "OneTimeTokenService",
       "OTP_ISSUE_RATE_LIMIT_POLICY",
       "OTP_VERIFY_RATE_LIMIT_POLICY",
-      "PostgresRateLimiter",
+      "OidcOAuthProvider",
+      "OneTimeTokenService",
       "PasswordService",
+      "PostgresRateLimiter",
       "RATE_LIMIT_POLICIES",
       "RECOVERY_RATE_LIMIT_POLICY",
       "RESEND_RATE_LIMIT_POLICY",

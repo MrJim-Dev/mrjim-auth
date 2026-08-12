@@ -24,6 +24,7 @@ export const REQUIRED_TABLES = [
   "user_roles",
   "api_keys",
   "audit_log",
+  "rate_limit_buckets",
   "schema_migrations",
 ] as const;
 
@@ -134,12 +135,18 @@ export const REQUIRED_COLUMNS: Readonly<Record<RequiredTable, readonly ColumnCon
     uuid("id"), text("prefix"), bytea("key_hash"), text("kind"),
     column("scopes", "ARRAY", "_text", false, "ARRAY[]::text[]"), timestamp("last_used_at", true),
     timestamp("expires_at", true), timestamp("revoked_at", true), timestamp("created_at", false, "now()"),
+    text("name"),
   ],
   audit_log: [
     uuid("id"), uuid("actor_user_id", true, null), uuid("actor_key_id", true, null),
     uuid("actor_session_id", true, null), text("action"), text("target_type"), uuid("target_id", true, null),
     column("ip_address", "inet", "inet", true), text("user_agent", true), jsonb("metadata"),
     text("outcome"), timestamp("occurred_at", false, "now()"),
+  ],
+  rate_limit_buckets: [
+    bytea("key_digest"), text("bucket"), timestamp("window_start"), timestamp("window_end"),
+    column("count", "integer", "int4", false, "0"),
+    timestamp("created_at", false, "now()"), timestamp("updated_at", false, "now()"),
   ],
   schema_migrations: [
     text("version"), column("migration_order", "integer", "int4", false, null), text("checksum"),
@@ -261,6 +268,30 @@ export const REQUIRED_INDEXES: readonly IndexContract[] = [
     definition: "CREATE UNIQUE INDEX api_keys_prefix_key ON auth.api_keys USING btree (prefix)",
   },
   primaryIndex("audit_log_pkey", "audit_log", "id"),
+  {
+    indexName: "api_keys_active_name_key",
+    unique: true,
+    primary: false,
+    definition: "CREATE UNIQUE INDEX api_keys_active_name_key ON auth.api_keys USING btree (name) WHERE (revoked_at IS NULL)",
+  },
+  {
+    indexName: "audit_log_occurred_at_id_idx",
+    unique: false,
+    primary: false,
+    definition: "CREATE INDEX audit_log_occurred_at_id_idx ON auth.audit_log USING btree (occurred_at DESC, id DESC)",
+  },
+  {
+    indexName: "audit_log_actor_user_occurred_at_id_idx",
+    unique: false,
+    primary: false,
+    definition: "CREATE INDEX audit_log_actor_user_occurred_at_id_idx ON auth.audit_log USING btree (actor_user_id, occurred_at DESC, id DESC)",
+  },
+  {
+    indexName: "rate_limit_buckets_window_end_idx",
+    unique: false,
+    primary: false,
+    definition: "CREATE INDEX rate_limit_buckets_window_end_idx ON auth.rate_limit_buckets USING btree (window_end)",
+  },
 ];
 
 /** Expected constraint definition and catalog properties. */
@@ -404,7 +435,7 @@ export const REQUIRED_CONSTRAINTS: readonly ConstraintContract[] = [
   checkConstraint("roles_rank_check", "CHECK (rank >= 0)"),
   uniqueConstraint("roles_key_unique", "UNIQUE (key)", ["key"]),
   primaryKey("permissions_pkey", "PRIMARY KEY (id)", ["id"]),
-  checkConstraint("permissions_resource_check", "CHECK (resource = lower(btrim(resource)) AND (resource = '*'::text OR resource ~ '^[a-z0-9_:-]+$'::text))"),
+  checkConstraint("permissions_resource_check", "CHECK (resource = lower(btrim(resource)) AND (resource = '*'::text OR resource ~ '^[a-z0-9_:-]+(\\.[a-z0-9_:-]+)*$'::text))"),
   checkConstraint("permissions_action_check", "CHECK (action = lower(btrim(action)) AND (action = '*'::text OR action ~ '^[a-z0-9_:-]+$'::text))"),
   checkConstraint("permissions_key_check", "CHECK (key = lower(btrim(key)) AND key = ((resource || '.'::text) || action))"),
   checkConstraint("permissions_wildcard_check", "CHECK (resource <> '*'::text OR action = '*'::text)"),
@@ -428,12 +459,19 @@ export const REQUIRED_CONSTRAINTS: readonly ConstraintContract[] = [
   checkConstraint("api_keys_expiry_check", "CHECK (expires_at IS NULL OR expires_at > created_at)"),
   uniqueConstraint("api_keys_key_hash_key", "UNIQUE (key_hash)", ["key_hash"]),
   uniqueConstraint("api_keys_prefix_key", "UNIQUE (prefix)", ["prefix"]),
+  checkConstraint("api_keys_name_check", "CHECK (name = btrim(name) AND btrim(name) <> ''::text AND length(name) <= 128)"),
   primaryKey("audit_log_pkey", "PRIMARY KEY (id)", ["id"]),
   checkConstraint("audit_log_action_check", "CHECK (btrim(action) <> ''::text)"),
   checkConstraint("audit_log_target_type_check", "CHECK (btrim(target_type) <> ''::text)"),
   checkConstraint("audit_log_metadata_object_check", "CHECK (jsonb_typeof(metadata) = 'object'::text)"),
   checkConstraint("audit_log_metadata_redaction_check", "CHECK (auth.audit_metadata_is_safe(metadata))"),
   checkConstraint("audit_log_outcome_check", "CHECK (outcome = ANY (ARRAY['success'::text, 'failure'::text]))"),
+  primaryKey("rate_limit_buckets_pkey", "PRIMARY KEY (key_digest, bucket, window_start)", ["key_digest", "bucket", "window_start"]),
+  checkConstraint("rate_limit_buckets_key_digest_length_check", "CHECK (octet_length(key_digest) = 32)"),
+  checkConstraint("rate_limit_buckets_bucket_check", "CHECK (bucket = btrim(bucket) AND btrim(bucket) <> ''::text AND length(bucket) <= 128)"),
+  checkConstraint("rate_limit_buckets_window_check", "CHECK (window_end > window_start)"),
+  checkConstraint("rate_limit_buckets_count_check", "CHECK (count >= 0 AND count <= 1000000)"),
+  checkConstraint("rate_limit_buckets_updated_at_check", "CHECK (updated_at >= created_at)"),
 ];
 
 /** Expected functions and properties that enforce non-bypassable invariants. */

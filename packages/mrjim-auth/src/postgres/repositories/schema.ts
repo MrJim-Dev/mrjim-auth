@@ -176,6 +176,7 @@ export interface ApiKeysTable {
   expires_at: NullableTimestamptz;
   revoked_at: NullableTimestamptz;
   created_at: Timestamptz;
+  name: string;
 }
 
 /** Typed row and write shape for `auth.audit_log`. */
@@ -194,6 +195,17 @@ export interface AuditLogTable {
   occurred_at: Timestamptz;
 }
 
+/** Typed row and write shape for durable rate-limit buckets. */
+export interface RateLimitBucketsTable {
+  key_digest: Bytea;
+  bucket: string;
+  window_start: Timestamptz;
+  window_end: Timestamptz;
+  count: number;
+  created_at: Timestamptz;
+  updated_at: Timestamptz;
+}
+
 /** Complete typed Kysely database shape for the Task 3 auth schema. */
 export interface Database {
   users: UsersTable;
@@ -210,6 +222,7 @@ export interface Database {
   oauth_states: OAuthStatesTable;
   api_keys: ApiKeysTable;
   audit_log: AuditLogTable;
+  rate_limit_buckets: RateLimitBucketsTable;
 }
 
 /** A root Kysely instance or an active transaction scoped to this schema. */

@@ -53,8 +53,10 @@ async function command(
   options: { readonly logPath?: string; readonly cwd?: string } = {},
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(executable, args, { cwd: options.cwd, stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(executable, args, { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
     let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
     child.once("error", reject);
     child.once("close", async (code) => {
@@ -63,7 +65,7 @@ async function command(
         return;
       }
       const log = options.logPath === undefined ? "" : await readFile(options.logPath, "utf8").catch(() => "");
-      reject(new Error(`${executable} failed: ${(stderr || log).trim()}`));
+      reject(new Error(`${executable} failed with ${code ?? "unknown"}: ${(stderr || stdout || log).trim()}`));
     });
   });
 }
@@ -176,7 +178,7 @@ describe("Task 12 rate-limit adapters", () => {
   let disposable: DisposablePostgres | undefined;
 
   beforeAll(async () => {
-    disposable = await startPostgres("mrjim-auth-task12-rate-limit");
+    disposable = await startPostgres("mja12");
     await migrate(disposable.pool, { direction: "up" });
   }, 120_000);
 
@@ -241,7 +243,7 @@ describe("Task 12 rate-limit adapters", () => {
     expect(expired.rows[0]?.count).toBe(0);
 
     const malformed: RateLimitQueryExecutor = {
-      query: async () => ({ rows: [{ allowed: "yes" }] }),
+      query: async () => ({ rows: [{ allowed: "yes" }] as readonly Record<string, unknown>[] }),
     };
     const malformedLimiter = new PostgresRateLimiter({ pool: malformed, hmacKey: HMAC_KEY });
     await expect(malformedLimiter.consume("adapter-caller", policy())).rejects.toThrow(/adapter|decision/i);

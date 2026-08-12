@@ -110,3 +110,20 @@ export {
   type CreateAuthServerOptions,
 } from "./create-auth-server.js";
 export { generateOpenApiDocument, type OpenApiDocumentOptions } from "./openapi.js";
+export {
+  ADMIN_MUTATION_RATE_LIMIT_POLICY,
+  InMemoryRateLimiter,
+  LOGIN_IDENTIFIER_RATE_LIMIT_POLICY,
+  LOGIN_IP_RATE_LIMIT_POLICY,
+  OAUTH_START_RATE_LIMIT_POLICY,
+  OTP_ISSUE_RATE_LIMIT_POLICY,
+  OTP_VERIFY_RATE_LIMIT_POLICY,
+  PostgresRateLimiter,
+  RATE_LIMIT_POLICIES,
+  RECOVERY_RATE_LIMIT_POLICY,
+  RESEND_RATE_LIMIT_POLICY,
+  SIGNUP_RATE_LIMIT_POLICY,
+  type InMemoryRateLimiterOptions,
+  type PostgresRateLimiterOptions,
+  type RateLimitQueryExecutor,
+} from "./rate-limit.js";
