@@ -697,11 +697,19 @@ export class UserService {
       const limited = await this.checkRateLimits("recovery_verify", parsed.normalized, contextOptions(context));
       if (limited !== null) return limited as AuthResult<{ readonly user: User }>;
       const redirectTo = trustedValidation(() => this.email.resolveRedirect(input.redirectTo));
-      const verified = await trustedAsync(() => this.oneTimeTokens.verify({ purpose: "recovery", target: parsed.normalized, token: input.token, redirectTo }));
-      if (verified.error !== null) return authFailure(verified.error);
-      if (verified.data.user_id === null) return authFailure(invalidCredentials());
-      const user = await this.changePasswordForRecovery(verified.data.user_id, input.password, context);
-      return authSuccess({ user });
+      const passwordHash = await this.passwords.hash(input.password);
+      const now = trustedValidation(() => validNow(this.clock));
+      const consumed = await trustedAsync(() => this.oneTimeTokens.consumeForMutation({
+        purpose: "recovery",
+        target: parsed.normalized,
+        token: input.token,
+        redirectTo,
+      }, async (transaction, verification) => {
+        if (verification.user_id === null) trustedFailure(invalidCredentials());
+        return this.changePasswordForRecovery(transaction, verification.user_id, passwordHash, now);
+      }));
+      if (consumed.error !== null) return authFailure(consumed.error);
+      return authSuccess({ user: consumed.data });
     } catch (error) {
       return mapUnexpected(error);
     }
@@ -768,31 +776,27 @@ export class UserService {
   }
 
   private async changePasswordForRecovery(
+    transaction: AuthRepository,
     userId: UUID,
-    password: string,
-    context: UserRequestContext | undefined,
+    passwordHash: string,
+    now: Date,
   ): Promise<User> {
-    void context;
-    const passwordHash = await this.passwords.hash(password);
-    const now = trustedValidation(() => validNow(this.clock));
-    return adapterTransaction(() => this.repository.transaction(async (transaction) => {
-      const current = await transaction.users.findByIdForUpdate(userId, { now });
-      if (current === null || isBanned(current, now)) trustedFailure(invalidCredentials());
-      await transaction.passwordCredentials.upsert(userId, passwordHash, now, { now });
-      await transaction.sessions.revokeUserSessions(userId, undefined, { now });
-      const changed = await transaction.users.findByIdForUpdate(userId, { now });
-      if (changed === null) trustedFailure(invalidCredentials());
-      await transaction.operations.appendAudit({
-        actor_user_id: userId,
-        target_type: "user",
-        target_id: userId,
-        action: "user.password_reset",
-        metadata: sanitizeRedactedMetadata({ event: "user.password_reset" }),
-        outcome: "success",
-        occurred_at: now,
-      }, { now } satisfies RepositoryOperationOptions);
-      return changed;
-    }), rethrowTrusted);
+    const current = await transaction.users.findByIdForUpdate(userId, { now });
+    if (current === null || isBanned(current, now)) trustedFailure(invalidCredentials());
+    await transaction.passwordCredentials.upsert(userId, passwordHash, now, { now });
+    await transaction.sessions.revokeUserSessions(userId, undefined, { now });
+    const changed = await transaction.users.findByIdForUpdate(userId, { now });
+    if (changed === null) trustedFailure(invalidCredentials());
+    await transaction.operations.appendAudit({
+      actor_user_id: userId,
+      target_type: "user",
+      target_id: userId,
+      action: "user.password_reset",
+      metadata: sanitizeRedactedMetadata({ event: "user.password_reset" }),
+      outcome: "success",
+      occurred_at: now,
+    }, { now } satisfies RepositoryOperationOptions);
+    return changed;
   }
 
   private async handleIssuanceFailure(

@@ -151,6 +151,26 @@ function transactionFailureRepository(base: PostgresAdapter, failure: "repositor
   };
 }
 
+function recoveryMutationFailureRepository(base: PostgresAdapter, failure: "credential" | "session" | "audit"): PostgresAdapter {
+  return {
+    ...base,
+    async transaction<T>(callback: (transaction: AuthRepository) => Promise<T>): Promise<T> {
+      return base.transaction((transaction) => callback({
+        ...transaction,
+        passwordCredentials: failure === "credential"
+          ? { ...transaction.passwordCredentials, upsert: async () => { throw new Error("injected credential failure"); } }
+          : transaction.passwordCredentials,
+        sessions: failure === "session"
+          ? { ...transaction.sessions, revokeUserSessions: async () => { throw new Error("injected session failure"); } }
+          : transaction.sessions,
+        operations: failure === "audit"
+          ? { ...transaction.operations, appendAudit: async () => { throw new Error("injected audit failure"); } }
+          : transaction.operations,
+      } as AuthRepository));
+    },
+  };
+}
+
 function targetPrecheckBarrier(expected: number, timeoutMs: number) {
   let arrivalCount = 0;
   let opened = false;
@@ -389,6 +409,124 @@ describe("Task 6 user lifecycle", () => {
     expect(oldRefresh.data).toBeNull();
     const signedIn = await service.users.signIn({ email: "recovery@example.com", password: "new correct horse battery staple" });
     expect(signedIn.error).toBeNull();
+  });
+
+  it("validates the replacement password before consuming the recovery proof", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const created = data(await service.users.signUp({ email: "recovery-password-validation@example.com", password: PASSWORD }));
+    if (created.user === null) throw new Error("expected recovery password-validation user");
+    await service.users.resetPasswordForEmail(created.user.email ?? "", { redirectTo: CALLBACK });
+    const message = service.mailer.latest("recovery");
+    const invalid = await service.users.resetPassword({
+      email: created.user.email ?? "",
+      token: message?.variables.token ?? "",
+      password: "😀".repeat(257),
+      redirectTo: CALLBACK,
+    });
+    expect(invalid).toMatchObject({ data: null, error: { code: "invalid_request", status: 400 } });
+    const tokenRow = await disposable?.pool.query(
+      "SELECT consumed_at FROM auth.one_time_tokens WHERE target = $1 AND purpose = 'recovery' ORDER BY created_at DESC LIMIT 1",
+      [created.user.email?.toLowerCase()],
+    );
+    expect(tokenRow?.rows[0]?.consumed_at).toBeNull();
+
+    const retry = await service.users.resetPassword({
+      email: created.user.email ?? "",
+      token: message?.variables.token ?? "",
+      password: "new recovery password",
+      redirectTo: CALLBACK,
+    });
+    expect(retry.error).toBeNull();
+  });
+
+  it("rolls back the recovery proof and all mutation effects when recovery mutation fails", async () => {
+    for (const failure of ["credential", "session", "audit"] as const) {
+      const source = services({ requireEmailConfirmation: false, concealUserExistence: false });
+      const created = data(await source.users.signUp({ email: `recovery-mutation-${failure}@example.com`, password: PASSWORD }));
+      if (created.user === null || created.session === null) throw new Error("expected recovery mutation-failure user");
+      await source.users.resetPasswordForEmail(created.user.email ?? "", { redirectTo: CALLBACK });
+      const message = source.mailer.latest("recovery");
+      const failing = services({
+        requireEmailConfirmation: false,
+        concealUserExistence: false,
+        repository: recoveryMutationFailureRepository(source.repository, failure),
+      });
+      const failed = await failing.users.resetPassword({
+        email: created.user.email ?? "",
+        token: message?.variables.token ?? "",
+        password: "new recovery password",
+        redirectTo: CALLBACK,
+      });
+      expect(failed).toMatchObject({ data: null, error: { code: "internal_error", status: 500 } });
+
+      const tokenRow = await disposable?.pool.query(
+        "SELECT consumed_at FROM auth.one_time_tokens WHERE target = $1 AND purpose = 'recovery' ORDER BY created_at DESC LIMIT 1",
+        [created.user.email?.toLowerCase()],
+      );
+      expect(tokenRow?.rows[0]?.consumed_at).toBeNull();
+      const sessionRows = await disposable?.pool.query("SELECT revoked_at FROM auth.sessions WHERE user_id = $1", [created.user.id]);
+      expect(sessionRows?.rows.every((row) => row.revoked_at === null)).toBe(true);
+      const auditRows = await disposable?.pool.query(
+        "SELECT action FROM auth.audit_log WHERE target_id = $1 AND action = 'user.password_reset'",
+        [created.user.id],
+      );
+      expect(auditRows?.rows).toHaveLength(0);
+      expect((await source.users.signIn({ email: created.user.email ?? "", password: PASSWORD })).error).toBeNull();
+    }
+  });
+
+  it("rejects a recovery proof replay after the first reset commits", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const created = data(await service.users.signUp({ email: "recovery-replay@example.com", password: PASSWORD }));
+    if (created.user === null) throw new Error("expected recovery replay user");
+    await service.users.resetPasswordForEmail(created.user.email ?? "", { redirectTo: CALLBACK });
+    const message = service.mailer.latest("recovery");
+    const input = {
+      email: created.user.email ?? "",
+      token: message?.variables.token ?? "",
+      password: "new recovery password",
+      redirectTo: CALLBACK,
+    };
+    const first = await service.users.resetPassword(input);
+    expect(first.error).toBeNull();
+    const replay = await service.users.resetPassword({ ...input, password: "another recovery password" });
+    expect(replay).toMatchObject({ data: null, error: { code: "invalid_token", status: 401 } });
+  });
+
+  it("allows exactly one concurrent recovery reset to win the one-time proof", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const created = data(await service.users.signUp({ email: "recovery-concurrent@example.com", password: PASSWORD }));
+    if (created.user === null) throw new Error("expected concurrent recovery user");
+    await service.users.resetPasswordForEmail(created.user.email ?? "", { redirectTo: CALLBACK });
+    const message = service.mailer.latest("recovery");
+    const inputs = [
+      {
+        email: created.user.email ?? "",
+        token: message?.variables.token ?? "",
+        password: "concurrent recovery password one",
+        redirectTo: CALLBACK,
+      },
+      {
+        email: created.user.email ?? "",
+        token: message?.variables.token ?? "",
+        password: "concurrent recovery password two",
+        redirectTo: CALLBACK,
+      },
+    ] as const;
+    const results = await Promise.all(inputs.map((input) => service.users.resetPassword(input)));
+    expect(results.filter((result) => result.error === null)).toHaveLength(1);
+    expect(results.filter((result) => result.data === null)).toHaveLength(1);
+    expect(results.find((result) => result.error !== null)?.error?.code).toBe("invalid_token");
+    const tokenRows = await disposable?.pool.query(
+      "SELECT consumed_at FROM auth.one_time_tokens WHERE target = $1 AND purpose = 'recovery' ORDER BY created_at DESC LIMIT 1",
+      [created.user.email?.toLowerCase()],
+    );
+    expect(tokenRows?.rows[0]?.consumed_at).not.toBeNull();
+    const auditRows = await disposable?.pool.query(
+      "SELECT action FROM auth.audit_log WHERE target_id = $1 AND action = 'user.password_reset'",
+      [created.user.id],
+    );
+    expect(auditRows?.rows).toHaveLength(1);
   });
 
   it("binds direct OTP resend failures to the presented digest", async () => {

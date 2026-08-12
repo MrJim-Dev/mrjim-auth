@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { AuthConfigurationError } from "../../src/shared/errors.js";
 import { generateOpenApiDocument } from "../../src/server/openapi.js";
+import { recoverVerifyRequestSchema } from "../../src/server/routes/contracts.js";
 
 const BASE_URL = "https://project.example.com/auth/v1";
 
@@ -94,6 +95,20 @@ describe("Task 9 deterministic OpenAPI contract", () => {
     expect(JSON.stringify(defaultDocument, null, 2) + "\n").toBe(
       readFileSync(new URL("../../../../docs/reference/openapi.json", import.meta.url), "utf8"),
     );
+  });
+
+  it("matches recovery password and proof bounds at the route contract boundary", () => {
+    const valid = { email: "user@example.com", token: "x".repeat(128), password: "x".repeat(1024) };
+    expect(recoverVerifyRequestSchema.safeParse(valid).success).toBe(true);
+    expect(recoverVerifyRequestSchema.safeParse({ ...valid, token: "x".repeat(129) }).success).toBe(false);
+    expect(recoverVerifyRequestSchema.safeParse({ ...valid, password: "x".repeat(7) }).success).toBe(false);
+    expect(recoverVerifyRequestSchema.safeParse({ ...valid, password: "x".repeat(1025) }).success).toBe(false);
+
+    const document = generateOpenApiDocument() as any;
+    const requestSchemaRef = document.paths["/recover/verify"].post.requestBody.content["application/json"].schema.$ref as string;
+    const requestSchema = document.components.schemas[requestSchemaRef.slice("#/components/schemas/".length)] as any;
+    expect(requestSchema.properties.token).toMatchObject({ minLength: 1, maxLength: 128 });
+    expect(requestSchema.properties.password).toMatchObject({ minLength: 8, maxLength: 1024 });
   });
 
   it("does not depend on mutable post-import collection and string intrinsics", () => {

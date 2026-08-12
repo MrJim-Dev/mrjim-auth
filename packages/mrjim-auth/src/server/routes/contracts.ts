@@ -158,8 +158,8 @@ export const recoverRequestSchema = z.object({
 /** Strict wire request for consuming a recovery proof and replacing a password. */
 export const recoverVerifyRequestSchema = z.object({
   email: emailString,
-  token: nonEmptyString,
-  password: nonEmptyString,
+  token: z.string().min(1).max(128),
+  password: passwordString,
   redirect_to: redirectString.optional(),
 }).strict();
 
