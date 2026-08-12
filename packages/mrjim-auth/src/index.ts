@@ -56,6 +56,7 @@ export type {
   PasswordSignInInput,
   PermissionScope,
   RecoveryOptions,
+  ResetPasswordInput,
   ResendInput,
   ResendType,
   SessionData,

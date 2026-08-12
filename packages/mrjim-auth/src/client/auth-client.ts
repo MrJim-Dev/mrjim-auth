@@ -16,7 +16,7 @@ import type {
   LockFunction,
 } from "../shared/types.js";
 import { createEventBus, type AuthStateCallback, type AuthSubscription, type EventBus } from "./events.js";
-import { initializeAuthClient } from "./initialize.js";
+import { initializeAuthClient, readAuthUrl } from "./initialize.js";
 import { createLockController, isLockBoundaryError, type LockController } from "./lock.js";
 import { createStorageController, type PkceTransaction, type StorageController } from "./storage.js";
 import { createTransport, type Transport } from "./transport.js";
@@ -67,65 +67,114 @@ export type EmailOtpType = "emailOtp" | "magicLink" | "email_otp" | "magic_link"
 export type ResendType = "signup" | "recovery";
 export type SignOutScope = "local" | "global" | "others";
 
+/** Signup redirect and user-metadata options. */
 export interface AuthMethodOptions {
+  /** Exact allowlisted callback URL. */
   readonly redirectTo?: string;
+  /** Project-defined user metadata. */
   readonly data?: JsonObject;
 }
 
+/** Email/password signup input. */
 export interface SignUpInput {
+  /** Email address to normalize and register. */
   readonly email: string;
+  /** Project-policy password. */
   readonly password: string;
+  /** Optional redirect and initial user metadata. */
   readonly options?: AuthMethodOptions;
 }
 
+/** Email/password sign-in input. */
 export interface PasswordSignInInput {
+  /** Registered account email. */
   readonly email: string;
+  /** Account password. */
   readonly password: string;
 }
 
+/** Magic-link or email-OTP issuance input. */
 export interface OtpSignInInput {
+  /** Target email for the magic link or OTP. */
   readonly email: string;
+  /** Issuance type and exact redirect. */
   readonly options?: {
     readonly type?: EmailOtpType;
     readonly redirectTo?: string;
   };
 }
 
+/** Magic-link or email-OTP verification input. */
 export interface VerifyOtpInput {
+  /** Email bound to the proof. */
   readonly email: string;
+  /** One-time proof delivered by the project mailer. */
   readonly token: string;
+  /** Verification mode used when the proof was issued. */
   readonly type: EmailOtpType;
+  /** Optional exact redirect binding. */
   readonly options?: { readonly redirectTo?: string };
 }
 
+/** OAuth/OIDC redirect behavior. */
 export interface OAuthOptions {
+  /** Exact callback URL allowed by project configuration. */
   readonly redirectTo?: string;
+  /** Return the URL without assigning browser location. */
   readonly skipBrowserRedirect?: boolean;
 }
 
+/** OAuth/OIDC provider input. */
 export interface OAuthInput {
+  /** Configured provider key such as `google`. */
   readonly provider: string;
+  /** Redirect behavior for this PKCE transaction. */
   readonly options?: OAuthOptions;
 }
 
+/** Password-recovery redirect behavior. */
 export interface RecoveryOptions {
+  /** Exact redirect bound to the one-time recovery proof. */
   readonly redirectTo?: string;
 }
 
-export interface ResendInput {
-  readonly type: ResendType;
+/** Purpose-bound recovery proof used to replace a forgotten password. */
+export interface ResetPasswordInput {
+  /** Account email addressed by the recovery message. */
   readonly email: string;
+  /** One-time recovery token delivered by the project mailer. */
+  readonly token: string;
+  /** Replacement password accepted under project password policy. */
+  readonly password: string;
+  /** Optional exact redirect binding used when the token was issued. */
   readonly options?: RecoveryOptions;
 }
 
+/** Signup/recovery message resend input. */
+export interface ResendInput {
+  /** Proof purpose to resend. */
+  readonly type: ResendType;
+  /** Account email addressed by the message. */
+  readonly email: string;
+  /** Optional exact redirect binding. */
+  readonly options?: RecoveryOptions;
+}
+
+/** Self-service user fields supported by the v1 HTTP contract. */
 export interface UpdateUserAttributes {
+  /** New email requiring project proof policy. */
   readonly email?: string;
+  /** Replacement user-owned metadata. */
   readonly data?: JsonObject;
+  /** Exact redirect for email-change proof. */
   readonly redirectTo?: string;
 }
 
+/** Optional project-defined authorization scope. */
 export interface PermissionScope {
+  /** Scope kind such as `organization`. */
   readonly type: string;
+  /** Project-defined scope identifier. */
   readonly id: string;
 }
 
@@ -166,6 +215,8 @@ export interface AuthNamespace {
   readonly exchangeCodeForSession: (code: string) => Promise<AuthResult<SessionData>>;
   /** Requests a non-enumerating password-recovery email. */
   readonly resetPasswordForEmail: (email: string, options?: RecoveryOptions) => Promise<AuthResult<{ readonly sent: true }>>;
+  /** Consumes a one-time recovery proof and replaces the forgotten password. */
+  readonly resetPassword: (input: ResetPasswordInput) => Promise<AuthResult<{ readonly user: User }>>;
   /** Resends a signup or recovery message. */
   readonly resend: (input: ResendInput) => Promise<AuthResult<{ readonly sent: true }>>;
   /** Reads the locally persisted session without server validation. */
@@ -204,23 +255,37 @@ export interface MrJimAuthClient {
   readonly auth: AuthNamespace;
 }
 
+/** Fully validated client auth options after defaulting. */
 export interface ClientAuthOptions {
+  /** Whether expiry-aware refresh scheduling is active. */
   readonly autoRefreshToken: boolean;
+  /** Whether sessions use the configured/default persistent storage. */
   readonly persistSession: boolean;
+  /** Whether browser callback credentials are detected and cleaned. */
   readonly detectSessionInUrl: boolean;
+  /** v1 always uses authorization-code PKCE for OAuth. */
   readonly flowType: "pkce";
+  /** Optional synchronous/asynchronous storage adapter. */
   readonly storage?: SupportedStorage | undefined;
+  /** Namespace shared by session, PKCE, events, and locks. */
   readonly storageKey: string;
+  /** Optional project lock implementation. */
   readonly lock?: LockFunction | undefined;
+  /** Optional redacted diagnostic logger. */
   readonly debug?: boolean | DebugLogger | undefined;
+  /** Prevents automatic initial storage/URL processing. */
   readonly skipAutoInitialize: boolean;
 }
 
+/** Fully validated client transport options after defaulting. */
 export interface ClientGlobalOptions {
+  /** Injected fetch implementation. */
   readonly fetch: typeof fetch;
+  /** Validated global request headers. */
   readonly headers: readonly (readonly [string, string])[];
 }
 
+/** Internal immutable client option snapshot. */
 export interface SnapshotClientOptions {
   readonly auth: ClientAuthOptions;
   readonly global: ClientGlobalOptions;
@@ -728,12 +793,12 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
 
   const refreshSessionInternal = async (supplied: Session | undefined, emit: boolean): Promise<AuthResult<SessionData>> => {
     const requested = supplied === undefined ? currentSession : copySession(supplied);
-    if (requested === null) return authFailure(expectedError("session_expired", 401, "Session is missing"));
     try {
       return await lock.run(async () => {
         const latest = await readLatest();
         const candidate = latest ?? requested;
-        if (latest !== null && latest.refresh_token !== requested.refresh_token) {
+        if (candidate === null) return authFailure(expectedError("session_expired", 401, "Session is missing"));
+        if (requested !== null && latest !== null && latest.refresh_token !== requested.refresh_token) {
           if (emit) dispatch("TOKEN_REFRESHED", latest, lastRevision, false);
           scheduleRefresh();
           return sessionResult(latest);
@@ -758,13 +823,29 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
     await initialization;
   };
 
+  const exchangeTransaction = async (code: string, transaction: PkceTransaction, event: AuthChangeEvent | undefined): Promise<AuthResult<SessionData>> => {
+    try {
+      return await lock.run(async () => {
+        const consumed = await storage.consumePkce(transaction.id);
+        if (consumed === null || consumed.expiresAt <= clientDateNow()) return authFailure(expectedError("invalid_request", 400, "OAuth transaction is invalid"));
+        const result = await resultCall(
+          () => transport.request({ method: "POST", path: "/exchange", body: { code, code_verifier: consumed.codeVerifier, redirect_to: consumed.redirectTo }, operation: "exchangeCodeForSession" }),
+          copyExchange,
+        );
+        if (result.error !== null) return result;
+        if (result.data.session.user.id !== result.data.user.id) return authFailure(internalError());
+        if (!await commit(result.data.session, event)) return authFailure(internalError());
+        return sessionResult(result.data.session);
+      });
+    } catch {
+      return authFailure(internalError());
+    }
+  };
+
   const rawExchange = async (code: string, transaction: PkceTransaction): Promise<{ readonly session: Session; readonly event?: AuthChangeEvent }> => {
-    const result = await transport.request({ method: "POST", path: "/exchange", body: { code, code_verifier: transaction.codeVerifier, redirect_to: transaction.redirectTo }, operation: "exchangeCodeForSession" });
-    if (result.error !== null) throw result.error;
-    const exchanged = copyExchange(result.data);
-    if (exchanged.session.user.id !== exchanged.user.id) throw internalError();
-    if (!await commit(exchanged.session, undefined)) throw internalError();
-    return { session: exchanged.session, event: transaction.flow === "sign_in" ? "SIGNED_IN" : "SIGNED_IN" };
+    const result = await exchangeTransaction(code, transaction, undefined);
+    if (result.error !== null || result.data === null) throw result.error ?? internalError();
+    return { session: result.data.session, event: "SIGNED_IN" };
   };
 
   initialization = snapshot.auth.skipAutoInitialize
@@ -924,11 +1005,11 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
         if (existing === null) return authFailure(expectedError("unauthorized", 401, "Authenticated session is required"));
       }
       const pair = await generatePkcePair();
-      const exactRedirect = redirect ?? (typeof clientGlobal.location === "object" && clientGlobal.location !== null && typeof (clientGlobal.location as { readonly href?: unknown }).href === "string" ? (clientGlobal.location as { readonly href: string }).href : `${transport.baseUrl}/callback`);
+      const exactRedirect = redirect ?? readAuthUrl()?.cleanedHref ?? `${transport.baseUrl}/callback`;
       const transactionId = safeStringSlice(pair.codeChallenge, 0, 24);
       if (transactionId === null) return authFailure(internalError());
       const transaction: PkceTransaction = freeze({ id: transactionId, provider, flow, codeVerifier: pair.codeVerifier, codeChallenge: pair.codeChallenge, redirectTo: exactRedirect, createdAt: clientDateNow(), expiresAt: clientDateNow() + 10 * 60_000 });
-      await storage.writePkce(transaction);
+      await lock.run(() => storage.writePkce(transaction));
       const bearer = flow === "link_identity" ? currentSession?.access_token : undefined;
       const query: Array<readonly [string, string]> = [["provider", provider], ["code_challenge", pair.codeChallenge], ["code_challenge_method", "S256"], ["flow", flow], ["redirect_to", exactRedirect]];
       const result = await resultCall(() => transport.request({ method: "GET", path: "/authorize", query, bearer, operation: flow === "link_identity" ? "linkIdentity" : "signInWithOAuth" }), (data) => {
@@ -937,7 +1018,7 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
         return { provider: authorize.provider, url: authorize.url };
       });
       if (result.error !== null) {
-        await storage.consumePkce(transaction.id);
+        await lock.run(() => storage.consumePkce(transaction.id));
         return result;
       }
       if (!skip) {
@@ -964,12 +1045,7 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
       await ensureReady();
       const transaction = await storage.findPkce();
       if (transaction === null || transaction.expiresAt <= clientDateNow()) return authFailure(expectedError("invalid_request", 400, "OAuth transaction is invalid"));
-      const consumed = await storage.consumePkce(transaction.id);
-      if (consumed === null) return authFailure(expectedError("invalid_request", 400, "OAuth transaction is invalid"));
-      const result = await resultCall(() => transport.request({ method: "POST", path: "/exchange", body: { code: safeCode, code_verifier: consumed.codeVerifier, redirect_to: consumed.redirectTo }, operation: "exchangeCodeForSession" }), copyExchange);
-      if (result.error !== null) return result;
-      if (!await commit(result.data.session, "SIGNED_IN")) return authFailure(internalError());
-      return sessionResult(result.data.session);
+      return exchangeTransaction(safeCode, transaction, "SIGNED_IN");
     });
   };
 
@@ -980,6 +1056,27 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
     return contain(async () => {
       await ensureReady();
       return resultCall(() => transport.request({ method: "POST", path: "/recover", body: { email, ...(redirect === undefined ? {} : { redirect_to: redirect }) }, operation: "resetPasswordForEmail" }), copySent);
+    });
+  };
+
+  const resetPassword = (input: ResetPasswordInput): Promise<AuthResult<{ readonly user: User }>> => {
+    const value = validateInput(input, "resetPassword input");
+    const email = requiredString(value, "email", "email", MAX_EMAIL);
+    const token = requiredString(value, "token", "recovery token", 512);
+    const password = requiredString(value, "password", "password", MAX_PASSWORD);
+    const optionsValue = optionalObject(value, "options", "recovery options");
+    const redirect = redirectFrom(optionsValue);
+    return contain(async () => {
+      await ensureReady();
+      const result = await resultCall(
+        () => transport.request({ method: "POST", path: "/recover/verify", body: { email, token, password, ...(redirect === undefined ? {} : { redirect_to: redirect }) }, operation: "resetPassword" }),
+        (response) => ({ user: copyUserResponse(response) }),
+      );
+      if (result.error === null) {
+        await clearSession(false);
+        dispatch("PASSWORD_RECOVERY", null, 0, false);
+      }
+      return result;
     });
   };
 
@@ -1147,6 +1244,7 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
     stopTimer();
     visibilityRemove?.();
     visibilityRemove = undefined;
+    transport.dispose();
     eventBus.dispose();
   };
 
@@ -1158,6 +1256,7 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
     signInWithOAuth,
     exchangeCodeForSession,
     resetPasswordForEmail,
+    resetPassword,
     resend,
     getSession,
     getUser,

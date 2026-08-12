@@ -454,7 +454,7 @@ database, external network, or paid SaaS service is required.
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Complete — round 8 independently approved | Raman approved `916d615ca8627d200e9261688bbbb5d8903d541e` with zero Critical, Important, or Minor findings after round-8 error-prototype, OIDC, HTTP, provider allowlist, `Set.delete`, packed, OpenAPI, migration, export, and full 318-test verification; evidence is recorded in the Task 9 report |
-| 10. Browser client | Review fix pass required | Luna Max returned CHANGES_REQUIRED on `343a602`: 0 Critical, 12 Important, 2 Minor; existing 20/20 focused, 338/338 Vitest, 8/8 Chrome, packaging, bundle, hash, and static gates remain green but missing race/security/recovery regressions must be fixed and re-reviewed |
+| 10. Browser client | Fix candidate green — re-review pending | All 12 Important and 2 Minor findings from the `343a602` review are remediated locally; focused 73/73, full 342/342 Vitest, 11/11 Chrome, browser repeat 22/22, packaging, bundle, migration-hash, OpenAPI, and static gates pass; same-reviewer approval is still required |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
 | 13. Documentation and examples | Pending | Not run |
@@ -491,7 +491,7 @@ earlier independent scan recorder remains a tooling-evidence blocker with the
 exact `scan.target.snapshotDigest: expected a non-empty string` failure; it is
 not a clean scan and was not the source of approval.
 
-Task 10 product/security blockers are active after independent review.
+Task 10 review blockers remain active pending same-reviewer approval.
 The exact-pinned Apache-2.0 `@playwright/test` `1.62.1` development dependency
 runs the real lifecycle suite against installed local Chrome; it is absent from
 the published runtime/browser graph. Luna Max reviewer Confucius returned
@@ -505,12 +505,31 @@ status wording. Task 10 is not approved and Task 11 has not started.
 No paid browser grid, hosted application, remote database, live OAuth provider,
 live mail, telemetry SaaS, or generic `DATABASE_URL` was used.
 
+Task 10 fix-pass RED was captured before production edits: focused client,
+lock, and HTTP coverage failed 3 files with 8 failed and 50 passed tests, plus
+one expected late-handled pre-fix timeout rejection. Browser regressions for
+URL cleanup, cross-tab PKCE atomicity, and storage-fallback event fidelity were
+also authored before source changes. Recovery completion will expose the
+existing purpose-bound one-time recovery-token transaction through a strict
+HTTP/client method; it will not misuse OAuth PKCE.
+
+The bounded fix candidate now closes those findings locally. It adds strict
+`POST /recover/verify` and `client.auth.resetPassword`, persisted-session
+refresh, acquisition-only lock timeouts, lock-atomic PKCE use, exact token-free
+storage-fallback events, complete callback cleanup and safe redirect defaults,
+expanded redaction/header controls, streaming UTF-8 response limits, abort on
+dispose, complete public input TSDoc, and portable Chrome-channel selection.
+Current GREEN is 73/73 focused, 342/342 full Vitest, 11/11 Chrome, and 22/22
+browser repeat plus frozen install, typecheck, lint, docs, packed-consumer,
+browser-graph, OpenAPI, migration-hash, and diff checks. Approval is not yet
+claimed and Task 11 has not started.
+
 ## Remaining work
 
 Task 8's third post-pass route-boundary hardening resolution and Task 9 are
-complete and independently approved. Task 10's implementation candidate and
-local release gates are complete, but independent review requires a fix pass; Tasks
-11-14 remain, with independent review after each task, followed by the
+complete and independently approved. Task 10's implementation and review fix
+candidate are locally complete, but same-reviewer approval remains required;
+Tasks 11-14 remain, with independent review after each task, followed by the
 whole-branch review and release handoff. In particular, later work must use the clean `auth`
 schema and explicit migration CLI from Task 3 for the browser/SSR surface,
 framework adapters, administration, examples, and release verification.
@@ -1115,6 +1134,8 @@ Task 2 original final verification before Review Fix Pass 1:
 Task 10 is scoped to the browser/isomorphic `createClient`, complete public
 `client.auth` methods/events, strict client boundaries, PKCE URL handling,
 auto-refresh, local browser lifecycle verification, and browser-safe exports.
+The independent review required one narrow HTTP/OpenAPI addition,
+`POST /recover/verify`, so recovery is complete rather than issuance-only.
 Tasks 11–14 remain out of scope. The authoritative clean implementation
 baseline is `4cb2ada9baef7f031cee2196186d611df5ce17bf`; `305de41f4d2420ed14cbac4d533141da4d9bd3d2` is the approved Task 9 docs-ledger parent
 used to author the brief.
@@ -1135,7 +1156,7 @@ The exact RED evidence and implementation ledger are in
 ### Local implementation and GREEN evidence
 
 The browser-safe root now exposes immutable `createClient(...).auth` with all
-22 Task 10 operations. The implementation includes strict transport/output
+23 Task 10 operations, including purpose-bound recovery completion. The implementation includes strict transport/output
 boundaries, versioned sync/async storage, client-held PKCE, ordered lifecycle
 events, token-free cross-tab signaling, Web Locks and local fallback locking,
 single-winner refresh convergence, visibility-aware scheduling, callback URL
@@ -1143,23 +1164,26 @@ cleanup, and idempotent disposal. The specification now records that v1
 `updateUser` supports email, user metadata, and redirect intent; password and
 phone mutation remain unsupported until corresponding server routes exist.
 
-- Focused unit client — 1 file, 20/20 passed.
-- `pnpm test` — fresh build, 24 Vitest files and 338/338 tests, then 8/8
+- Focused remediation coverage — 5 files and 73/73 passed.
+- `pnpm test` — fresh build, 25 Vitest files and 342/342 tests, then 11/11
   real local Chrome lifecycle tests passed.
-- Browser repeat — 16/16 passed across two repetitions.
-- Frozen install, typecheck, lint, docs check, package exports 12/12,
+- Browser repeat — 22/22 passed across two repetitions.
+- Frozen install, typecheck, lint, docs check, package exports,
   fresh packed root/server/PKCE imports, source and packed browser bundles,
-  protected migration/OpenAPI hashes, and `git diff --check` passed.
-- Browser bundles had 12 inputs and zero server, PostgreSQL, Node builtin,
+  protected migration hashes, intentional recovery OpenAPI update, and
+  `git diff --check` passed.
+- The fresh packed browser bundle had 13 inputs and zero server, PostgreSQL, Node builtin,
   Argon2, `pg`, Kysely, JOSE, or OpenID Client inputs.
 
 The only new dependency is exact-pinned dev-only `@playwright/test` `1.62.1`
-(Apache-2.0), using installed local Chrome. No browser binary, paid/hosted
+(Apache-2.0), using the portable `chrome` channel with installed local Chrome.
+No browser binary, paid/hosted
 service, remote database, live OAuth/mail, or external application write is
 included. The first Luna Max review returned `CHANGES_REQUIRED` with zero
 Critical, twelve Important, and two Minor findings, superseding the earlier
-zero-blocker statement. A RED/GREEN fix pass and same-reviewer approval are
-required; Task 10 is not approved and Task 11 has not started. Exact findings,
+zero-blocker statement. The RED/GREEN fix pass is locally complete;
+same-reviewer approval is required. Task 10 is not approved and Task 11 has
+not started. Exact findings,
 hashes, and full gate evidence are in the Task 10 report. The exact bounded implementation review
 target is `343a602fd21e638a665710dc4345e3f0ed0b5b19`; the subsequent docs-ledger commit
 changes no product code.

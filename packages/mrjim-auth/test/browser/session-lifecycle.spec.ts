@@ -14,6 +14,7 @@ const ROTATED_REFRESH_TOKEN = "browser-rotated-refresh-token";
 
 let refreshRequestCount = 0;
 const exchangeRequestBodies: unknown[] = [];
+const authorizeRedirects: string[] = [];
 
 function browserUser() {
   return {
@@ -87,6 +88,7 @@ async function startStaticServer(): Promise<{ readonly server: Server; readonly 
     }
     if (pathname === "/auth/v1/authorize") {
       const redirect = parsed.searchParams.get("redirect_to") ?? "";
+      authorizeRedirects.push(redirect);
       json(response, {
         provider: parsed.searchParams.get("provider") ?? "google",
         url: "https://accounts.example/authorize",
@@ -111,6 +113,11 @@ async function startStaticServer(): Promise<{ readonly server: Server; readonly 
         },
         session: browserSession(ROTATED_ACCESS_TOKEN, ROTATED_REFRESH_TOKEN),
       });
+      return;
+    }
+    if (pathname === "/auth/v1/recover/verify") {
+      await requestJson(request);
+      json(response, { user: browserUser() });
       return;
     }
     if (pathname === "/auth/v1/logout") {
@@ -227,7 +234,7 @@ test.describe("real local browser auth lifecycle", () => {
     await context.close();
   });
 
-  test("consumes a matching PKCE recovery URL, cleans credentials before events, and preserves unrelated URL data", async ({ page }) => {
+  test("consumes a matching OAuth PKCE URL, cleans credentials before events, and preserves unrelated URL data", async ({ page }) => {
     exchangeRequestBodies.length = 0;
     const cleanRedirect = `${origin}/callback?keep=1#fragment`;
     await page.goto(`${origin}/`);
@@ -240,7 +247,7 @@ test.describe("real local browser auth lifecycle", () => {
     }, { pageOrigin: origin, redirectTo: cleanRedirect });
     expect(started).toBeNull();
 
-    await page.goto(`${origin}/callback?keep=1&code=internal-code&type=recovery#fragment`);
+    await page.goto(`${origin}/callback?keep=1&code=internal-code#fragment`);
     const result = await page.evaluate(async ({ pageOrigin }) => {
       const { createClient } = await import(`${pageOrigin}/dist/index.js`);
       const observations: Array<{ readonly event: string; readonly href: string }> = [];
@@ -251,7 +258,7 @@ test.describe("real local browser auth lifecycle", () => {
       return { observations, href: location.href, refreshToken: session.data?.session?.refresh_token };
     }, { pageOrigin: origin });
 
-    expect(result.observations.map(({ event }) => event)).toEqual(["INITIAL_SESSION", "PASSWORD_RECOVERY"]);
+    expect(result.observations.map(({ event }) => event)).toEqual(["INITIAL_SESSION", "SIGNED_IN"]);
     expect(result.observations.every(({ href }) => href === cleanRedirect)).toBe(true);
     expect(result.href).toBe(cleanRedirect);
     expect(result.refreshToken).toBe(ROTATED_REFRESH_TOKEN);
@@ -284,7 +291,7 @@ test.describe("real local browser auth lifecycle", () => {
       client.auth.dispose();
       return { events, href: location.href, refreshToken: session.data?.session?.refresh_token ?? null, pkcePresent };
     }, { pageOrigin: origin, storageKey: key });
-    expect(duplicate).toEqual({ events: ["INITIAL_SESSION"], href: duplicateUrl, refreshToken: null, pkcePresent: true });
+    expect(duplicate).toEqual({ events: ["INITIAL_SESSION"], href: cleanRedirect, refreshToken: null, pkcePresent: true });
     expect(exchangeRequestBodies).toHaveLength(0);
 
     await page.addInitScript(() => {
@@ -304,6 +311,81 @@ test.describe("real local browser auth lifecycle", () => {
     }, { pageOrigin: origin, storageKey: key });
     expect(unavailable).toEqual({ events: ["INITIAL_SESSION", "SIGNED_IN"], href: cleanRedirect, refreshToken: ROTATED_REFRESH_TOKEN, pkcePresent: false });
     expect(exchangeRequestBodies).toHaveLength(1);
+  });
+
+  test("cleans error-only callbacks and never reuses callback credentials as an OAuth redirect", async ({ page }) => {
+    const errorUrl = `${origin}/callback?keep=3&error_description=authorization%20code%3Dprovider-secret#fragment`;
+    const cleanErrorUrl = `${origin}/callback?keep=3#fragment`;
+    await page.goto(errorUrl);
+    const cleaned = await page.evaluate(async ({ pageOrigin }) => {
+      const { createClient } = await import(`${pageOrigin}/dist/index.js`);
+      const observations: Array<{ readonly event: string; readonly href: string }> = [];
+      const client = createClient(`${pageOrigin}/auth/v1`, "browser-key", { auth: { storageKey: "browser-error-cleanup", autoRefreshToken: false } });
+      client.auth.onAuthStateChange((event: string) => observations.push({ event, href: location.href }));
+      await client.auth.getSession();
+      client.auth.dispose();
+      return { observations, href: location.href };
+    }, { pageOrigin: origin });
+    expect(cleaned.href).toBe(cleanErrorUrl);
+    expect(cleaned.observations).toEqual([{ event: "INITIAL_SESSION", href: cleanErrorUrl }]);
+
+    authorizeRedirects.length = 0;
+    await page.goto(`${origin}/callback?keep=4&code=callback-code-sentinel&state=state-sentinel#fragment`);
+    const oauthError = await page.evaluate(async ({ pageOrigin }) => {
+      const { createClient } = await import(`${pageOrigin}/dist/index.js`);
+      const client = createClient(`${pageOrigin}/auth/v1`, "browser-key", { auth: { storageKey: "browser-safe-default-redirect", autoRefreshToken: false, detectSessionInUrl: false, skipAutoInitialize: true } });
+      const result = await client.auth.signInWithOAuth({ provider: "google", options: { skipBrowserRedirect: true } });
+      client.auth.dispose();
+      return result.error?.code ?? null;
+    }, { pageOrigin: origin });
+    expect(oauthError).toBeNull();
+    expect(authorizeRedirects).toEqual([`${origin}/callback?keep=4#fragment`]);
+    expect(authorizeRedirects[0]).not.toContain("callback-code-sentinel");
+    expect(authorizeRedirects[0]).not.toContain("state-sentinel");
+  });
+
+  test("consumes one PKCE transaction atomically across two tabs", async ({ browser }) => {
+    exchangeRequestBodies.length = 0;
+    const context = await browser.newContext();
+    const first = await context.newPage();
+    const second = await context.newPage();
+    await first.goto(`${origin}/`);
+    await second.goto(`${origin}/`);
+    const key = "browser-atomic-pkce";
+    const redirectTo = `${origin}/callback?atomic=1`;
+    await first.evaluate(async ({ pageOrigin, storageKey, redirect }) => {
+      const { createClient } = await import(`${pageOrigin}/dist/index.js`);
+      const client = createClient(`${pageOrigin}/auth/v1`, "browser-key", { auth: { storageKey, autoRefreshToken: false, detectSessionInUrl: false, skipAutoInitialize: true } });
+      await client.auth.signInWithOAuth({ provider: "google", options: { redirectTo: redirect, skipBrowserRedirect: true } });
+      client.auth.dispose();
+    }, { pageOrigin: origin, storageKey: key, redirect: redirectTo });
+
+    const exchange = (page: typeof first) => page.evaluate(async ({ pageOrigin, storageKey }) => {
+      const { createClient } = await import(`${pageOrigin}/dist/index.js`);
+      const client = createClient(`${pageOrigin}/auth/v1`, "browser-key", { auth: { storageKey, autoRefreshToken: false, detectSessionInUrl: false, skipAutoInitialize: true } });
+      const result = await client.auth.exchangeCodeForSession("one-time-code");
+      client.auth.dispose();
+      return result.error?.code ?? null;
+    }, { pageOrigin: origin, storageKey: key });
+    const results = await Promise.all([exchange(first), exchange(second)]);
+    expect(results.filter((value) => value === null)).toHaveLength(1);
+    expect(results.filter((value) => value === "invalid_request")).toHaveLength(1);
+    expect(exchangeRequestBodies).toHaveLength(1);
+    await context.close();
+  });
+
+  test("completes a purpose-bound password recovery through the public client", async ({ page }) => {
+    await page.goto(`${origin}/`);
+    const result = await page.evaluate(async ({ pageOrigin }) => {
+      const { createClient } = await import(`${pageOrigin}/dist/index.js`);
+      const events: string[] = [];
+      const client = createClient(`${pageOrigin}/auth/v1`, "browser-key", { auth: { storageKey: "browser-password-recovery", autoRefreshToken: false, detectSessionInUrl: false, skipAutoInitialize: true } });
+      client.auth.onAuthStateChange((event: string) => events.push(event));
+      const completed = await client.auth.resetPassword({ email: "user@example.com", token: "recovery-token", password: "new correct horse battery staple", options: { redirectTo: `${pageOrigin}/callback` } });
+      client.auth.dispose();
+      return { error: completed.error?.code ?? null, email: completed.data?.user.email ?? null, events };
+    }, { pageOrigin: origin });
+    expect(result).toEqual({ error: null, email: "user@example.com", events: ["PASSWORD_RECOVERY"] });
   });
 
   test("propagates SIGNED_OUT across tabs with metadata-only channel messages", async ({ browser }) => {
@@ -410,6 +492,19 @@ test.describe("real local browser auth lifecycle", () => {
       await client.auth.getSession();
       (globalThis as unknown as { __storageFallback?: unknown }).__storageFallback = { client, events };
     }, { pageOrigin: origin, storageKey: key })));
+
+    await first.evaluate(async () => {
+      const state = (globalThis as unknown as { __storageFallback: { client: { auth: { refreshSession(): Promise<unknown> } } } }).__storageFallback;
+      await state.client.auth.refreshSession();
+    });
+    const refreshed = await second.evaluate(async () => {
+      const state = (globalThis as unknown as { __storageFallback: { events: string[] } }).__storageFallback;
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline && !state.events.includes("TOKEN_REFRESHED")) await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+      return state.events;
+    });
+    expect(refreshed).toContain("TOKEN_REFRESHED");
+    expect(refreshed.filter((event) => event === "SIGNED_IN")).toHaveLength(0);
 
     await first.evaluate(async () => {
       const state = (globalThis as unknown as { __storageFallback: { client: { auth: { signOut(input: unknown): Promise<unknown> } } } }).__storageFallback;

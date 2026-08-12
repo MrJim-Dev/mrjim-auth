@@ -155,6 +155,7 @@ function makeOptions(calls: Array<{ readonly name: string; readonly input: unkno
     signInWithOtp: async (input: unknown) => { calls.push({ name: "signInWithOtp", input }); return success({ user: null, session: null }); },
     verifyOtp: async (input: unknown) => { calls.push({ name: "verifyOtp", input }); return success({ user: user(), session: session() }); },
     resetPasswordForEmail: async (input: unknown) => { calls.push({ name: "resetPasswordForEmail", input }); return success({ sent: true }); },
+    resetPassword: async (input: unknown) => { calls.push({ name: "resetPassword", input }); return success({ user: user() }); },
     resend: async (input: unknown) => { calls.push({ name: "resend", input }); return success({ sent: true }); },
     updateUser: async (_subject: unknown, input: unknown) => { calls.push({ name: "updateUser", input }); return success({ user: user() }); },
   };
@@ -253,13 +254,14 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect((await body(duplicate)).error.code).toBe("invalid_request");
   });
 
-  it("covers OTP, verification, recovery, and resend route contracts", async () => {
+  it("covers OTP, verification, recovery issue/consume, and resend route contracts", async () => {
     const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
     const auth = serverModule.createAuthServer(makeOptions(calls));
     const cases: readonly [string, unknown, string][] = [
       ["/otp", { email: "USER@example.com", options: { type: "email_otp", redirect_to: CALLBACK } }, "signInWithOtp"],
       ["/verify", { email: "USER@example.com", token: "123456", type: "email_otp", redirect_to: CALLBACK }, "verifyOtp"],
       ["/recover", { email: "USER@example.com", redirect_to: CALLBACK }, "resetPasswordForEmail"],
+      ["/recover/verify", { email: "USER@example.com", token: "recovery-token", password: "new correct horse battery staple", redirect_to: CALLBACK }, "resetPassword"],
       ["/resend", { type: "signup", email: "USER@example.com", options: { redirect_to: CALLBACK } }, "resend"],
     ];
     for (const [path, value, name] of cases) {
@@ -269,6 +271,12 @@ describe("Task 9 framework-neutral HTTP contract", () => {
       expect(response.status, path).toBe(200);
       expect(calls.at(-1)?.name, path).toBe(name);
     }
+    expect(calls.find(({ name }) => name === "resetPassword")?.input).toMatchObject({
+      email: "user@example.com",
+      token: "recovery-token",
+      password: "new correct horse battery staple",
+      redirectTo: CALLBACK,
+    });
   });
 
   it("covers providers, OAuth authorize/callback/exchange, and JWKS", async () => {
@@ -836,7 +844,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
 
     const auth = serverModule.createAuthServer(options);
     const serviceMethods: Record<string, readonly string[]> = {
-      users: ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resend", "updateUser"],
+      users: ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resetPassword", "resend", "updateUser"],
       sessions: ["refresh", "authorizeSession", "signOut", "revokeRefreshToken"],
       tokens: ["verifyAccessToken", "jwks"],
       authorization: ["getPermissions", "authorize"],
@@ -869,6 +877,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
       ["otp", auth.handle(jsonRequest("/otp", { email: "user@example.com" })), 200],
       ["verify", auth.handle(jsonRequest("/verify", { email: "user@example.com", token: "123456", type: "email_otp" })), 200],
       ["recover", auth.handle(jsonRequest("/recover", { email: "user@example.com" })), 200],
+      ["resetPassword", auth.handle(jsonRequest("/recover/verify", { email: "user@example.com", token: "recovery-token", password: "new correct horse battery staple" })), 200],
       ["resend", auth.handle(jsonRequest("/resend", { type: "signup", email: "user@example.com" })), 200],
       ["providers", auth.handle(request("/providers")), 200],
       ["authorize", auth.handle(request("/authorize?provider=google&code_challenge=client-challenge&redirect_to=https%3A%2F%2Fproject.example.com%2Fauth%2Fcallback")), 200],
@@ -891,7 +900,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect(subject).toMatchObject({ user_id: USER_ID });
     expect(signUpReceiver).toBe(options.services.users);
     expect(lookupReceiver).toBe(options.database.operations);
-    expect(calls.map(({ name }) => name)).toEqual(expect.arrayContaining(["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resend", "refresh", "updateUser", "signOut", "revokeRefreshToken", "authorize", "callback", "exchangeCode", "unlinkIdentity"]));
+    expect(calls.map(({ name }) => name)).toEqual(expect.arrayContaining(["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resetPassword", "resend", "refresh", "updateUser", "signOut", "revokeRefreshToken", "authorize", "callback", "exchangeCode", "unlinkIdentity"]));
   });
 
   it("rejects accessor and thenable service values without invoking them", () => {
@@ -1417,7 +1426,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
     const paths = first.paths as Record<string, unknown>;
     expect(Object.keys(paths)).toEqual(expect.arrayContaining([
-      "/signup", "/token", "/otp", "/verify", "/recover", "/resend", "/providers", "/authorize",
+      "/signup", "/token", "/otp", "/verify", "/recover", "/recover/verify", "/resend", "/providers", "/authorize",
       "/callback/{provider}", "/exchange", "/user", "/user/identities", "/user/identities/{id}",
       "/user/permissions", "/logout", "/.well-known/jwks.json",
     ]));

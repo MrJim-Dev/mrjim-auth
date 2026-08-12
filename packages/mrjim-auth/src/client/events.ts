@@ -1,6 +1,6 @@
 import type { AuthChangeEvent, Session } from "../shared/types.js";
 import { safeArrayIsArray } from "../shared/safe-intrinsics.js";
-import { captureMethod, invoke, snapshotJson, freeze, ownData } from "./boundary.js";
+import { captureMethod, invoke, parseJson, snapshotJson, stringifyJson, freeze, ownData } from "./boundary.js";
 
 const eventsGlobal = globalThis as unknown as Record<string, unknown>;
 const eventsObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
@@ -123,13 +123,21 @@ export function createEventBus(options: {
   let channelClose: Function | null = null;
   let channelRemove: Function | null = null;
   let storageListening = false;
+  const eventStorageKey = `${options.storageKey}:event`;
+  let fallbackStorage: { readonly receiver: object; readonly set: Function; readonly remove: Function } | null = null;
   const storageListener = (event: unknown): void => {
     if (disposed || event === null || typeof event !== "object") return;
     const key = eventProperty(event, "key");
     const newValue = eventProperty(event, "newValue");
-    if (!key.ok || !key.present || key.value !== options.storageKey || !newValue.ok || !newValue.present) return;
-    if (newValue.value !== null && typeof newValue.value !== "string") return;
-    options.onRemote("SIGNED_IN", 0);
+    if (!key.ok || !key.present || key.value !== eventStorageKey || !newValue.ok || !newValue.present || typeof newValue.value !== "string") return;
+    let parsed: unknown;
+    try {
+      parsed = parseJson(newValue.value, "cross-tab event");
+    } catch {
+      return;
+    }
+    const message = parseMessage(parsed);
+    if (message !== null) options.onRemote(message.event, message.revision);
   };
   const messageListener = (event: unknown): void => {
     if (disposed || event === null || typeof event !== "object") return;
@@ -161,6 +169,11 @@ export function createEventBus(options: {
 
   if (channel === null && eventsWindowListeners !== null) {
     try {
+      const localStorageValue = eventsGlobal.localStorage;
+      if (localStorageValue === null || typeof localStorageValue !== "object") throw new Error("localStorage unavailable");
+      const set = captureMethod(localStorageValue, "setItem", "localStorage.setItem");
+      const remove = captureMethod(localStorageValue, "removeItem", "localStorage.removeItem");
+      fallbackStorage = { receiver: localStorageValue, set: set.method, remove: remove.method };
       invoke(eventsWindowListeners.add.method, eventsWindowListeners.add.receiver, ["storage", storageListener]);
       storageListening = true;
     } catch {
@@ -200,8 +213,18 @@ export function createEventBus(options: {
   };
 
   const publish = (event: AuthChangeEvent, revision: number): void => {
-    if (disposed || channel === null || channelPost === null) return;
+    if (disposed) return;
     const message: RemoteMessage = { version: 1, revision, event };
+    if (channel === null || channelPost === null) {
+      if (fallbackStorage === null) return;
+      try {
+        invoke(fallbackStorage.set, fallbackStorage.receiver, [eventStorageKey, stringifyJson(message, "cross-tab event")]);
+        invoke(fallbackStorage.remove, fallbackStorage.receiver, [eventStorageKey]);
+      } catch {
+        safeDebug(options.debug, "storage event publish failed", { event });
+      }
+      return;
+    }
     try {
       invoke(channelPost, channel, [message]);
     } catch {
@@ -232,6 +255,7 @@ export function createEventBus(options: {
     channelPost = null;
     channelClose = null;
     channelRemove = null;
+    fallbackStorage = null;
     storageListening = false;
   };
 

@@ -155,6 +155,7 @@ describe("package export boundaries", () => {
       "onAuthStateChange",
       "refreshSession",
       "resend",
+      "resetPassword",
       "resetPasswordForEmail",
       "setSession",
       "signInWithOAuth",

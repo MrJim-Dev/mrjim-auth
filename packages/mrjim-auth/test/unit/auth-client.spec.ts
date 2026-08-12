@@ -159,6 +159,7 @@ describe("browser-safe public auth client", () => {
       "onAuthStateChange",
       "refreshSession",
       "resend",
+      "resetPassword",
       "resetPasswordForEmail",
       "setSession",
       "signInWithOAuth",
@@ -234,15 +235,38 @@ describe("browser-safe public auth client", () => {
   });
 
   it("maps recovery and resend calls without reflecting secrets in the URL", async () => {
-    const { fetcher, calls } = createFetch([success({ sent: true }), success({ sent: true })]);
+    const updatedUser = { ...user, updated_at: "2026-08-12T00:01:00.000Z" };
+    const { fetcher, calls } = createFetch([success({ sent: true }), success({ user: updatedUser }), success({ sent: true })]);
     const client = createTestClient(fetcher);
+    const events: string[] = [];
+    client.auth.onAuthStateChange((event) => events.push(event));
     await expect(client.auth.resetPasswordForEmail("user@example.com", { redirectTo: REDIRECT })).resolves.toEqual({ data: { sent: true }, error: null });
+    await expect((client.auth as unknown as { resetPassword(input: unknown): Promise<unknown> }).resetPassword({
+      email: "user@example.com",
+      token: "recovery-token-sentinel",
+      password: "new correct horse battery staple",
+      options: { redirectTo: REDIRECT },
+    })).resolves.toEqual({ data: { user: updatedUser }, error: null });
     await expect(client.auth.resend({ type: "recovery", email: "user@example.com", options: { redirectTo: REDIRECT } })).resolves.toEqual({ data: { sent: true }, error: null });
     expect(requestDetails(calls[0]!).url).toBe(`${BASE_URL}/recover`);
     expect(await requestJson(requestDetails(calls[0]!).request)).toEqual({ email: "user@example.com", redirect_to: REDIRECT });
-    expect(requestDetails(calls[1]!).url).toBe(`${BASE_URL}/resend`);
-    expect(await requestJson(requestDetails(calls[1]!).request)).toEqual({ type: "recovery", email: "user@example.com", options: { redirect_to: REDIRECT } });
+    expect(requestDetails(calls[1]!).url).toBe(`${BASE_URL}/recover/verify`);
+    expect(await requestJson(requestDetails(calls[1]!).request)).toEqual({ email: "user@example.com", token: "recovery-token-sentinel", password: "new correct horse battery staple", redirect_to: REDIRECT });
+    expect(requestDetails(calls[2]!).url).toBe(`${BASE_URL}/resend`);
+    expect(await requestJson(requestDetails(calls[2]!).request)).toEqual({ type: "recovery", email: "user@example.com", options: { redirect_to: REDIRECT } });
     expect(requestDetails(calls[0]!).url).not.toContain("user@example.com");
+    expect(requestDetails(calls[1]!).url).not.toContain("recovery-token-sentinel");
+    expect(events).toEqual(["PASSWORD_RECOVERY"]);
+  });
+
+  it("refreshes a persisted session when automatic initialization is skipped", async () => {
+    const storage = createStorage();
+    storage.values.set("mrjim-auth:default", JSON.stringify({ version: 1, revision: 1, session: session() }));
+    const rotated = session({ access_token: "rotated-access", refresh_token: "rotated-refresh" });
+    const { fetcher, calls } = createFetch([success(rotated)]);
+    const client = createTestClient(fetcher, { auth: { persistSession: true, storage, skipAutoInitialize: true } });
+    await expect(client.auth.refreshSession()).resolves.toEqual({ data: { user, session: rotated }, error: null });
+    expect(requestDetails(calls[0]!).url).toBe(`${BASE_URL}/token?grant_type=refresh_token`);
   });
 
   it("reads getSession locally while getUser always validates through the server", async () => {
@@ -409,6 +433,47 @@ describe("browser-safe public auth client", () => {
     const uppercaseResult = await uppercaseClient.auth.signInWithPassword({ email: "user@example.com", password: "correct horse battery staple" });
     expect(uppercaseResult.error).toMatchObject({ code: "invalid_credentials", message: "Authentication request failed" });
     expect(JSON.stringify(uppercaseResult)).not.toContain("UPPERCASE-SECRET");
+
+    const codeSecret = createFetch([failure(400, { code: "oauth_provider_error", message: "authorization code=provider-code-sentinel" })]);
+    const codeClient = createTestClient(codeSecret.fetcher);
+    const codeResult = await codeClient.auth.signInWithPassword({ email: "user@example.com", password: "correct horse battery staple" });
+    expect(codeResult.error).toMatchObject({ message: "Authentication request failed" });
+    expect(JSON.stringify(codeResult)).not.toContain("provider-code-sentinel");
+  });
+
+  it("rejects bearer control characters before fetch and enforces response limits in UTF-8 bytes", async () => {
+    const headerCapture = createFetch([success({ user })]);
+    const headerClient = createTestClient(headerCapture.fetcher);
+    const headerResult = await headerClient.auth.getUser("access-token\r\nX-Injected: yes");
+    expect(headerResult.error).toMatchObject({ code: "internal_error" });
+    expect(headerCapture.calls).toHaveLength(0);
+
+    const padding = Array.from({ length: 70 }, () => "😀".repeat(4_000));
+    const oversizedText = JSON.stringify({ data: { ...session(), padding }, error: null });
+    expect(new TextEncoder().encode(oversizedText).byteLength).toBeGreaterThan(1024 * 1024);
+    expect(oversizedText.length).toBeLessThan(1024 * 1024);
+    const oversizedFetch = (async () => Object.freeze({ status: 200, text: async () => oversizedText }) as unknown as Response) as typeof fetch;
+    const oversizedClient = createTestClient(oversizedFetch);
+    const oversizedResult = await oversizedClient.auth.signInWithPassword({ email: "user@example.com", password: "correct horse battery staple" });
+    expect(oversizedResult.data).toBeNull();
+    expect(oversizedResult.error).toMatchObject({ code: "internal_error" });
+  });
+
+  it("aborts in-flight fetch work when disposed", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const fetcher = ((_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        capturedSignal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+    }) as typeof fetch;
+    const client = createTestClient(fetcher);
+    const pending = client.auth.getUser("explicit-access-token");
+    await Promise.resolve();
+    await Promise.resolve();
+    client.auth.dispose();
+    expect(capturedSignal?.aborted).toBe(true);
+    if (capturedSignal?.aborted === true) await expect(pending).resolves.toMatchObject({ data: null, error: { code: "internal_error" } });
   });
 
   it("rejects provider-secret identity fields instead of returning a hostile server snapshot", async () => {

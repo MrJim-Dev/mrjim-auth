@@ -155,6 +155,14 @@ export const recoverRequestSchema = z.object({
   redirect_to: redirectString.optional(),
 }).strict();
 
+/** Strict wire request for consuming a recovery proof and replacing a password. */
+export const recoverVerifyRequestSchema = z.object({
+  email: emailString,
+  token: nonEmptyString,
+  password: nonEmptyString,
+  redirect_to: redirectString.optional(),
+}).strict();
+
 /** Strict wire request for signup/recovery resend. */
 export const resendRequestSchema = z.object({
   type: z.enum(["signup", "recovery"]),
@@ -225,6 +233,7 @@ export interface AuthServerServices {
     signInWithOtp(input: OtpInput, context?: UserRequestContext): unknown;
     verifyOtp(input: VerifyOtpInput, context?: UserRequestContext): unknown;
     resetPasswordForEmail(email: string, options?: { readonly redirectTo?: string }, context?: UserRequestContext): unknown;
+    resetPassword(input: { readonly email: string; readonly token: string; readonly password: string; readonly redirectTo?: string }, context?: UserRequestContext): unknown;
     resend(input: ResendInput, context?: UserRequestContext): unknown;
     updateUser(subject: AuthenticatedSubject, patch: UpdateUserInput, context?: UserRequestContext): unknown;
   };
@@ -284,6 +293,7 @@ export const routeContracts: readonly RouteContract[] = Object.freeze([
   { method: "POST", path: "/otp", operationId: "signInWithOtp", security: "api_key", body: otpRequestSchema, response: authResult(publicAuthDataSchema), example: { email: "user@example.com", options: { type: "email_otp" } } },
   { method: "POST", path: "/verify", operationId: "verifyOtp", security: "api_key", body: verifyRequestSchema, response: authResult(publicAuthDataSchema), example: { email: "user@example.com", token: "123456", type: "email_otp" } },
   { method: "POST", path: "/recover", operationId: "resetPasswordForEmail", security: "api_key", body: recoverRequestSchema, response: authResult(sentSchema), example: { email: "user@example.com" } },
+  { method: "POST", path: "/recover/verify", operationId: "resetPassword", security: "api_key", body: recoverVerifyRequestSchema, response: authResult(userDataSchema), example: { email: "user@example.com", token: "123456", password: "new correct horse battery staple" } },
   { method: "POST", path: "/resend", operationId: "resend", security: "api_key", body: resendRequestSchema, response: authResult(sentSchema), example: { type: "signup", email: "user@example.com" } },
   { method: "GET", path: "/providers", operationId: "listProviders", security: "api_key", response: authResult(providersDataSchema) },
   { method: "GET", path: "/authorize", operationId: "authorizeOAuth", security: "api_key", query: [{ name: "provider", required: true, description: "Configured provider key" }, { name: "code_challenge", required: true, description: "Client-generated RFC 7636 S256 challenge" }, { name: "code_challenge_method", required: false, description: "Must be S256 when supplied" }, { name: "redirect_to", required: false, description: "Exact allowlisted redirect" }, { name: "flow", required: false, description: "sign_in or link_identity" }], response: authResult(authorizeDataSchema) },

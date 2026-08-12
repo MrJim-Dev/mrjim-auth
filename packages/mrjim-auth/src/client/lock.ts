@@ -14,6 +14,17 @@ const lockReflectApply = Reflect.apply;
 const lockSetTimeout = setTimeout;
 const lockClearTimeout = clearTimeout;
 const lockNumberIsSafeInteger = Number.isSafeInteger;
+const lockObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const lockAbortController = globalThis.AbortController;
+const lockReflectConstruct = Reflect.construct;
+const lockAbort = typeof lockAbortController === "function"
+  ? captureMethod(lockAbortController.prototype, "abort", "AbortController.abort", "configuration").method
+  : null;
+const lockAbortSignalGetter = (() => {
+  if (typeof lockAbortController !== "function") return null;
+  const descriptor = lockObjectGetOwnPropertyDescriptor(lockAbortController.prototype, "signal");
+  return descriptor !== undefined && typeof descriptor.get === "function" ? descriptor.get : null;
+})();
 
 const queues = new lockMap<string, Promise<void>>();
 
@@ -63,7 +74,7 @@ async function fallbackLock<T>(name: string, timeoutMs: number, callback: () => 
   lockMapSet.call(queues, name, queued);
   try {
     await withTimeout(previous, timeoutMs);
-    return await withTimeout(callback(), timeoutMs);
+    return await callback();
   } finally {
     release?.();
     if (lockMapGet.call(queues, name) === queued) lockMapDelete.call(queues, name);
@@ -93,7 +104,7 @@ export function createLockController(options: {
     if (injected !== undefined) {
       try {
         const result = invoke<unknown>(injected, undefined, [name, timeoutMs, callback]);
-        return await withTimeout(awaitSafe(result as T | Promise<T>, "lock"), timeoutMs);
+        return await awaitSafe(result as T | Promise<T>, "lock");
       } catch (error) {
         if (error instanceof LockBoundaryError) throw error;
         throw new LockBoundaryError("lock operation failed");
@@ -101,11 +112,29 @@ export function createLockController(options: {
     }
     if (locks !== null) {
       try {
-        const result = invoke<unknown>(locks.request, locks.receiver, [name, { mode: "exclusive" }, callback]);
-        return await withTimeout(awaitSafe(result as T | Promise<T>, "web lock"), timeoutMs);
+        if (typeof lockAbortController !== "function" || lockAbort === null || lockAbortSignalGetter === null) throw new LockBoundaryError("Web Locks cancellation is unavailable");
+        const controller = lockReflectConstruct(lockAbortController, [], lockAbortController) as AbortController;
+        const signal = lockReflectApply(lockAbortSignalGetter, controller, []) as AbortSignal;
+        let acquired = false;
+        const timer = lockSetTimeout(() => {
+          if (!acquired) {
+            try { invoke(lockAbort, controller, []); } catch { /* The request result still fails closed. */ }
+          }
+        }, timeoutMs);
+        const wrapped = async (): Promise<T> => {
+          acquired = true;
+          lockClearTimeout(timer);
+          return callback();
+        };
+        const result = invoke<unknown>(locks.request, locks.receiver, [name, { mode: "exclusive", signal }, wrapped]);
+        try {
+          return await awaitSafe(result as T | Promise<T>, "web lock");
+        } finally {
+          lockClearTimeout(timer);
+        }
       } catch (error) {
         if (error instanceof LockBoundaryError) throw error;
-        // A missing/hostile Web Locks implementation falls back locally.
+        throw new LockBoundaryError("web lock operation failed");
       }
     }
     return fallbackLock(name, timeoutMs, callback);

@@ -265,7 +265,7 @@ function ownDataProperty(value: object, key: PropertyKey): DataProperty {
   }
 }
 
-const USER_SERVICE_METHODS = ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resend", "updateUser"] as const;
+const USER_SERVICE_METHODS = ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resetPassword", "resend", "updateUser"] as const;
 const SESSION_SERVICE_METHODS = ["refresh", "authorizeSession", "signOut"] as const;
 const TOKEN_SERVICE_METHODS = ["verifyAccessToken", "jwks"] as const;
 const AUTHORIZATION_SERVICE_METHODS = ["getPermissions", "authorize"] as const;

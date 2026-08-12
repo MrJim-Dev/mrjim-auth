@@ -276,6 +276,7 @@ Error messages for login, signup conflict, recovery, OTP, and lookup must not di
 | `signInWithOAuth({ provider, options })` | Start Google or configured OIDC authorization-code plus PKCE flow |
 | `exchangeCodeForSession(code)` | Exchange a one-time authorization code after redirect |
 | `resetPasswordForEmail(email, options)` | Send a non-enumerating recovery email |
+| `resetPassword({ email, token, password, options })` | Consume a purpose-bound one-time recovery proof and replace the forgotten password, revoking sessions under project policy |
 | `resend({ type, email, options })` | Resend signup or recovery confirmation subject to rate limits |
 | `getSession()` | Return locally persisted session; does not claim server validation |
 | `getUser(jwt?)` | Ask the auth server for an authoritative current user |
@@ -344,6 +345,7 @@ All routes use `/auth/v1` by default. The project may mount the handler elsewher
 | `POST /otp` | `signInWithOtp` | Publishable |
 | `POST /verify` | `verifyOtp` | Publishable |
 | `POST /recover` | `resetPasswordForEmail` | Publishable |
+| `POST /recover/verify` | `resetPassword` | Publishable |
 | `POST /resend` | `resend` | Publishable |
 | `GET /providers` | provider discovery | Publishable |
 | `GET /authorize` | `signInWithOAuth` / `linkIdentity` | Publishable; client-generated PKCE S256 challenge required; user required for linking |

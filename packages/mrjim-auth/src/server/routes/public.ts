@@ -16,12 +16,14 @@ import {
   providersDataSchema as providersSchema,
   publicAuthDataSchema as publicAuthSchema,
   recoverRequestSchema,
+  recoverVerifyRequestSchema,
   refreshTokenRequestSchema,
   resendRequestSchema,
   sentSchema as sentResponseSchema,
   sessionSchema as sessionResponseSchema,
   signupRequestSchema,
   verifyRequestSchema,
+  userDataSchema,
 } from "./contracts.js";
 import { safeStringSlice, safeStringStartsWith } from "../../shared/safe-intrinsics.js";
 import { mapProviderDiscoveryData } from "./oauth.js";
@@ -161,6 +163,17 @@ export async function handlePublicRoute(
       serviceContext(context),
     ));
     return service(result, mapSent, sentResponseSchema);
+  }
+
+  if (path === "/recover/verify") {
+    const value = context.body as typeof recoverVerifyRequestSchema._output;
+    const result = await context.invoke(() => context.services.users.resetPassword({
+      email: normalizeAndValidateEmail(value.email).normalized,
+      token: value.token,
+      password: value.password,
+      ...(value.redirect_to === undefined ? {} : { redirectTo: value.redirect_to }),
+    }, serviceContext(context)));
+    return service(result, (data) => data, userDataSchema);
   }
 
   if (path === "/resend") {

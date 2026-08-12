@@ -25,7 +25,6 @@ const initializeAuthParamNames = [
   "type",
 ] as const;
 const initializeParamsDelete = captureMethod(initializeURLSearchParams.prototype, "delete", "URLSearchParams.delete", "configuration");
-const initializeParamsGet = captureMethod(initializeURLSearchParams.prototype, "get", "URLSearchParams.get", "configuration");
 const initializeParamsGetAll = captureMethod(initializeURLSearchParams.prototype, "getAll", "URLSearchParams.getAll", "configuration");
 const initializeParamsToString = captureMethod(initializeURLSearchParams.prototype, "toString", "URLSearchParams.toString", "configuration");
 const initializeLocationHref = (() => {
@@ -67,7 +66,6 @@ export interface UrlSnapshot {
   readonly href: string;
   readonly cleanedHref: string;
   readonly code: string | null;
-  readonly recovery: boolean;
   readonly hasAuthMarker: boolean;
 }
 
@@ -97,14 +95,6 @@ function currentHref(): string | null {
     if (initializeLocationHref === null) return null;
     const href = initializeReflectApply(initializeLocationHref.getter, initializeLocationHref.receiver, []);
     return typeof href === "string" ? href : null;
-  } catch {
-    return null;
-  }
-}
-
-function getParam(params: URLSearchParams, key: string): string | null {
-  try {
-    return initializeReflectApply(initializeParamsGet.method, params, [key]) as string | null;
   } catch {
     return null;
   }
@@ -142,30 +132,28 @@ function removeAuthFromUrl(rawHref: string): UrlSnapshot | null {
   const searchParams = parsed.searchParams;
   const queryCode = getSingleParam(searchParams, "code");
   const queryType = getSingleParam(searchParams, "type");
-  if (!queryCode.valid || !queryType.valid) return null;
-  const code = queryCode.value;
-  const error = getParam(searchParams, "error") ?? getParam(searchParams, "error_code");
-  const type = queryType.value;
+  const code = queryCode.valid ? queryCode.value : null;
   const hashText = safeStringStartsWith(parsed.hash, "#") ? safeStringSlice(parsed.hash, 1) ?? "" : parsed.hash;
   let hashParams: URLSearchParams | null = null;
   let hashCode: string | null = null;
-  let hashError: string | null = null;
-  let hashType: string | null = null;
+  let hashCodeValid = true;
+  let hashTypeValid = true;
   if (safeStringIncludes(hashText, "=") || safeStringIncludes(hashText, "&")) {
     try {
       hashParams = new initializeURLSearchParams(hashText);
       const singleHashCode = getSingleParam(hashParams, "code");
       const singleHashType = getSingleParam(hashParams, "type");
-      if (!singleHashCode.valid || !singleHashType.valid) return null;
-      hashCode = singleHashCode.value;
-      hashError = getParam(hashParams, "error") ?? getParam(hashParams, "error_code");
-      hashType = singleHashType.value;
+      hashCodeValid = singleHashCode.valid;
+      hashTypeValid = singleHashType.valid;
+      hashCode = singleHashCode.valid ? singleHashCode.value : null;
       removeAuthParams(hashParams);
     } catch {
       hashParams = null;
     }
   }
-  if (code !== null && hashCode !== null) return null;
+  const uniqueCode = queryCode.valid && hashCodeValid && ((code === null) !== (hashCode === null))
+    ? code ?? hashCode
+    : null;
   removeAuthParams(searchParams);
   if (hashParams !== null) {
     const remainingHash = initializeReflectApply(initializeParamsToString.method, hashParams, []) as string;
@@ -175,9 +163,8 @@ function removeAuthFromUrl(rawHref: string): UrlSnapshot | null {
   return {
     href: rawHref,
     cleanedHref,
-    code: code ?? hashCode,
-    recovery: type === "recovery" || hashType === "recovery",
-    hasAuthMarker: code !== null || hashCode !== null || error !== null || hashError !== null,
+    code: uniqueCode,
+    hasAuthMarker: cleanedHref !== rawHref,
   };
 }
 
@@ -208,15 +195,14 @@ export async function initializeAuthClient(options: InitializeOptions): Promise<
   let postEvent: InitializationResult["postEvent"];
   try {
     url = options.detectSessionInUrl ? readAuthUrl() : null;
-    if (url?.hasAuthMarker === true && url.code !== null) {
-      const transaction = await options.storage.findPkce({ redirectTo: url.cleanedHref });
-      if (transaction !== null) {
-        if (!replaceHistory(url.cleanedHref, options.debug)) throw new Error("auth URL cleanup failed");
-        const consumed = await options.storage.consumePkce(transaction.id);
-        if (consumed !== null && consumed.codeVerifier === transaction.codeVerifier) {
+    if (url?.hasAuthMarker === true) {
+      if (!replaceHistory(url.cleanedHref, options.debug)) throw new Error("auth URL cleanup failed");
+      if (url.code !== null) {
+        const transaction = await options.storage.findPkce({ redirectTo: url.cleanedHref });
+        if (transaction !== null) {
           try {
-            const exchanged = await options.exchange(url.code, consumed);
-            postEvent = { event: url.recovery ? "PASSWORD_RECOVERY" : exchanged.event ?? "SIGNED_IN", session: exchanged.session };
+            const exchanged = await options.exchange(url.code, transaction);
+            postEvent = { event: exchanged.event ?? "SIGNED_IN", session: exchanged.session };
           } catch {
             safeDebug(options.debug, "auth URL exchange failed", { source: "url" });
           }

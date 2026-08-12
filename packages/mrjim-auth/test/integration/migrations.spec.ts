@@ -1452,7 +1452,7 @@ describe("Task 3 PostgreSQL migrations", () => {
               email: { send: packedNoop },
               redirects: { allowed: ["https://project.example.com/auth/callback"] },
               services: {
-                users: { signUp: packedNoop, signIn: packedNoop, signInWithOtp: packedNoop, verifyOtp: packedNoop, resetPasswordForEmail: packedNoop, resend: packedNoop, updateUser: packedNoop },
+                users: { signUp: packedNoop, signIn: packedNoop, signInWithOtp: packedNoop, verifyOtp: packedNoop, resetPasswordForEmail: packedNoop, resetPassword: packedNoop, resend: packedNoop, updateUser: packedNoop },
                 sessions: { refresh: packedNoop, authorizeSession: packedNoop, signOut: packedNoop, revokeRefreshToken: packedNoop },
                 tokens: { verifyAccessToken: packedNoop, jwks: packedNoop },
                 authorization: { getPermissions: packedNoop, authorize: packedNoop },

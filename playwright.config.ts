@@ -8,8 +8,6 @@ export default defineConfig({
   use: {
     browserName: "chromium",
     headless: true,
-    launchOptions: {
-      executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    },
+    channel: "chrome",
   },
 });
