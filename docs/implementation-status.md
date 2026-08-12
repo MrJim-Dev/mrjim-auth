@@ -1419,6 +1419,18 @@ committed at `472dc6b`. Three Luna Max workers own disjoint reference,
 Express-example, and Next-example slices. No paid/hosted service is mandatory;
 integration, example verification, release gates, and review remain.
 
+Task 13 integrated candidate is clean at `06740a3`. Luna Max Dalton delivered
+references/compatibility at `6e1ff2b`; Luna Max Halley delivered the complete
+Next.js App Router tree at `a3667bb`. Three bounded Luna Max Express workers
+stalled without files and were closed, so the controller completed that slice;
+this is tooling-only and does not waive review. Exact-pinned free/open-source
+dependencies are locked. Documentation contracts pass 4/4, Express typecheck
+and 3/3 pass, Next.js 16.3.0 route generation/typecheck/4-of-4/optimized build
+pass, and the full workspace passes 34 Vitest files/411 tests plus 11/11 Chrome.
+Frozen install, build, root typecheck/lint, docs, and diff checks pass. No
+product, paid-service, credential, or external blocker exists. Fresh Luna Max
+review remains; Task 13 is not yet approved and Task 14 has not started.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
