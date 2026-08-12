@@ -1,12 +1,20 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { secretBytes } from "../src/config.js";
 import { authorizationRequest, sampleInvoices } from "../src/example.js";
 
 const root = resolve(import.meta.dirname, "..");
 const source = (path: string): string => readFileSync(resolve(root, path), "utf8");
 
 describe("Express API example", () => {
+  it("decodes canonical base64url secrets to the same bytes used by the key CLI", () => {
+    const raw = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
+    const encoded = Buffer.from(raw).toString("base64url");
+    expect(secretBytes("TEST_HASH_KEY", encoded, 32)).toEqual(raw);
+    expect(secretBytes("TEST_HASH_KEY", encoded)).toEqual(raw);
+  });
+
   it("builds a bounded authorization request without copying arbitrary headers", () => {
     const request = authorizationRequest({
       headers: {
