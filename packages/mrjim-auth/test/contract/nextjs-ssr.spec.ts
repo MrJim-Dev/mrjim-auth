@@ -3,6 +3,7 @@ import { createClient } from "../../src/index.js";
 import { createBrowserClient } from "../../src/adapters/nextjs-browser.js";
 import { createServerClient } from "../../src/adapters/nextjs-server.js";
 import type { Cookie, CookieToSet } from "../../src/server/cookies.js";
+import type { Session, User } from "../../src/shared/types.js";
 
 const AUTH_URL = "https://project.example.test/auth/v1";
 const KEY = "publishable-key";
@@ -34,15 +35,15 @@ function createCookieJar(initial: readonly Cookie[] = []): {
   };
 }
 
-function session(overrides: Record<string, unknown> = {}) {
+function session(overrides: Partial<Session> = {}): Session {
   return {
     access_token: "access-token",
     refresh_token: "refresh-token",
-    token_type: "bearer",
+    token_type: "bearer" as const,
     expires_in: 900,
     expires_at: Math.floor(Date.now() / 1000) + 900,
     user: {
-      id: "11111111-1111-4111-8111-111111111111",
+      id: "11111111-1111-4111-8111-111111111111" as User["id"],
       email: "user@example.test",
       phone: null,
       email_confirmed_at: null,
@@ -131,23 +132,124 @@ describe("Next.js browser and SSR adapter contracts", () => {
     expect(result.error).toBeNull();
     expect(jar.cookies.some((cookie) => cookie.name === "unrelated")).toBe(true);
     expect(jar.cookies.some((cookie) => cookie.value.includes("rotated-refresh"))).toBe(false);
-    expect(jar.cookies.filter((cookie) => cookie.name.startsWith("mrjim-auth.")).every((cookie) => cookie.value.length > 0)).toBe(true);
+    expect(jar.cookies.some((cookie) => cookie.name === "mrjim-auth.0" && cookie.value.length > 0)).toBe(true);
+    expect(jar.writes.some((cookie) => cookie.name === "mrjim-auth.1" && cookie.value === "" && cookie.options.maxAge === 0)).toBe(true);
     const persisted = jar.writes.find((cookie) => cookie.value.length > 0);
     expect(persisted?.options).toMatchObject({ httpOnly: true, sameSite: "lax", path: "/", secure: true });
   });
 
+  it("supports asynchronous cookie adapters and defaults to Secure for an HTTPS auth URL", async () => {
+    const jar = createCookieJar();
+    const asyncAdapter = {
+      async getAll() { return jar.adapter.getAll(); },
+      async setAll(values: readonly CookieToSet[]) { jar.adapter.setAll([...values]); },
+    };
+    const fetch = async () => response(session());
+    const client = createServerClient(AUTH_URL, KEY, { cookies: asyncAdapter, global: { fetch } });
+
+    await expect(client.auth.setSession(session())).resolves.toMatchObject({ error: null });
+    expect(jar.writes.filter((cookie) => cookie.value.length > 0).every((cookie) => cookie.options.secure)).toBe(true);
+  });
+
+  it("allows read-only cookie access but fails closed when a session mutation requires a write", async () => {
+    const fetch = async () => response(session());
+    const client = createServerClient(AUTH_URL, KEY, { cookies: { getAll: async () => [] }, global: { fetch } });
+
+    await expect(client.auth.getSession()).resolves.toEqual({ data: { session: null }, error: null });
+    const result = await client.auth.setSession(session());
+    expect(result.error?.code).toBe("internal_error");
+  });
+
+  it("rejects accessor, malformed, oversized, and over-limit cookie results without disclosure", async () => {
+    let getterCalls = 0;
+    const accessorCookie = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(accessorCookie, "name", {
+      enumerable: true,
+      get() { getterCalls += 1; throw new Error("cookie accessor secret"); },
+    });
+    Object.defineProperty(accessorCookie, "value", { enumerable: true, value: "QQ" });
+    const cases: ReadonlyArray<readonly Cookie[]> = [
+      [accessorCookie as unknown as Cookie],
+      [{ name: "mrjim-auth.1", value: "QQ" }],
+      [{ name: "mrjim-auth.0", value: "A".repeat(4_097) }],
+      Array.from({ length: 129 }, (_, index) => ({ name: `mrjim-auth.${index}`, value: "QQ" })),
+    ];
+
+    for (const cookies of cases) {
+      const writes: CookieToSet[] = [];
+      const client = createServerClient(AUTH_URL, KEY, {
+        cookies: { getAll: async () => cookies, setAll: async (values) => { writes.push(...values); } },
+        global: { fetch: async () => response({ user: null, session: null }) },
+      });
+      const result = await client.auth.getSession();
+      expect(result).toEqual({ data: { session: null }, error: null });
+      expect(JSON.stringify(result)).not.toContain("cookie accessor secret");
+      expect(writes.every((cookie) => cookie.value === "" && cookie.options.maxAge === 0)).toBe(true);
+    }
+    expect(getterCalls).toBe(0);
+  });
+
+  it("rejects hostile adapter thenables and unsafe cookie metadata without invoking accessors", async () => {
+    let thenReads = 0;
+    const thenable = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(thenable, "then", {
+      get() { thenReads += 1; throw new Error("cookie then secret"); },
+    });
+    const readClient = createServerClient(AUTH_URL, KEY, {
+      cookies: { getAll: () => thenable as unknown as Promise<readonly Cookie[]> },
+      global: { fetch: async () => response(session()) },
+    });
+    await expect(readClient.auth.getSession()).resolves.toEqual({ data: { session: null }, error: null });
+
+    const writeClient = createServerClient(AUTH_URL, KEY, {
+      cookies: { getAll: () => [], setAll: () => thenable as unknown as Promise<void> },
+      global: { fetch: async () => response(session()) },
+    });
+    expect((await writeClient.auth.setSession(session())).error?.code).toBe("internal_error");
+    expect(thenReads).toBe(0);
+
+    expect(() => createServerClient(AUTH_URL, KEY, {
+      cookies: createCookieJar().adapter,
+      cookiePath: "/; injected=true",
+      global: { fetch: async () => response(session()) },
+    })).toThrow(/cookie path/i);
+    expect(() => createServerClient(AUTH_URL, KEY, {
+      cookies: createCookieJar().adapter,
+      cookieName: "x".repeat(126),
+      global: { fetch: async () => response(session()) },
+    })).toThrow(/cookie name/i);
+  });
+
+  it("isolates parallel request-local clients and their cookie state", async () => {
+    const first = createCookieJar();
+    const second = createCookieJar();
+    const firstSession = session({ access_token: "first-access", refresh_token: "first-refresh" });
+    const secondSession = session({ access_token: "second-access", refresh_token: "second-refresh" });
+    const firstClient = createServerClient(AUTH_URL, KEY, { cookies: first.adapter, global: { fetch: async () => response(firstSession) } });
+    const secondClient = createServerClient(AUTH_URL, KEY, { cookies: second.adapter, global: { fetch: async () => response(secondSession) } });
+
+    await Promise.all([firstClient.auth.setSession(firstSession), secondClient.auth.setSession(secondSession)]);
+    const [firstResult, secondResult] = await Promise.all([firstClient.auth.getSession(), secondClient.auth.getSession()]);
+
+    expect(firstResult.data?.session?.access_token).toBe("first-access");
+    expect(secondResult.data?.session?.access_token).toBe("second-access");
+    expect(first.cookies.map((cookie) => cookie.value).join("")).not.toBe(second.cookies.map((cookie) => cookie.value).join(""));
+  });
+
   it("signs out by clearing every auth cookie chunk and fails closed on unavailable required writes", async () => {
-    const jar = createCookieJar([
-      { name: "mrjim-auth.0", value: "chunk-a" },
-      { name: "mrjim-auth.1", value: "chunk-b" },
-    ]);
-    const fetch = async () => response(null);
+    const jar = createCookieJar();
+    const fetch = async (input: RequestInfo | URL) => new Request(input).url.endsWith("/user") ? response(session()) : response(null);
     const client = createServerClient(AUTH_URL, KEY, { cookies: jar.adapter, global: { fetch } });
+    await expect(client.auth.setSession(session())).resolves.toMatchObject({ error: null });
+    expect(jar.cookies.some((cookie) => cookie.name.startsWith("mrjim-auth.") && cookie.value.length > 0)).toBe(true);
     await expect(client.auth.signOut()).resolves.toEqual({ data: null, error: null });
     expect(jar.cookies.filter((cookie) => cookie.name.startsWith("mrjim-auth.")).every((cookie) => cookie.value === "")).toBe(true);
 
+    const seed = createCookieJar();
+    const seedClient = createServerClient(AUTH_URL, KEY, { cookies: seed.adapter, global: { fetch } });
+    await expect(seedClient.auth.setSession(session())).resolves.toMatchObject({ error: null });
     const failing = {
-      getAll: () => [{ name: "mrjim-auth.0", value: "chunk-a" }],
+      getAll: () => seed.cookies,
       setAll: () => { throw new Error("cookie write secret"); },
     };
     const failingClient = createServerClient(AUTH_URL, KEY, { cookies: failing, global: { fetch } });
@@ -180,8 +282,10 @@ describe("Next.js browser and SSR adapter contracts", () => {
       headers: { apikey: "caller-key", authorization: "caller-token", "content-type": "text/plain" },
       global: { fetch },
     });
-    await client.auth.getSession();
+    await client.auth.resetPasswordForEmail("user@example.test");
 
+    expect(seen?.get("apikey")).toBe(KEY);
+    expect(seen?.get("authorization")).not.toBe("caller-token");
     expect(seen?.get("content-type")).not.toBe("text/plain");
   });
 

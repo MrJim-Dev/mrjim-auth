@@ -1328,9 +1328,15 @@ describe("Task 3 PostgreSQL migrations", () => {
             const root = await import("mrjim-auth");
             const server = await import("mrjim-auth/server");
             const browser = await import("mrjim-auth/client/pkce");
+            const express = await import("mrjim-auth/express");
+            const next = await import("mrjim-auth/nextjs");
+            const nextServer = await import("mrjim-auth/nextjs/server");
             if (typeof root.createClient !== "function") throw new Error("packed root import failed");
             if (typeof server.AuthorizationService !== "function") throw new Error("packed server import failed");
             if (typeof browser.generateCodeVerifier !== "function") throw new Error("packed browser import failed");
+            if (typeof express.toExpressHandler !== "function") throw new Error("packed Express adapter import failed");
+            if (typeof next.createBrowserClient !== "function") throw new Error("packed Next browser adapter import failed");
+            if (typeof nextServer.createServerClient !== "function") throw new Error("packed Next server adapter import failed");
 
             const packedOidcProvider = new server.OidcOAuthProvider({
               name: "oidc",

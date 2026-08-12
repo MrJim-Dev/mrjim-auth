@@ -281,6 +281,12 @@ describe("package export boundaries", () => {
     expect(Object.keys(testing)).toEqual(["FakeMailer"]);
   });
 
+  it("exposes only the bounded framework adapter functions", async () => {
+    expect(Object.keys(await import("mrjim-auth/express"))).toEqual(["toExpressHandler"]);
+    expect(Object.keys(await import("mrjim-auth/nextjs"))).toEqual(["createBrowserClient"]);
+    expect(Object.keys(await import("mrjim-auth/nextjs/server"))).toEqual(["createServerClient"]);
+  });
+
   it("keeps the canonical forbidden-name list in reviewable documentation", async () => {
     const guide = await readFile(resolve(packageRoot, "../../docs/guides/postgres-migrations.md"), "utf8");
     expect(guide).toContain(FORBIDDEN_AUTH_NAMES.join(", "));
@@ -289,7 +295,7 @@ describe("package export boundaries", () => {
   it("does not expose unfinished behavior from later-task subpaths", async () => {
     for (const exportKey of requiredExportKeys
       .slice(1)
-      .filter((key) => key !== "./postgres" && key !== "./server" && key !== "./client/pkce" && key !== "./testing")) {
+      .filter((key) => key !== "./postgres" && key !== "./server" && key !== "./express" && key !== "./nextjs" && key !== "./nextjs/server" && key !== "./client/pkce" && key !== "./testing")) {
       expect(Object.keys(await import(packageSpecifier(exportKey)))).toEqual([]);
     }
   });

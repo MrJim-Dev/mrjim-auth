@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Readable } from "node:stream";
 import { toExpressHandler, type ExpressRequest, type ExpressResponse } from "../../src/adapters/express.js";
 
 type CapturedRequest = {
@@ -153,6 +154,26 @@ describe("Express adapter contract", () => {
     expect(response.ended).toBe(true);
   });
 
+  it("streams an unparsed Express request body without requiring body-parser", async () => {
+    const { server, requests } = createServer(() => new Response("ok"));
+    const request = Object.assign(Readable.from([Buffer.from("raw-"), Buffer.from("request-body")]), {
+      method: "POST",
+      originalUrl: "/auth/v1/token?grant_type=password",
+      headers: { host: "direct.example.test", "content-type": "text/plain" },
+      socket: { remoteAddress: "192.0.2.10", encrypted: false },
+    }) as unknown as ExpressRequest;
+    const response = createResponse();
+
+    await toExpressHandler(server)(request, response);
+
+    expect(requests[0]).toMatchObject({
+      method: "POST",
+      url: "http://direct.example.test/auth/v1/token?grant_type=password",
+      body: "raw-request-body",
+    });
+    expect(response.statusCode).toBe(200);
+  });
+
   it("uses direct socket host/proto/ip and does not trust forwarded headers by default", async () => {
     const { server, requests } = createServer(() => new Response("ok"));
     const response = createResponse();
@@ -175,19 +196,34 @@ describe("Express adapter contract", () => {
     const { server, requests } = createServer(() => new Response("ok"));
     const response = createResponse();
     await toExpressHandler(server, {
-      trustProxy: { hops: 1 },
+      trustProxy: { hops: 2 },
     })(createRequest({
       headers: {
         host: "proxy.internal.test",
         "x-forwarded-host": "public.example.test",
         "x-forwarded-proto": "https",
-        "x-forwarded-for": "203.0.113.9, 192.0.2.20",
+        "x-forwarded-for": "203.0.113.9, 192.0.2.11",
       },
       socket: { remoteAddress: "192.0.2.20", encrypted: false },
     }), response);
 
     expect(requests[0]!.url).toBe("https://public.example.test/auth/v1/signup?invite=abc&invite=def");
     expect(requests[0]!.headers.get("x-real-ip")).toBe("203.0.113.9");
+  });
+
+  it("does not trust an attacker-controlled prefix beyond the configured proxy hops", async () => {
+    const { server, requests } = createServer(() => new Response("ok"));
+    await toExpressHandler(server, { trustProxy: { hops: 1 } })(createRequest({
+      headers: {
+        host: "proxy.internal.test",
+        "x-forwarded-host": "public.example.test",
+        "x-forwarded-proto": "https",
+        "x-forwarded-for": "198.51.100.99, 203.0.113.10",
+      },
+      socket: { remoteAddress: "192.0.2.20", encrypted: false },
+    }), createResponse());
+
+    expect(requests[0]!.headers.get("x-real-ip")).toBe("203.0.113.10");
   });
 
   it("rejects ambiguous or malformed forwarded values when proxy trust is enabled", async () => {

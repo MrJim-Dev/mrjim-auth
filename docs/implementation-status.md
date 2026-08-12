@@ -1176,7 +1176,7 @@ Task 2 original final verification before Review Fix Pass 1:
 - `pnpm docs:check` — passed; 2 required documents found.
 - `git diff --check` — passed with no whitespace errors.
 
-## Task 10: browser-safe client — in progress
+## Task 10: browser-safe client — complete
 
 Task 10 is scoped to the browser/isomorphic `createClient`, complete public
 `client.auth` methods/events, strict client boundaries, PKCE URL handling,
@@ -1290,6 +1290,41 @@ objects or Hayahai/shipping fields. Full auth behavior remains intentionally
 unimplemented for later tasks.
 
 No paid SaaS or hosted service was used or required for these checks.
+
+## Task 11: Express and Next.js adapters — review pending
+
+Task 11 implements the optional framework boundaries without adding Express,
+Next.js, a hosted auth product, or any paid dependency. `mrjim-auth/express`
+now exposes structural Web Request/Response translation with raw request and
+response streaming, duplicate `Set-Cookie` preservation, direct socket trust by
+default, bounded explicit proxy-hop handling, and fixed redacted failures.
+
+`mrjim-auth/nextjs` provides one immutable browser client per module realm and
+storage key and rejects conflicting rebinding. `mrjim-auth/nextjs/server`
+creates a fresh request-local client each call. Its captured cookie adapter
+supports synchronous or native asynchronous reads/writes, deterministic
+base64url encoding, bounded 3,000-character chunks, stale-chunk expiration,
+complete sign-out clearing, read-only operation, and fail-closed required
+writes. Cookie attributes default to `HttpOnly`, `SameSite=Lax`, path `/`, and
+`Secure` for HTTPS. Request headers cannot replace SDK-owned API-key,
+authorization, or content-type headers.
+
+Task 11 verification currently passes:
+
+- focused Express/Next contracts: 2 files and 21/21 tests;
+- package exports/browser graph: 1 file and 13/13 tests after a fresh build;
+- complete `pnpm test`: 27 Vitest files and 374/374 tests, then 11/11 real
+  local Chrome tests;
+- frozen install, build, and typecheck;
+- five protected migration hashes and deterministic OpenAPI remain unchanged
+  at 17 paths, 18 operations, and SHA-256
+  `fc40bcd17f61483a55f13dc6dec80e26e447e98c6ee8cee567276b2fb8abb25c`.
+
+The usage contract is documented in `docs/guides/framework-adapters.md`.
+Independent fresh Luna Max review, final lint/docs/diff checks, and a clean
+review commit remain before approval. Two Luna implementation agents stalled;
+their tooling failure is recorded but is not a product or paid-service
+blocker. Tasks 12–14 remain.
 
 ## Task 7 final verification
 
