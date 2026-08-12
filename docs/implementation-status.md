@@ -1338,6 +1338,12 @@ pre-encoding bounds, and stale suffix cleanup: 41/41 focused tests and
 typecheck pass. Full release gates and same-reviewer re-review remain. Task 11
 is not approved.
 
+The bounded remediation is now release-green at product commit `b8da1f5`:
+41/41 focused tests, 381/381 full Vitest tests, and 11/11 real Chrome tests.
+Frozen install, build, typecheck, lint, docs, diff check, all protected
+migration hashes, and unchanged OpenAPI pass. Same-reviewer Luna Max approval
+is the only remaining Task 11 gate; Tasks 12–14 remain pending.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
