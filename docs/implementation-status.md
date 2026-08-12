@@ -454,7 +454,7 @@ database, external network, or paid SaaS service is required.
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Complete — round 8 independently approved | Raman approved `916d615ca8627d200e9261688bbbb5d8903d541e` with zero Critical, Important, or Minor findings after round-8 error-prototype, OIDC, HTTP, provider allowlist, `Set.delete`, packed, OpenAPI, migration, export, and full 318-test verification; evidence is recorded in the Task 9 report |
-| 10. Browser client | Changes required — one Minor contract mismatch | Same-reviewer round-2 re-review closed all Critical/Important findings and left one Minor: recovery HTTP/OpenAPI must enforce and document the authoritative 1,024 UTF-8-byte password cap; Task 11 remains gated |
+| 10. Browser client | Final Minor green — re-review pending | Recovery HTTP now rejects passwords above 1,024 UTF-8 bytes before dispatch and deterministic OpenAPI documents the byte cap; focused 39/39 and full 352/352 plus 11/11 Chrome pass; Task 11 remains gated pending same-reviewer approval |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
 | 13. Documentation and examples | Pending | Not run |
@@ -547,6 +547,15 @@ route's character-only schema even though the password service safely rejects
 it before proof consumption. Recovery HTTP validation must add the UTF-8 byte
 predicate and deterministic OpenAPI must document the authoritative byte cap.
 Task 10 and Task 11 remain gated pending this final fix and re-review.
+
+The final Minor is now locally addressed. Recovery route validation uses a
+captured UTF-8 encoder and rejects over-1,024-byte passwords before dispatch;
+OpenAPI retains coarse character bounds and adds a stable description plus
+`x-mrjim-maxUtf8Bytes: 1024`. Focused HTTP/OpenAPI is 39/39 and full verification
+is 352/352 Vitest plus 11/11 Chrome, frozen install, build, typecheck, lint,
+docs, unchanged migration hashes, deterministic OpenAPI, and diff checks.
+Same-reviewer approval remains pending; Task 10 is not approved and Task 11 has
+not started.
 
 Remediation round-2 exact product target:
 `a3c880081fcce627021e57259b54ca2b4ad18f52`. Verified GREEN ledger:
