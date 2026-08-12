@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AuthRepository } from "../../src/shared/contracts.js";
-import { permissionKeySchema, roleKeySchema, uuidSchema } from "../../src/shared/types.js";
+import { lowercaseKeySchema, permissionKeySchema, roleKeySchema, uuidSchema } from "../../src/shared/types.js";
 import { AdminService } from "../../src/server/admin-service.js";
 
 const USER_ID = uuidSchema.parse("11111111-1111-4111-8111-111111111111");
@@ -40,6 +40,7 @@ function repository(overrides: Partial<AuthRepository> = {}): AuthRepository {
       listApiKeys: async () => ({ apiKeys: [], total: 0 }), revokeApiKey: async () => false,
       touchApiKeyLastUsed: async () => undefined, listAudit: async () => ({ events: [], total: 0 }),
       assignedRolesForUpdate: async () => [], countActiveRoleAssignments: async () => 0,
+      rolesForUpdate: async () => [],
     },
     identities: {}, passwordCredentials: {}, oneTimeTokens: {}, oauthStates: {},
     __events: events,
@@ -81,10 +82,11 @@ describe("transactional administration service", () => {
   it("enforces actor rank and the final protected-role assignment under the same role lock", async () => {
     const targetRole = { id: ROLE_ID, key: roleKeySchema.parse("owner"), name: "Owner", description: null, rank: 100, is_system: true, created_at: NOW.toISOString(), updated_at: NOW.toISOString() };
     const actorRole = { ...targetRole, id: ACTOR_ID, key: roleKeySchema.parse("admin"), name: "Admin", rank: 50, is_system: false };
-    const permission = { id: USER_ID, key: permissionKeySchema.parse("auth.roles.manage"), resource: roleKeySchema.parse("auth"), action: roleKeySchema.parse("roles-manage"), description: null, created_at: NOW.toISOString(), updated_at: NOW.toISOString() };
+    const permission = { id: USER_ID, key: permissionKeySchema.parse("auth.roles.manage"), resource: lowercaseKeySchema.parse("auth.roles"), action: lowercaseKeySchema.parse("manage"), description: null, created_at: NOW.toISOString(), updated_at: NOW.toISOString() };
     const base = repository();
     base.authorization.effectivePermissions = async () => [permission];
     base.roles.findById = async () => targetRole;
+    base.admin!.rolesForUpdate = async () => [targetRole];
     base.admin!.assignedRolesForUpdate = async () => [actorRole];
     base.admin!.countActiveRoleAssignments = async () => 1;
     const service = new AdminService({ repository: base, clock: () => NOW });

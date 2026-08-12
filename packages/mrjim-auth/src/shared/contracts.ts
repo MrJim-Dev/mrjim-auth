@@ -492,6 +492,8 @@ export interface AdminRepository {
   listAudit(input: AdminPageInput): Promise<{ readonly events: readonly AuditEventRecord[]; readonly total: number }>;
   /** Locks the user's currently active assigned roles in stable UUID order. */
   assignedRolesForUpdate(userId: UUID, now: Date): Promise<readonly Role[]>;
+  /** Locks and returns required roles in stable UUID order. */
+  rolesForUpdate(roleIds: readonly UUID[]): Promise<readonly Role[]>;
   /** Counts active assignments after the role row is locked by the caller. */
   countActiveRoleAssignments(roleId: UUID, now: Date): Promise<number>;
 }

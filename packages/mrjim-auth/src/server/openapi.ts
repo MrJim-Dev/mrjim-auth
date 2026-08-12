@@ -207,6 +207,9 @@ function securityFor(contract: RouteContract): Record<string, readonly string[]>
       { secretKey: [], bearerAuth: [] },
     ];
   }
+  if (contract.security === "admin") {
+    return [{ secretKey: [] }, { publishableKey: [], bearerAuth: [] }];
+  }
   return [{ publishableKey: [] }, { secretKey: [] }];
 }
 

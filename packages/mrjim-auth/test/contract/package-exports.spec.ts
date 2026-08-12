@@ -241,6 +241,9 @@ describe("package export boundaries", () => {
     expect(Object.keys(server).sort()).toEqual([
       "ADMIN_MUTATION_RATE_LIMIT_POLICY",
       "ARGON2ID_PASSWORD_POLICY",
+      "AdminService",
+      "ApiKeyService",
+      "AuditService",
       "AuthServer",
       "AuthorizationService",
       "ES256_ALGORITHM",
@@ -268,6 +271,7 @@ describe("package export boundaries", () => {
       "UserService",
       "authorizeRoute",
       "callbackRoute",
+      "createAdminClient",
       "createAuthServer",
       "createAuthorizationRequestContext",
       "createOAuthRoutes",

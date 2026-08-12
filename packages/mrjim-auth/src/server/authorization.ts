@@ -215,6 +215,18 @@ function isLowerIdentifier(value: unknown, allowWildcard: boolean): value is str
   return true;
 }
 
+function isLowerResource(value: unknown): value is string {
+  if (value === "*") return true;
+  if (typeof value !== "string" || value.length === 0) return false;
+  let segmentStart = 0;
+  for (let index = 0; index <= value.length; index += 1) {
+    if (index !== value.length && value[index] !== ".") continue;
+    if (index === segmentStart || !isLowerIdentifier(keyPart(value, segmentStart, index), false)) return false;
+    segmentStart = index + 1;
+  }
+  return true;
+}
+
 function validPermissionKey(value: string): boolean {
   const separator = keySeparator(value);
   if (separator <= 0 || separator >= value.length - 1) return false;
@@ -222,7 +234,7 @@ function validPermissionKey(value: string): boolean {
   const resource = keyPart(value, 0, separator);
   const action = keyPart(value, separator + 1, value.length);
   if (resource === "*" && action === "*") return true;
-  return isLowerIdentifier(resource, false) && isLowerIdentifier(action, true);
+  return isLowerResource(resource) && resource !== "*" && isLowerIdentifier(action, true);
 }
 
 function compareKeys(left: string, right: string): number {
@@ -266,7 +278,7 @@ function sortKeys(values: string[]): void {
 }
 
 function keySeparator(value: string): number {
-  for (let index = 0; index < value.length; index += 1) {
+  for (let index = value.length - 1; index >= 0; index -= 1) {
     if (value[index] === ".") return index;
   }
   return -1;
@@ -668,7 +680,7 @@ function completePermissionRecord(value: unknown): Permission | null {
     if (
       id === null ||
       key === null ||
-      !isLowerIdentifier(resource, true) ||
+      !isLowerResource(resource) ||
       !isLowerIdentifier(action, true) ||
       (resource === "*" && action !== "*") ||
       key !== `${resource}.${action}` ||

@@ -26,6 +26,7 @@ import { PasswordService } from "./passwords.js";
 import { SessionService } from "./sessions.js";
 import { TokenService } from "./tokens.js";
 import { UserService } from "./users.js";
+import { AdminService } from "./admin-service.js";
 import {
   AuthServer,
   captureAuthServerMailer,
@@ -465,12 +466,14 @@ function createDefaultServices(
     ...(options.authorization?.defaultRoleKeys === undefined ? {} : { defaultRoleKeys: options.authorization.defaultRoleKeys }),
     clock,
   });
+  const admin = repository.admin === undefined ? undefined : new AdminService({ repository, clock, ...(options.rateLimiter === undefined ? {} : { rateLimiter: options.rateLimiter }) });
   return {
     users,
     sessions,
     tokens,
     authorization,
     ...(oauth === undefined ? {} : { oauth }),
+    ...(admin === undefined ? {} : { admin }),
   };
 }
 
@@ -481,11 +484,12 @@ function mergeServices(defaults: AuthServerServices, overrides: AuthServerServic
     tokens: defaults.tokens,
     authorization: defaults.authorization,
     ...(defaults.oauth === undefined ? {} : { oauth: defaults.oauth }),
+    ...(defaults.admin === undefined ? {} : { admin: defaults.admin }),
   };
   if (overrides !== undefined) {
     const source = asRecord(overrides);
     if (source === null) throw new AuthConfigurationError("auth server service composition is incomplete");
-    const members = ["users", "sessions", "tokens", "authorization", "oauth"] as const;
+    const members = ["users", "sessions", "tokens", "authorization", "oauth", "admin"] as const;
     for (let index = 0; index < members.length; index += 1) {
       const member = members[index];
       if (member === undefined) throw new AuthConfigurationError("auth server service composition is incomplete");

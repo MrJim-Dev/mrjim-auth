@@ -215,6 +215,36 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect(serverModule.generateOpenApiDocument).toBeTypeOf("function");
   });
 
+  it("dispatches Task 12 admin routes for non-browser secrets and delegated bearer sessions", async () => {
+    const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+    const options = makeOptions(calls) as any;
+    const result = (data: unknown) => success(data);
+    const unused = async () => result(null);
+    options.services.admin = {
+      listUsers: async (input: unknown, principal: unknown) => { calls.push({ name: "admin.listUsers", input: { input, principal } }); return result({ users: [], total: 0, page: 2, per_page: 25 }); },
+      getUserById: async (input: unknown, principal: unknown) => { calls.push({ name: "admin.getUserById", input: { input, principal } }); return result({ user: user() }); },
+      findUser: unused, createUser: unused, updateUserById: unused, deleteUser: unused, inviteUserByEmail: unused,
+      listRoles: unused, createRole: unused, updateRole: unused, deleteRole: unused, setRolePermissions: unused,
+      setRoleInheritance: unused, assignRole: unused, unassignRole: unused, listPermissions: unused,
+      createPermission: unused, updatePermission: unused, deletePermission: unused, listAudit: unused,
+    };
+    const auth = serverModule.createAuthServer(options);
+
+    const secret = await auth.handle(request("/admin/users?page=2&per_page=25", { headers: { apikey: SECRET_KEY } }));
+    expect(secret.status).toBe(200);
+    expect(await body(secret)).toMatchObject({ data: { users: [], page: 2, per_page: 25 }, error: null });
+    expect(calls.at(-1)).toMatchObject({ name: "admin.listUsers", input: { principal: { kind: "secret" } } });
+
+    const delegated = await auth.handle(request(`/admin/users/${USER_ID}`, { headers: { apikey: PUBLISHABLE_KEY, authorization: `Bearer ${ACCESS_TOKEN}` } }));
+    expect(delegated.status).toBe(200);
+    expect(calls.at(-1)).toMatchObject({ name: "admin.getUserById", input: { input: USER_ID, principal: { kind: "user", userId: USER_ID, sessionId: SESSION_ID } } });
+
+    const missingBearer = await auth.handle(request("/admin/users", { headers: { apikey: PUBLISHABLE_KEY } }));
+    expect(missingBearer.status).toBe(401);
+    const browserSecret = await auth.handle(request("/admin/users", { headers: { apikey: SECRET_KEY, origin: SITE_URL } }));
+    expect(browserSecret.status).toBe(403);
+  });
+
   it("dispatches signup and normalizes email before the user service", async () => {
     const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
     const auth = serverModule.createAuthServer(makeOptions(calls));

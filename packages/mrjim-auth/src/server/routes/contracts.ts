@@ -2,6 +2,7 @@ import { z, type ZodType } from "zod";
 import type { AuthRepository } from "../../shared/contracts.js";
 import type { AuthResult } from "../../shared/result.js";
 import type { JsonObject, Session, User } from "../../shared/types.js";
+import type { AdminService } from "../admin-service.js";
 import type {
   AuthenticatedSubject,
   OtpInput,
@@ -208,6 +209,48 @@ export const exchangeRequestSchema = z.object({
 
 export const nullDataSchema = z.null();
 
+const uuidString = z.string().uuid();
+const nullableIsoInput = z.iso.datetime({ offset: true }).nullable();
+export const adminPageQuery = [
+  { name: "page", required: false, description: "One-based page number" },
+  { name: "per_page", required: false, description: "Page size from 1 to 100" },
+] as const;
+export const adminUserCreateRequestSchema = z.object({
+  email: emailString.nullable().optional(), phone: z.string().min(1).max(64).nullable().optional(),
+  email_confirmed_at: nullableIsoInput.optional(), phone_confirmed_at: nullableIsoInput.optional(),
+  confirmed_at: nullableIsoInput.optional(), user_metadata: jsonObject.optional(), app_metadata: jsonObject.optional(),
+}).strict();
+export const adminUserUpdateRequestSchema = adminUserCreateRequestSchema.extend({
+  last_sign_in_at: nullableIsoInput.optional(), banned_until: nullableIsoInput.optional(),
+}).strict();
+export const adminInviteRequestSchema = z.object({ email: emailString, options: jsonObject.optional() }).strict();
+export const adminRoleCreateRequestSchema = z.object({ key: z.string().min(1).max(128), name: z.string().min(1).max(256), description: z.string().max(2048).nullable().optional(), rank: z.number().int().nonnegative(), is_system: z.boolean().optional() }).strict();
+export const adminRoleUpdateRequestSchema = adminRoleCreateRequestSchema.partial().strict();
+export const adminPermissionCreateRequestSchema = z.object({ key: z.string().min(3).max(256), resource: z.string().min(1).max(192), action: z.string().min(1).max(64), description: z.string().max(2048).nullable().optional() }).strict();
+export const adminPermissionUpdateRequestSchema = adminPermissionCreateRequestSchema.partial().strict();
+export const adminPermissionIdsRequestSchema = z.object({ permission_ids: z.array(uuidString).max(10_000) }).strict();
+export const adminInheritedRoleIdsRequestSchema = z.object({ inherited_role_ids: z.array(uuidString).max(10_000) }).strict();
+export const adminUsersDataSchema = z.object({ users: z.array(userSchema), total: z.number().int().nonnegative(), page: z.number().int().positive(), per_page: z.number().int().positive() }).strict();
+export const adminUserDataSchema = z.object({ user: userSchema.nullable() }).strict();
+const adminRoleResponseSchema = z.object({
+  id: uuidString, key: z.string().min(1), name: z.string().min(1), description: z.string().nullable(),
+  rank: z.number().int().nonnegative(), is_system: z.boolean(), created_at: z.string().min(1), updated_at: z.string().min(1),
+}).strict();
+const adminPermissionResponseSchema = z.object({
+  id: uuidString, key: z.string().min(1), resource: z.string().min(1), action: z.string().min(1), description: z.string().nullable(),
+  created_at: z.string().min(1), updated_at: z.string().min(1),
+}).strict();
+export const adminRolesDataSchema = z.object({ roles: z.array(adminRoleResponseSchema) }).strict();
+export const adminRoleDataSchema = z.object({ role: adminRoleResponseSchema }).strict();
+export const adminPermissionsDataSchema = z.object({ permissions: z.array(adminPermissionResponseSchema) }).strict();
+export const adminPermissionDataSchema = z.object({ permission: adminPermissionResponseSchema }).strict();
+export const adminAuditEventSchema = z.object({
+  id: uuidString, actor_user_id: uuidString.nullable(), actor_key_id: uuidString.nullable(), actor_session_id: uuidString.nullable(),
+  action: nonEmptyString, target_type: nonEmptyString, target_id: uuidString.nullable(), ip_address: z.string().nullable(),
+  user_agent: z.string().nullable(), metadata: jsonObject, outcome: z.enum(["success", "failure"]), occurred_at: nonEmptyString,
+}).strict();
+export const adminAuditDataSchema = z.object({ events: z.array(adminAuditEventSchema), total: z.number().int().nonnegative(), page: z.number().int().positive(), per_page: z.number().int().positive() }).strict();
+
 /** A safe response produced by a route before the final response boundary. */
 export type RouteOutput =
   | {
@@ -275,6 +318,7 @@ export interface AuthServerServices {
     getPermissions(userId: string, scope?: unknown, context?: AuthorizationRequestContext): unknown;
     authorize(subject: unknown, requirement: AuthorizationRequirement, context?: AuthorizationRequestContext): unknown;
   };
+  readonly admin?: AdminService;
 }
 
 /** Request context supplied to public and current-user route handlers. */
@@ -283,6 +327,7 @@ export interface RouteContext {
   readonly requestId: string;
   readonly query: URLSearchParams;
   readonly body: unknown;
+  readonly params?: Readonly<Record<string, string>>;
   readonly auth?: RouteAuthContext;
   readonly services: AuthServerServices;
   invoke<T>(operation: () => unknown): Promise<T>;
@@ -290,10 +335,10 @@ export interface RouteContext {
 
 /** Shared route metadata used for exact dispatch and OpenAPI generation. */
 export interface RouteContract {
-  readonly method: "GET" | "POST" | "PUT" | "DELETE";
+  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path: string;
   readonly operationId: string;
-  readonly security: "api_key" | "user" | "signed";
+  readonly security: "api_key" | "user" | "admin" | "signed";
   readonly query?: readonly { readonly name: string; readonly required: boolean; readonly description: string }[];
   readonly body?: ZodType;
   readonly response: ZodType;
@@ -322,6 +367,26 @@ export const routeContracts: readonly RouteContract[] = Object.freeze([
   { method: "GET", path: "/user/permissions", operationId: "getUserPermissions", security: "user", query: [{ name: "scope_type", required: false, description: "Scope type" }, { name: "scope_id", required: false, description: "Scope identifier" }], response: authResult(permissionsDataSchema) },
   { method: "POST", path: "/logout", operationId: "signOut", security: "api_key", body: logoutRequestSchema, response: authResult(nullDataSchema) },
   { method: "GET", path: "/.well-known/jwks.json", operationId: "jwks", security: "api_key", response: authResult(jwksDataSchema) },
+  { method: "GET", path: "/admin/users", operationId: "adminListUsers", security: "admin", query: adminPageQuery, response: authResult(adminUsersDataSchema) },
+  { method: "POST", path: "/admin/users", operationId: "adminCreateUser", security: "admin", body: adminUserCreateRequestSchema, response: authResult(adminUserDataSchema) },
+  { method: "GET", path: "/admin/users/find", operationId: "adminFindUser", security: "admin", query: [{ name: "email", required: true, description: "Exact normalized email" }], response: authResult(adminUserDataSchema) },
+  { method: "POST", path: "/admin/users/invite", operationId: "adminInviteUser", security: "admin", body: adminInviteRequestSchema, response: authResult(z.object({ invited: z.unknown() }).strict()) },
+  { method: "GET", path: "/admin/users/{id}", operationId: "adminGetUser", security: "admin", response: authResult(adminUserDataSchema) },
+  { method: "PATCH", path: "/admin/users/{id}", operationId: "adminUpdateUser", security: "admin", body: adminUserUpdateRequestSchema, response: authResult(adminUserDataSchema) },
+  { method: "DELETE", path: "/admin/users/{id}", operationId: "adminDeleteUser", security: "admin", query: [{ name: "soft", required: false, description: "Must be true; hard delete is unsupported" }], response: authResult(adminUserDataSchema) },
+  { method: "PUT", path: "/admin/users/{id}/roles/{roleId}", operationId: "adminAssignRole", security: "admin", query: [{ name: "scope_type", required: false, description: "Optional scope type" }, { name: "scope_id", required: false, description: "Optional scope id" }], response: authResult(nullDataSchema) },
+  { method: "DELETE", path: "/admin/users/{id}/roles/{roleId}", operationId: "adminUnassignRole", security: "admin", query: [{ name: "scope_type", required: false, description: "Optional scope type" }, { name: "scope_id", required: false, description: "Optional scope id" }], response: authResult(nullDataSchema) },
+  { method: "GET", path: "/admin/roles", operationId: "adminListRoles", security: "admin", response: authResult(adminRolesDataSchema) },
+  { method: "POST", path: "/admin/roles", operationId: "adminCreateRole", security: "admin", body: adminRoleCreateRequestSchema, response: authResult(adminRoleDataSchema) },
+  { method: "PATCH", path: "/admin/roles/{id}", operationId: "adminUpdateRole", security: "admin", body: adminRoleUpdateRequestSchema, response: authResult(adminRoleDataSchema) },
+  { method: "DELETE", path: "/admin/roles/{id}", operationId: "adminDeleteRole", security: "admin", response: authResult(nullDataSchema) },
+  { method: "PUT", path: "/admin/roles/{id}/permissions", operationId: "adminSetRolePermissions", security: "admin", body: adminPermissionIdsRequestSchema, response: authResult(nullDataSchema) },
+  { method: "PUT", path: "/admin/roles/{id}/inheritance", operationId: "adminSetRoleInheritance", security: "admin", body: adminInheritedRoleIdsRequestSchema, response: authResult(nullDataSchema) },
+  { method: "GET", path: "/admin/permissions", operationId: "adminListPermissions", security: "admin", response: authResult(adminPermissionsDataSchema) },
+  { method: "POST", path: "/admin/permissions", operationId: "adminCreatePermission", security: "admin", body: adminPermissionCreateRequestSchema, response: authResult(adminPermissionDataSchema) },
+  { method: "PATCH", path: "/admin/permissions/{id}", operationId: "adminUpdatePermission", security: "admin", body: adminPermissionUpdateRequestSchema, response: authResult(adminPermissionDataSchema) },
+  { method: "DELETE", path: "/admin/permissions/{id}", operationId: "adminDeletePermission", security: "admin", response: authResult(nullDataSchema) },
+  { method: "GET", path: "/admin/audit", operationId: "adminListAudit", security: "admin", query: adminPageQuery, response: authResult(adminAuditDataSchema) },
 ]);
 
 export type {

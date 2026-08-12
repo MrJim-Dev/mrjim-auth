@@ -14,6 +14,7 @@ import type { AuthenticatedSession } from "./sessions.js";
 import type { AccessTokenClaims } from "./tokens.js";
 import { handlePublicRoute } from "./routes/public.js";
 import { handleUserRoute } from "./routes/user.js";
+import { handleAdminRoute } from "./routes/admin.js";
 import {
   boundaryDataProperty,
   boundaryHasThen,
@@ -270,7 +271,8 @@ const SESSION_SERVICE_METHODS = ["refresh", "authorizeSession", "signOut"] as co
 const TOKEN_SERVICE_METHODS = ["verifyAccessToken", "jwks"] as const;
 const AUTHORIZATION_SERVICE_METHODS = ["getPermissions", "authorize"] as const;
 const OAUTH_SERVICE_METHODS = ["listProviders", "authorize", "callback", "exchangeCode", "listIdentities", "unlinkIdentity"] as const;
-const AUTH_SERVER_SERVICE_MEMBERS = ["users", "sessions", "tokens", "authorization", "oauth"] as const;
+const ADMIN_SERVICE_METHODS = ["listUsers", "getUserById", "findUser", "createUser", "updateUserById", "deleteUser", "inviteUserByEmail", "listRoles", "createRole", "updateRole", "deleteRole", "setRolePermissions", "setRoleInheritance", "assignRole", "unassignRole", "listPermissions", "createPermission", "updatePermission", "deletePermission", "listAudit"] as const;
+const AUTH_SERVER_SERVICE_MEMBERS = ["users", "sessions", "tokens", "authorization", "oauth", "admin"] as const;
 
 function capturedService(
   member: typeof AUTH_SERVER_SERVICE_MEMBERS[number],
@@ -280,6 +282,7 @@ function capturedService(
   if (member === "sessions") return captureBoundaryMethodGroup(value, "session", SESSION_SERVICE_METHODS, ["revokeRefreshToken"]);
   if (member === "tokens") return captureBoundaryMethodGroup(value, "token", TOKEN_SERVICE_METHODS);
   if (member === "authorization") return captureBoundaryMethodGroup(value, "authorization", AUTHORIZATION_SERVICE_METHODS);
+  if (member === "admin") return captureBoundaryMethodGroup(value, "admin", ADMIN_SERVICE_METHODS);
   return captureBoundaryMethodGroup(value, "OAuth", OAUTH_SERVICE_METHODS);
 }
 
@@ -293,7 +296,7 @@ export function captureAuthServerServiceOverrides(value: unknown): Partial<AuthS
     if (member === undefined) throw new AuthConfigurationError("auth server service composition is incomplete");
     const property = boundaryOwnDataProperty(source, member);
     if (!property.valid) throw new AuthConfigurationError(`auth server ${member} must be a data property`);
-    if (!property.present || (member === "oauth" && property.value === undefined)) continue;
+    if (!property.present || ((member === "oauth" || member === "admin") && property.value === undefined)) continue;
     objectDefineProperty(facade, member, {
       configurable: false,
       enumerable: true,
@@ -741,7 +744,7 @@ function decodeSegment(value: string): string | null {
   }
 }
 
-function exactPath(path: string, basePath: string): { readonly path: string; readonly callbackProvider?: string } | null {
+function exactPath(path: string, basePath: string): { readonly path: string; readonly callbackProvider?: string; readonly params?: Readonly<Record<string, string>> } | null {
   if (!runtimeStringStartsWith(path, `${basePath}/`)) return null;
   const relative = runtimeStringSlice(path, basePath.length);
   if (relative === "/callback" || relative === "/callback/") return null;
@@ -757,6 +760,35 @@ function exactPath(path: string, basePath: string): { readonly path: string; rea
     const identityId = decodeSegment(identityPart);
     if (identityId === null || !uuidSchema.safeParse(identityId).success) return null;
     return { path: "/user/identities/{id}", callbackProvider: identityId };
+  }
+  if (runtimeStringStartsWith(relative, "/admin/")) {
+    const parts = runtimeStringSplit(runtimeStringSlice(relative, 1), "/");
+    const decodedUuid = (index: number): string | null => {
+      const value = parts[index];
+      if (value === undefined) return null;
+      const decoded = decodeSegment(value);
+      return decoded !== null && uuidSchema.safeParse(decoded).success ? decoded : null;
+    };
+    if (parts.length === 3 && parts[0] === "admin" && parts[1] === "users" && parts[2] !== "find" && parts[2] !== "invite") {
+      const id = decodedUuid(2); if (id === null) return null;
+      return { path: "/admin/users/{id}", params: objectFreeze({ id }) };
+    }
+    if (parts.length === 5 && parts[0] === "admin" && parts[1] === "users" && parts[3] === "roles") {
+      const id = decodedUuid(2); const roleId = decodedUuid(4); if (id === null || roleId === null) return null;
+      return { path: "/admin/users/{id}/roles/{roleId}", params: objectFreeze({ id, roleId }) };
+    }
+    if (parts.length === 3 && parts[0] === "admin" && parts[1] === "roles") {
+      const id = decodedUuid(2); if (id === null) return null;
+      return { path: "/admin/roles/{id}", params: objectFreeze({ id }) };
+    }
+    if (parts.length === 4 && parts[0] === "admin" && parts[1] === "roles" && (parts[3] === "permissions" || parts[3] === "inheritance")) {
+      const id = decodedUuid(2); if (id === null) return null;
+      return { path: `/admin/roles/{id}/${parts[3]}`, params: objectFreeze({ id }) };
+    }
+    if (parts.length === 3 && parts[0] === "admin" && parts[1] === "permissions") {
+      const id = decodedUuid(2); if (id === null) return null;
+      return { path: "/admin/permissions/{id}", params: objectFreeze({ id }) };
+    }
   }
   if (runtimeStringEndsWith(relative, "/")) return null;
   return { path: relative };
@@ -915,12 +947,15 @@ export class AuthServer {
         requestId: meta.requestId,
         query,
         body,
+        ...(routed.params === undefined ? {} : { params: routed.params }),
         ...(auth === undefined ? {} : { auth }),
         services: this.services,
         invoke: <T>(operation: () => unknown) => invokeUntrusted<T>(operation),
       };
       let output: RouteOutput | null;
-      if (runtimeStringStartsWith(routed.path, "/user") || routed.path === "/logout") {
+      if (runtimeStringStartsWith(routed.path, "/admin")) {
+        output = await handleAdminRoute(routed.path, context);
+      } else if (runtimeStringStartsWith(routed.path, "/user") || routed.path === "/logout") {
         output = await handleUserRoute(
           routed.path === "/user/identities/{id}" ? `/user/identities/${routed.callbackProvider}` : routed.path,
           context,
@@ -1072,7 +1107,7 @@ export class AuthServer {
       }
     }
     const response = this.emptyResponse(meta, 204);
-    invoke(headersSet, response.headers, ["access-control-allow-methods", "GET, POST, PUT, DELETE"]);
+    invoke(headersSet, response.headers, ["access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE"]);
     invoke(headersSet, response.headers, ["access-control-allow-headers", "apikey, authorization, content-type, x-request-id"]);
     invoke(headersSet, response.headers, ["access-control-max-age", "300"]);
     return response;
@@ -1228,15 +1263,21 @@ export class AuthServer {
     const key = safeApiKey(record, expectedHash, now);
     if (key === null) throw new AuthApiError("unauthorized", 401, "Invalid API key", meta.requestId);
     if (key.kind === "secret" && (meta.origin !== null || meta.browserMarked)) throw new AuthApiError("forbidden", 403, "Secret API keys are not accepted from browser origins", meta.requestId);
+    try {
+      const lastUse = this.repository.admin?.touchApiKeyLastUsed(key.id as never, now);
+      if (lastUse !== undefined) drainNativePromise(lastUse);
+    } catch {
+      // Last-use timestamps are operational hints and never authentication authority.
+    }
 
     let bearer: string | null = null;
     if (meta.authorization.state === "valid") {
       if (!isValidBearer(meta.authorization.value)) throw new AuthApiError("invalid_request", 400, "Invalid bearer authorization", meta.requestId);
       bearer = runtimeStringSlice(meta.authorization.value, "Bearer ".length);
     }
-    const requiresBearer = forceBearer || contract?.security === "user" || (contract?.path === "/authorize" && invoke<string | null>(searchParamsGet, query, ["flow"]) === "link_identity");
+    const requiresBearer = forceBearer || contract?.security === "user" || (contract?.security === "admin" && key.kind !== "secret") || (contract?.path === "/authorize" && invoke<string | null>(searchParamsGet, query, ["flow"]) === "link_identity");
     if (requiresBearer && bearer === null) throw new AuthApiError("unauthorized", 401, "Authenticated session is required", meta.requestId);
-    if (!requiresBearer && bearer !== null && contract?.path !== "/logout" && contract?.path !== "/authorize") throw new AuthApiError("invalid_request", 400, "Conflicting credentials", meta.requestId);
+    if (!requiresBearer && bearer !== null && contract?.security !== "admin" && contract?.path !== "/logout" && contract?.path !== "/authorize") throw new AuthApiError("invalid_request", 400, "Conflicting credentials", meta.requestId);
     if (bearer === null) return { key };
     const authenticated = await this.authenticateBearer(bearer, meta.requestId);
     return {
@@ -1363,7 +1404,9 @@ export class AuthServer {
     objectDefineProperty(error, "message", { configurable: false, enumerable: true, value: messageForCode(code), writable: false });
     objectDefineProperty(error, "request_id", { configurable: false, enumerable: true, value: requestId, writable: false });
     objectDefineProperty(payload, "error", { configurable: false, enumerable: true, value: error, writable: false });
-    return this.jsonResponse(meta, payload, status, "no-store");
+    const response = this.jsonResponse(meta, payload, status, "no-store");
+    if (status === 429) invoke(headersSet, response.headers, ["retry-after", "1"]);
+    return response;
   }
 
   private emptyResponse(meta: RequestMeta, status: number): Response {

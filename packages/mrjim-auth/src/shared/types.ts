@@ -107,7 +107,7 @@ const permissionResourceSchema = z
     z
       .string()
       .min(1)
-      .regex(/^[a-z][a-z0-9_-]*$/, "permission resources must be lowercase identifiers"),
+      .regex(/^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$/, "permission resources must be lowercase namespaces"),
     z.literal("*"),
   ])
   .transform((value) => value as LowercaseKey);
@@ -125,7 +125,7 @@ const permissionActionSchema = z
 /** Validates `resource.action`, `resource.*`, or `*.*` permission keys. */
 export const permissionKeySchema = z
   .string()
-  .regex(/^[a-z][a-z0-9_-]*\.(?:[a-z][a-z0-9_-]*|\*)$|^\*\.\*$/, "invalid permission key")
+  .regex(/^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*\.(?:[a-z][a-z0-9_-]*|\*)$|^\*\.\*$/, "invalid permission key")
   .transform((value) => value as LowercaseKey);
 
 const sensitiveKeySegments = new Set([

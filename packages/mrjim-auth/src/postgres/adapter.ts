@@ -5,6 +5,7 @@ import {
   createAuthorizationRepositories,
 } from "./repositories/authorization.js";
 import { createOperationsRepository } from "./repositories/operations.js";
+import { createAdminRepository } from "./repositories/admin.js";
 import { createSessionRepository } from "./repositories/sessions.js";
 import type { Database, RepositoryContext } from "./repositories/schema.js";
 import { createUserRepositories } from "./repositories/users.js";
@@ -46,6 +47,7 @@ function createRepository(
   const sessionRepository = createSessionRepository(context);
   const authorizationRepositories = createAuthorizationRepositories(context);
   const operationsRepository = createOperationsRepository(context);
+  const adminRepository = createAdminRepository(context);
 
   const repository: PostgresAdapter = {
     async transaction<T>(callback: (repository: AuthRepository) => Promise<T>): Promise<T> {
@@ -69,6 +71,7 @@ function createRepository(
     roles: authorizationRepositories.roles,
     permissions: authorizationRepositories.permissions,
     operations: operationsRepository,
+    admin: adminRepository,
     ownsPool: lifecycle.ownsPool,
     close: lifecycle.close,
   };

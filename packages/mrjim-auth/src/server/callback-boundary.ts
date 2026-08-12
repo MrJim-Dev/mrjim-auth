@@ -664,6 +664,7 @@ export function captureBoundaryRepository(value: unknown): AuthRepository {
     roles: ["list", "findById", "create", "update", "delete"],
     permissions: ["list", "findById", "create", "update", "delete"],
     operations: ["appendAudit", "findApiKeyByHash"],
+    admin: ["listUsers", "createApiKey", "listApiKeys", "revokeApiKey", "touchApiKeyLastUsed", "listAudit", "assignedRolesForUpdate", "rolesForUpdate", "countActiveRoleAssignments"],
   };
   const facade = boundaryObjectCreate(null) as Record<string, unknown>;
   const members = ["users", "identities", "passwordCredentials", "sessions", "oneTimeTokens", "oauthStates", "authorization", "roles", "permissions", "operations"] as const;
@@ -703,6 +704,16 @@ export function captureBoundaryRepository(value: unknown): AuthRepository {
       enumerable: true,
       writable: false,
       value: captureBoundaryMethodGroup(memberProperty.value, `database.${member}`, memberMethods),
+    });
+  }
+  const adminProperty = boundaryDataProperty(source, "admin");
+  if (!adminProperty.valid) throw new AuthConfigurationError("database.admin must be a data property");
+  if (adminProperty.present && adminProperty.value !== undefined) {
+    boundaryObjectDefineProperty(facade, "admin", {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value: captureBoundaryMethodGroup(adminProperty.value, "database.admin", methods.admin ?? []),
     });
   }
   return boundaryObjectFreeze(facade) as unknown as AuthRepository;

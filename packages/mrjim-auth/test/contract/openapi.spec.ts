@@ -62,9 +62,13 @@ describe("Task 9 deterministic OpenAPI contract", () => {
 
     expect(configured.openapi).toBe("3.1.0");
     expect(configured.servers).toEqual([{ url: BASE_URL }]);
-    expect(Object.keys(paths)).toHaveLength(17);
-    expect(operations(configured)).toHaveLength(18);
-    expect(Object.keys(paths).some((path) => path.startsWith("/admin"))).toBe(false);
+    expect(Object.keys(paths)).toHaveLength(29);
+    expect(operations(configured)).toHaveLength(38);
+    expect(Object.keys(paths).filter((path) => path.startsWith("/admin"))).toHaveLength(12);
+    expect(paths["/admin/users"].get.security).toEqual([
+      { secretKey: [] },
+      { publishableKey: [], bearerAuth: [] },
+    ]);
     expect(refs.every((ref) => ref.startsWith("#/components/schemas/") && Object.hasOwn(schemas, ref.slice("#/components/schemas/".length)))).toBe(true);
     expect(collectReferences(configured).some((ref) => ref.startsWith("#/$defs/"))).toBe(false);
 

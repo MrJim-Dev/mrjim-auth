@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { migrate, verifySchema } from "../../src/postgres/migrate.js";
+import { AdminService } from "../../src/server/admin-service.js";
 import {
   createPostgresAdapter,
   type PostgresAdapter,
@@ -1116,6 +1117,36 @@ describe("Task 4 PostgreSQL adapter", () => {
     expect(await repository.roles.findById(role.id)).toBeNull();
   });
 
+  it("backs transactional admin soft deletion, audit pagination, and protected-role minimums with PostgreSQL", async () => {
+    const repository = requireRepository();
+    expect(repository.admin).toBeDefined();
+    const admin = new AdminService({ repository, clock: () => new Date("2026-08-12T12:00:00.000Z") });
+    const actorKeyId = uuid("00000000-0000-4000-8000-0000000000a1");
+    const principal = { kind: "secret", keyId: actorKeyId, scopes: ["auth.*"] } as const;
+    const user = await repository.users.create({ email: "task12-admin@example.test" });
+    const protectedRole = await repository.roles.create({
+      key: roleKeySchema.parse("task12_owner"), name: "Task 12 owner", rank: 100, is_system: true,
+    });
+    await repository.authorization.assignRole({ user_id: user.id, role_id: protectedRole.id });
+
+    const denied = await admin.unassignRole(user.id, protectedRole.id, null, principal);
+    expect(denied).toMatchObject({ data: null, error: { code: "forbidden", status: 403 } });
+    expect(await rows("SELECT user_id FROM auth.user_roles WHERE user_id = $1 AND role_id = $2", [user.id, protectedRole.id])).toHaveLength(1);
+
+    const listed = await admin.listUsers({ page: 1, perPage: 100 }, principal);
+    expect(listed.error).toBeNull();
+    expect(listed.data?.users).toContainEqual(expect.objectContaining({ id: user.id }));
+    const deleted = await admin.deleteUser(user.id, { soft: true }, principal);
+    expect(deleted.error).toBeNull();
+    expect(await repository.users.findById(user.id)).toBeNull();
+    const audit = await admin.listAudit({ page: 1, perPage: 100 }, principal);
+    expect(audit.error).toBeNull();
+    expect(audit.data?.events).toContainEqual(expect.objectContaining({
+      actor_key_id: actorKeyId, action: "admin.user.deleted", target_id: user.id, outcome: "success",
+    }));
+    expect(JSON.stringify(audit)).not.toMatch(/password_hash|raw_token|key_hash/u);
+  });
+
   it("consumes OAuth state once and maps API keys without exposing raw credentials", async () => {
     const repository = requireRepository();
     const stateHash = digest(31);
@@ -1142,9 +1173,9 @@ describe("Task 4 PostgreSQL adapter", () => {
     const apiKeyHash = digest(33);
     const apiKeyId = uuid("00000000-0000-4000-8000-000000000033");
     await requirePool().query(
-      `INSERT INTO auth.api_keys (id, prefix, key_hash, kind, scopes, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [apiKeyId, "pk_test", Buffer.from(apiKeyHash), "publishable", ["billing.read"], new Date(Date.now() + 60_000)],
+      `INSERT INTO auth.api_keys (id, name, prefix, key_hash, kind, scopes, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [apiKeyId, "legacy-publishable", "pk_test", Buffer.from(apiKeyHash), "publishable", ["billing.read"], new Date(Date.now() + 60_000)],
     );
     const apiKey = await repository.operations.findApiKeyByHash(apiKeyHash);
     expect(apiKey).toMatchObject({ id: apiKeyId, prefix: "pk_test", kind: "publishable", scopes: ["billing.read"] });

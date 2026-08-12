@@ -1381,6 +1381,22 @@ disjoint implementation slices—rate-limit/migration and API-key/audit/admin
 client—are being delegated while transactional admin policy remains on the
 controller path.
 
+Task 12 local candidate now includes the Node-only Supabase-shaped 20-method
+admin client, strict admin routes, delegated dynamic permissions, API-key and
+audit services, transactional AdminService, PostgreSQL administration store,
+named memory/durable rate limiters, bounded `Retry-After`, and raw-once CLI key
+generation. Forward-only `0006_admin_operations` adds only API-key names,
+clean HMAC-digested limiter buckets/indexes, and dotted permission namespaces;
+migrations 0001-0005 retain their approved hashes. Real PostgreSQL coverage
+verifies soft deletion/session revocation, protected-role minimums, audit
+pagination/redaction, and HMAC-only CLI persistence. Full Node verification is
+397/397 before final focused additions; latest admin/HTTP/CLI/PostgreSQL is
+80/80, browser isolation is 11/11, and build/typecheck/diff checks pass.
+OpenAPI is 29 paths/38 operations at SHA-256
+`c641c7521a082633ce381a062fc0ab5fc437cadf91f6a1d94af6c45055486ab0`.
+No paid/hosted dependency is required. Final release rerun, candidate commit,
+and fresh Luna Max review remain; Task 12 is not approved.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.

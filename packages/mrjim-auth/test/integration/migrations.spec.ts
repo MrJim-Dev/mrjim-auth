@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -1317,6 +1318,34 @@ describe("Task 3 PostgreSQL migrations", () => {
     await expect(runCli(["migrate", "down"], environment, undefined, (line) => errors.push(line))).resolves.toBe(1);
     expect(errors.join("\n")).toContain("Usage:");
     expect(errors.join("\n")).not.toContain(environment.AUTH_TOKEN_HASH_KEY);
+
+    const hashKey = "01".repeat(32);
+    const keyOutput: string[] = [];
+    const keyErrors: string[] = [];
+    await expect(runCli(
+      ["keys", "generate", "--kind", "secret", "--name", "task12-deploy"],
+      { ...environment, MRJIM_AUTH_API_KEY_HASH_KEY: hashKey },
+      (line) => keyOutput.push(line),
+      (line) => keyErrors.push(line),
+    )).resolves.toBe(0);
+    expect(keyErrors).toEqual([]);
+    expect(keyOutput).toHaveLength(1);
+    expect(keyOutput[0]).toMatch(/^sk_[A-Za-z0-9_-]{43}$/u);
+    const persisted = await queryRows("SELECT name, prefix, key_hash, scopes FROM auth.api_keys WHERE name = $1", ["task12-deploy"]);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toMatchObject({ name: "task12-deploy", prefix: keyOutput[0]!.slice(0, 11), scopes: ["auth.*"] });
+    expect(Buffer.from(persisted[0]!.key_hash as Buffer)).toEqual(createHmac("sha256", Buffer.from(hashKey, "hex")).update(`apikey\0${keyOutput[0]}`).digest());
+    expect(JSON.stringify(persisted)).not.toContain(keyOutput[0]!);
+
+    const invalidSecret = "do-not-echo-this-secret";
+    await expect(runCli(
+      ["keys", "generate", "--kind", "secret", "--name", "invalid-key"],
+      { ...environment, MRJIM_AUTH_API_KEY_HASH_KEY: invalidSecret },
+      undefined,
+      (line) => keyErrors.push(line),
+    )).resolves.toBe(1);
+    expect(keyErrors.join("\n")).not.toContain(invalidSecret);
+    expect(await scalar<number>("SELECT count(*)::int AS value FROM auth.api_keys WHERE name = 'invalid-key'")).toBe(0);
   });
 
   it("installs the packed package and executes its real shim-backed CLI", async () => {

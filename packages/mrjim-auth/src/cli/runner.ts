@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import { runDoctor, type DoctorEnvironment } from "./commands/doctor.js";
 import { runMigrateCommand, type MigrateCommand } from "./commands/migrate.js";
+import { runGenerateKeyCommand, type GenerateKeyCommand } from "./commands/keys.js";
 
 /** One line written to CLI stdout or stderr. */
 export type CliOutput = (line: string) => void;
@@ -13,7 +14,7 @@ class CliUsageError extends Error {
 }
 
 function usageError(message: string): Error {
-  return new CliUsageError(`${message}. Usage: mrjim-auth migrate <status|up|verify> | mrjim-auth doctor`);
+  return new CliUsageError(`${message}. Usage: mrjim-auth migrate <status|up|verify> | mrjim-auth doctor | mrjim-auth keys generate --kind <publishable|secret> --name <name>`);
 }
 
 function safeErrorMessage(error: unknown): string {
@@ -21,6 +22,7 @@ function safeErrorMessage(error: unknown): string {
     return error.message;
   }
   if (error instanceof Error && error.message.startsWith("DATABASE_URL")) return error.message;
+  if (error instanceof Error && error.message.startsWith("MRJIM_AUTH_API_KEY_HASH_KEY")) return error.message;
   if (error instanceof Error && error.name === "CliUsageError") return error.message;
   return "command failed; inspect configuration and database availability";
 }
@@ -50,6 +52,24 @@ export async function runCli(
   let pool: Pool | undefined;
   try {
     const [command, subcommand, ...rest] = argv;
+
+    if (command === "keys") {
+      if (subcommand !== "generate") throw usageError("expected keys generate");
+      let kind: GenerateKeyCommand["kind"] | undefined;
+      let name: string | undefined;
+      for (let index = 0; index < rest.length; index += 2) {
+        const flag = rest[index]; const value = rest[index + 1];
+        if (value === undefined) throw usageError("missing option value");
+        if (flag === "--kind" && (value === "publishable" || value === "secret") && kind === undefined) kind = value;
+        else if (flag === "--name" && name === undefined) name = value;
+        else throw usageError("invalid keys generate options");
+      }
+      if (kind === undefined || name === undefined || name.trim() !== name || name.length < 1 || name.length > 128) throw usageError("--kind and bounded --name are required");
+      pool = new Pool({ connectionString: parseDatabaseUrl(environment), max: 4 });
+      await runGenerateKeyCommand(pool, { kind, name }, environment, write);
+      return 0;
+    }
+
     if (rest.length > 0) throw usageError("unexpected arguments");
 
     if (command === "doctor") {

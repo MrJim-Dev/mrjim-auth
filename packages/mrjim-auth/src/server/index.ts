@@ -110,6 +110,10 @@ export {
   type CreateAuthServerOptions,
 } from "./create-auth-server.js";
 export { generateOpenApiDocument, type OpenApiDocumentOptions } from "./openapi.js";
+export { createAdminClient, type AdminClient, type AdminClientOptions, type AdminNamespace } from "./admin.js";
+export { AdminService, type AdminPrincipal, type AdminServiceOptions } from "./admin-service.js";
+export { ApiKeyService, type ApiKeyServiceOptions, type ApiKeyStore, type SafeApiKeyRecord } from "./api-keys.js";
+export { AuditService, type AuditStore, type PublicAuditEventRecord } from "./audit.js";
 export {
   ADMIN_MUTATION_RATE_LIMIT_POLICY,
   InMemoryRateLimiter,
