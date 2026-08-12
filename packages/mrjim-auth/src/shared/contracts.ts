@@ -430,6 +430,72 @@ export interface ApiKeyRecord {
   revoked_at: Date | null;
 }
 
+/** A safe API-key administration record; raw keys and digests are never returned. */
+export interface ApiKeyAdminRecord {
+  id: UUID;
+  name: string;
+  prefix: string;
+  kind: "publishable" | "secret";
+  scopes: readonly string[];
+  last_used_at: Date | null;
+  expires_at: Date | null;
+  revoked_at: Date | null;
+  created_at: Date;
+}
+
+/** Server-only input used to persist an already-digested API key. */
+export interface CreateApiKeyRecordInput {
+  name: string;
+  prefix: string;
+  key_hash: Uint8Array;
+  kind: "publishable" | "secret";
+  scopes: readonly string[];
+  expires_at: Date | null;
+  created_at: Date;
+}
+
+/** Explicit safe projection of one immutable audit event. */
+export interface AuditEventRecord {
+  id: UUID;
+  actor_user_id: UUID | null;
+  actor_key_id: UUID | null;
+  actor_session_id: UUID | null;
+  action: string;
+  target_type: string;
+  target_id: UUID | null;
+  ip_address: string | null;
+  user_agent: string | null;
+  metadata: RedactedMetadata;
+  outcome: "success" | "failure";
+  occurred_at: Date;
+}
+
+/** Bounded deterministic pagination input used by administration reads. */
+export interface AdminPageInput {
+  page: number;
+  perPage: number;
+}
+
+/** Project-owned administration persistence used only from trusted Node code. */
+export interface AdminRepository {
+  /** Lists active users by creation time and UUID, with an exact total. */
+  listUsers(input: AdminPageInput): Promise<{ readonly users: readonly User[]; readonly total: number }>;
+  /** Persists an already-digested API key and returns only its safe projection. */
+  createApiKey(input: CreateApiKeyRecordInput): Promise<ApiKeyAdminRecord>;
+  /** Lists API keys without raw values or digests. */
+  listApiKeys(input: AdminPageInput): Promise<{ readonly apiKeys: readonly ApiKeyAdminRecord[]; readonly total: number }>;
+  /** Revokes one key once; false means it was absent or already revoked. */
+  revokeApiKey(id: UUID, revokedAt: Date): Promise<boolean>;
+  /** Best-effort last-use timestamp update after successful authentication. */
+  touchApiKeyLastUsed(id: UUID, usedAt: Date): Promise<void>;
+  /** Lists immutable audit rows through an explicit safe projection. */
+  listAudit(input: AdminPageInput): Promise<{ readonly events: readonly AuditEventRecord[]; readonly total: number }>;
+  /** Locks the user's currently active assigned roles in stable UUID order. */
+  assignedRolesForUpdate(userId: UUID, now: Date): Promise<readonly Role[]>;
+  /** Counts active assignments after the role row is locked by the caller. */
+  countActiveRoleAssignments(roleId: UUID, now: Date): Promise<number>;
+}
+
 /**
  * Audit and API-key persistence boundary.
  *
@@ -596,4 +662,6 @@ export interface AuthRepository {
   roles: RoleRepository;
   permissions: PermissionRepository;
   operations: OperationsRepository;
+  /** Optional Task 12 administration persistence for trusted server code. */
+  admin?: AdminRepository;
 }
