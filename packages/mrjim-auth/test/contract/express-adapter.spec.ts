@@ -192,6 +192,23 @@ describe("Express adapter contract", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it("preserves parsed JSON null and removes stale entity-length headers", async () => {
+    const { server, requests } = createServer(() => new Response("ok"));
+    await toExpressHandler(server)(createRequest({
+      headers: {
+        host: "direct.example.test",
+        "content-type": "application/json",
+        "content-length": "999",
+        "transfer-encoding": "chunked",
+      },
+      body: null,
+    }), createResponse());
+
+    expect(requests[0]!.body).toBe("null");
+    expect(requests[0]!.headers.get("content-length")).toBeNull();
+    expect(requests[0]!.headers.get("transfer-encoding")).toBeNull();
+  });
+
   it("uses direct socket host/proto/ip and does not trust forwarded headers by default", async () => {
     const { server, requests } = createServer(() => new Response("ok"));
     const response = createResponse();
@@ -201,6 +218,8 @@ describe("Express adapter contract", () => {
         "x-forwarded-host": "attacker.example.test",
         "x-forwarded-proto": "https",
         "x-forwarded-for": "203.0.113.9",
+        "x-forwarded-port": "443",
+        forwarded: "for=203.0.113.9;host=attacker.example.test;proto=https",
       },
       socket: { remoteAddress: "192.0.2.10", encrypted: false },
     }), response);
@@ -210,6 +229,9 @@ describe("Express adapter contract", () => {
     expect(requests[0]!.headers.get("x-forwarded-for")).toBeNull();
     expect(requests[0]!.headers.get("x-forwarded-host")).toBeNull();
     expect(requests[0]!.headers.get("x-forwarded-proto")).toBeNull();
+    expect(requests[0]!.headers.get("x-forwarded-port")).toBeNull();
+    expect(requests[0]!.headers.get("forwarded")).toBeNull();
+    expect(requests[0]!.headers.get("host")).toBe("direct.example.test");
   });
 
   it("uses forwarded host/proto/ip only when explicitly trusted", async () => {
@@ -232,6 +254,7 @@ describe("Express adapter contract", () => {
     expect(requests[0]!.headers.get("x-forwarded-for")).toBe("203.0.113.9");
     expect(requests[0]!.headers.get("x-forwarded-host")).toBe("public.example.test");
     expect(requests[0]!.headers.get("x-forwarded-proto")).toBe("https");
+    expect(requests[0]!.headers.get("host")).toBe("public.example.test");
   });
 
   it("does not trust an attacker-controlled prefix beyond the configured proxy hops", async () => {

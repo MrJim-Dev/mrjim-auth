@@ -1344,6 +1344,11 @@ Frozen install, build, typecheck, lint, docs, diff check, all protected
 migration hashes, and unchanged OpenAPI pass. Same-reviewer Luna Max approval
 is the only remaining Task 11 gate; Tasks 12–14 remain pending.
 
+Gibbs's first same-reviewer pass closed the Critical, four Important, and the
+Minor findings, but returned two Important Express residuals: reconstructed
+`null`/entity-length correctness and complete forwarding/Host normalization.
+Round-2 test-first remediation is active; Task 11 remains unapproved.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
