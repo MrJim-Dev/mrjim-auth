@@ -1364,6 +1364,16 @@ product is `3301a64`, with 42/42 focused contracts, 382/382 full Vitest tests,
 11/11 Chrome tests, and all release/protected-hash gates passing. Tasks 12–14
 remain.
 
+## Task 12: administration controls — in progress
+
+Task 12 begins from approved Task 11 baseline `2fd3ad8`. The bounded brief
+covers the Node-only admin client/service/routes, API-key lifecycle and CLI,
+transactional dynamic-role policy, audit listing, and named in-memory plus
+PostgreSQL rate limits. A forward-only clean-schema `0006` will add only the
+missing API-key name and HMAC-digested durable rate-limit buckets; `0001–0005`
+remain immutable. No paid application or remote service is required. RED tests,
+implementation, release evidence, and independent review remain pending.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
