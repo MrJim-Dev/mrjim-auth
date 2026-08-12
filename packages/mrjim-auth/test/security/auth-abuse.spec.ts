@@ -148,6 +148,11 @@ function keyProvider(): KeyProvider {
   };
 }
 
+function signingKey(): string {
+  return generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey
+    .export({ type: "pkcs8", format: "pem" }).toString();
+}
+
 function tokenServices(currentRepository: AuthRepository = requireRepository()): {
   readonly tokens: TokenService;
   readonly sessions: SessionService;
@@ -195,11 +200,13 @@ function createServer(rateLimiter?: RateLimiter) {
       issuer: BASE_URL,
       audience: "project",
       activeKeyId: "security-test",
-      keys: { "security-test": keyProvider().getSigningKey() },
+      keys: { "security-test": signingKey() },
     },
     secrets: { tokenHashKey: TOKEN_HASH_KEY, encryptionKey: ENCRYPTION_KEY },
     email: { send: async () => undefined },
     redirects: { allowed: [CALLBACK] },
+    accessTokenTtlSeconds: 900,
+    refreshTokenTtlSeconds: 30 * 24 * 60 * 60,
     ...(rateLimiter === undefined ? {} : { rateLimiter }),
   });
 }
