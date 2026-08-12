@@ -1358,6 +1358,12 @@ Round-2 release verification at `3301a64` passes 382/382 full Vitest tests and
 docs, diff, protected hashes, and unchanged OpenAPI. Same-reviewer approval is
 pending; Tasks 12–14 remain.
 
+Task 11 is now complete and independently approved. Gibbs returned zero
+Critical, zero Important, and zero Minor findings on round 2. The authoritative
+product is `3301a64`, with 42/42 focused contracts, 382/382 full Vitest tests,
+11/11 Chrome tests, and all release/protected-hash gates passing. Tasks 12–14
+remain.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
