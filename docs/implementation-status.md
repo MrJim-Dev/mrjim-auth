@@ -1406,6 +1406,19 @@ lint, docs, and diff checks. Feynman's same-reviewer verdict on `786697f` is
 is complete with no product, paid-service, or external blocker; Tasks 13-14
 remain.
 
+## Task 13: documentation and runnable examples — in progress
+
+Task 13 begins from approved Task 12 product `786697f` and ledger `cc94d63`.
+RED commit `9e293e9` added a contract that requires the complete publication set,
+runnable Express/Next examples, every public client/admin method in reference
+docs, compiling `ts compile` fences, and explicit Supabase compatibility states.
+The exact focused run failed all four tests because those publication artifacts
+did not yet exist. Core setup, architecture, session, email/password, Google
+OAuth, role/permission, security, README, and changelog documentation is now
+committed at `472dc6b`. Three Luna Max workers own disjoint reference,
+Express-example, and Next-example slices. No paid/hosted service is mandatory;
+integration, example verification, release gates, and review remain.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
