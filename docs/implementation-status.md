@@ -541,6 +541,11 @@ install, build, typecheck, lint, docs, unchanged migration hashes, deterministic
 17-path/18-operation OpenAPI, and diff checks. Same-reviewer approval remains
 pending, so Task 10 is not approved and Task 11 has not started.
 
+Remediation round-2 exact product target:
+`a3c880081fcce627021e57259b54ca2b4ad18f52`. Verified GREEN ledger:
+`607fae550d70547cd06f671911d4cc9a359da47f`. The subsequent target-record
+commit is documentation-only; same-reviewer approval is pending.
+
 ## Remaining work
 
 Task 8's third post-pass route-boundary hardening resolution and Task 9 are
