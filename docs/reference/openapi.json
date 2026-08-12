@@ -98,9 +98,11 @@
             "type": "string"
           },
           "password": {
+            "description": "Password containing at most 1,024 UTF-8 bytes",
             "maxLength": 1024,
             "minLength": 8,
-            "type": "string"
+            "type": "string",
+            "x-mrjim-maxUtf8Bytes": 1024
           },
           "redirect_to": {
             "maxLength": 2048,

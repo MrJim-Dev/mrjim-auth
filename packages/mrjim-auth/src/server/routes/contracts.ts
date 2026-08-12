@@ -18,9 +18,25 @@ import type { AccessTokenClaims, TokenService } from "../tokens.js";
 import type { AuthenticatedSession, SessionContext, SessionService, SignOutScope } from "../sessions.js";
 import type { AuthorizationRequestContext, AuthorizationRequirement, AuthorizationService, AuthorizationSubject } from "../authorization.js";
 
+const contractsTextEncoder = TextEncoder;
+const contractsEncoder = new contractsTextEncoder();
+const contractsEncode = contractsTextEncoder.prototype.encode;
+const contractsReflectApply = Reflect.apply;
+const RECOVERY_PASSWORD_MAX_UTF8_BYTES = 1024;
 const nonEmptyString = z.string().min(1);
 const emailString = z.string().min(1).max(320);
 const passwordString = z.string().min(8).max(1024);
+const recoveryPasswordString = passwordString.refine((value) => {
+  try {
+    const encoded = contractsReflectApply(contractsEncode, contractsEncoder, [value]) as Uint8Array;
+    return encoded.byteLength <= RECOVERY_PASSWORD_MAX_UTF8_BYTES;
+  } catch {
+    return false;
+  }
+}, { message: "Password exceeds the UTF-8 byte limit" }).meta({
+  description: "Password containing at most 1,024 UTF-8 bytes",
+  "x-mrjim-maxUtf8Bytes": RECOVERY_PASSWORD_MAX_UTF8_BYTES,
+});
 const redirectString = z.string().min(1).max(2048);
 const jsonObject = z.record(z.string(), z.json());
 
@@ -159,7 +175,7 @@ export const recoverRequestSchema = z.object({
 export const recoverVerifyRequestSchema = z.object({
   email: emailString,
   token: z.string().min(1).max(128),
-  password: passwordString,
+  password: recoveryPasswordString,
   redirect_to: redirectString.optional(),
 }).strict();
 
