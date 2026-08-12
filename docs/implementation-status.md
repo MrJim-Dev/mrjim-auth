@@ -1453,6 +1453,20 @@ currently installed, so free local 15/17 binaries are an active environmental
 prerequisite for the required no-skip matrix. No paid/hosted dependency is
 needed. Implementation and verification are in progress.
 
+Task 14 integrated candidate is release-green. Luna Max commits are abuse
+`060c275` (controller typing integration `1764d4c`), Supabase/browser bundle
+`28319e0`, and PostgreSQL matrix `93284e9`/`c3978e2`. Free local PostgreSQL
+15.18, 16.14, and 17.10 now pass fresh plus every `0001`-`0005` boundary upgrade
+to `0006`, with checksums/order/indexes/constraints/sentinels verified and zero
+skips. `pnpm release:check` passes targeted 21/21, full 38-file/433-test Vitest,
+11/11 Chrome, frozen install, build/lint/typecheck/docs, Express 4/4, Next.js
+4/4 plus optimized production build, 289-file dry-run package inspection, and
+diff check. A real ignored tarball contains README/license, JS/declarations/
+maps, and six migrations while excluding tests/env/databases/secrets. No local
+product, paid-service, credential, database, or tooling blocker is known. Fresh
+Luna Max review remains. Public registry publication remains intentionally
+blocked by the owner license choice and separate publication authority.
+
 ## Task 7 final verification
 
 - Mandatory RED: `pnpm vitest run packages/mrjim-auth/test/unit/pkce.spec.ts packages/mrjim-auth/test/integration/oauth.spec.ts` failed before implementation with 2 files and 0 tests because the new PKCE/OAuth modules were absent.
