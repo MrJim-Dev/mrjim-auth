@@ -454,7 +454,7 @@ database, external network, or paid SaaS service is required.
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Complete — round 8 independently approved | Raman approved `916d615ca8627d200e9261688bbbb5d8903d541e` with zero Critical, Important, or Minor findings after round-8 error-prototype, OIDC, HTTP, provider allowlist, `Set.delete`, packed, OpenAPI, migration, export, and full 318-test verification; evidence is recorded in the Task 9 report |
-| 10. Browser client | Implementation candidate complete; independent review pending | 20/20 focused client, 338/338 full Vitest, 8/8 real Chrome, 12/12 exports, frozen install, build, typecheck, lint, docs, packed consumer, browser bundle, protected hashes, and diff checks pass; Luna Max review is capacity-blocked and approval is not claimed |
+| 10. Browser client | Review fix pass required | Luna Max returned CHANGES_REQUIRED on `343a602`: 0 Critical, 12 Important, 2 Minor; existing 20/20 focused, 338/338 Vitest, 8/8 Chrome, packaging, bundle, hash, and static gates remain green but missing race/security/recovery regressions must be fixed and re-reviewed |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
 | 13. Documentation and examples | Pending | Not run |
@@ -491,13 +491,17 @@ earlier independent scan recorder remains a tooling-evidence blocker with the
 exact `scan.target.snapshotDigest: expected a non-empty string` failure; it is
 not a clean scan and was not the source of approval.
 
-Task 10 product blockers: none found in local implementation and verification.
+Task 10 product/security blockers are active after independent review.
 The exact-pinned Apache-2.0 `@playwright/test` `1.62.1` development dependency
 runs the real lifecycle suite against installed local Chrome; it is absent from
-the published runtime/browser graph. Independent Luna Max review is pending
-because subagent capacity is exhausted until the tool's reported retry time of
-2026-08-18 08:00. No credits or paid application will be purchased. This is a
-review/tooling blocker, so Task 10 is not approved and Task 11 has not started.
+the published runtime/browser graph. Luna Max reviewer Confucius returned
+`CHANGES_REQUIRED` for exact candidate
+`343a602fd21e638a665710dc4345e3f0ed0b5b19`: zero Critical, twelve Important,
+and two Minor findings. Required fixes cover recovery completeness,
+refresh-from-storage, lock timeout overlap, atomic PKCE consumption,
+storage-fallback event semantics, callback URL/redaction/header/response-size
+boundaries, in-flight disposal, TSDoc, portable Chrome selection, and truthful
+status wording. Task 10 is not approved and Task 11 has not started.
 No paid browser grid, hosted application, remote database, live OAuth provider,
 live mail, telemetry SaaS, or generic `DATABASE_URL` was used.
 
@@ -505,7 +509,7 @@ live mail, telemetry SaaS, or generic `DATABASE_URL` was used.
 
 Task 8's third post-pass route-boundary hardening resolution and Task 9 are
 complete and independently approved. Task 10's implementation candidate and
-local release gates are complete, but independent review is pending; Tasks
+local release gates are complete, but independent review requires a fix pass; Tasks
 11-14 remain, with independent review after each task, followed by the
 whole-branch review and release handoff. In particular, later work must use the clean `auth`
 schema and explicit migration CLI from Task 3 for the browser/SSR surface,
@@ -1152,10 +1156,11 @@ phone mutation remain unsupported until corresponding server routes exist.
 The only new dependency is exact-pinned dev-only `@playwright/test` `1.62.1`
 (Apache-2.0), using installed local Chrome. No browser binary, paid/hosted
 service, remote database, live OAuth/mail, or external application write is
-included. Product blockers are zero. Independent Luna Max review is pending
-because subagent capacity is exhausted until the reported retry time; therefore
-Task 10 is not approved and Task 11 has not started. Exact hashes and full gate
-evidence are in the Task 10 report. The exact bounded implementation review
+included. The first Luna Max review returned `CHANGES_REQUIRED` with zero
+Critical, twelve Important, and two Minor findings, superseding the earlier
+zero-blocker statement. A RED/GREEN fix pass and same-reviewer approval are
+required; Task 10 is not approved and Task 11 has not started. Exact findings,
+hashes, and full gate evidence are in the Task 10 report. The exact bounded implementation review
 target is `343a602fd21e638a665710dc4345e3f0ed0b5b19`; the subsequent docs-ledger commit
 changes no product code.
 
