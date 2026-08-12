@@ -1364,7 +1364,7 @@ product is `3301a64`, with 42/42 focused contracts, 382/382 full Vitest tests,
 11/11 Chrome tests, and all release/protected-hash gates passing. Tasks 12–14
 remain.
 
-## Task 12: administration controls — in progress
+## Task 12: administration controls — complete
 
 Task 12 begins from approved Task 11 baseline `2fd3ad8`. The bounded brief
 covers the Node-only admin client/service/routes, API-key lifecycle and CLI,
@@ -1390,12 +1390,21 @@ clean HMAC-digested limiter buckets/indexes, and dotted permission namespaces;
 migrations 0001-0005 retain their approved hashes. Real PostgreSQL coverage
 verifies soft deletion/session revocation, protected-role minimums, audit
 pagination/redaction, and HMAC-only CLI persistence. Full Node verification is
-397/397 before final focused additions; latest admin/HTTP/CLI/PostgreSQL is
-80/80, browser isolation is 11/11, and build/typecheck/diff checks pass.
+400/400; latest admin/HTTP/CLI/PostgreSQL is
+110/110, browser isolation is 11/11, and build/typecheck/diff checks pass.
 OpenAPI is 29 paths/38 operations at SHA-256
 `c641c7521a082633ce381a062fc0ab5fc437cadf91f6a1d94af6c45055486ab0`.
-No paid/hosted dependency is required. Final release rerun, candidate commit,
-and fresh Luna Max review remain; Task 12 is not approved.
+No paid/hosted dependency is required. Fresh Luna Max reviewer Feynman first
+returned two Important client/server contract findings on candidate `745b142`:
+duplicate API-key bearer authentication and a flattened invite payload. RED
+commit `1858aa7` reproduced both before corrected product commit `786697f`.
+The corrected client sends only `apikey`, preserves `{ email, options }`, and
+passes a real admin-client-to-AuthServer round trip. The final release rerun
+passes 400/400 Node tests, 11/11 Chrome tests, frozen install, build, typecheck,
+lint, docs, and diff checks. Feynman's same-reviewer verdict on `786697f` is
+`APPROVED` with zero Critical, zero Important, and zero Minor findings. Task 12
+is complete with no product, paid-service, or external blocker; Tasks 13-14
+remain.
 
 ## Task 7 final verification
 
