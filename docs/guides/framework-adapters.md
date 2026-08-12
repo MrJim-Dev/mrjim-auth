@@ -91,9 +91,18 @@ export async function requestAuth() {
 
 Session cookies are deterministic, bounded, and chunked when needed. Writes
 default to `HttpOnly`, `SameSite=Lax`, path `/`, and `Secure` when the auth URL
-uses HTTPS. Set `secure: false` only for an explicitly local HTTP environment.
-Rotation replaces the session and expires stale chunks; sign-out expires all
-auth chunks.
+uses HTTPS. HTTPS cannot opt out of `Secure`. For a public HTTPS application
+that reaches an internal HTTP auth URL, set `secure: true` explicitly. Local
+HTTP development may use the default non-Secure cookie. Rotation replaces the
+session and expires stale chunks; sign-out expires all auth chunks.
+
+`auth.getSession()` reads base64url-encoded cookie state and is not
+authorization proof. Encoding and `HttpOnly` protect transport/access behavior;
+they do not make client-held claims authoritative. Before a Server Component,
+Route Handler, or Server Action trusts a user or role, call `auth.getUser()` so
+the backend returns a validated identity, or validate the JWT through the
+project's backend token boundary. Never authorize from cookie profile or
+session fields alone.
 
 A read-only adapter may omit `setAll`, which is suitable for operations that do
 not change the session. Any operation that must rotate, create, or clear a

@@ -32,6 +32,7 @@ const CHUNK_SIZE = 3_000;
 const MAX_CHUNKS = 128;
 const MAX_COOKIE_VALUE = 4_096;
 const MAX_ENCODED = CHUNK_SIZE * MAX_CHUNKS;
+const MAX_INPUT_CODE_UNITS = Math.floor(MAX_ENCODED / 4);
 const invalidRecord = "__invalid_mrjim_auth_cookie_record__";
 
 class CookieBoundaryError extends Error { readonly name = "CookieBoundaryError"; }
@@ -52,6 +53,12 @@ function captureMethod(value: object, key: PropertyKey, required: boolean): Func
 
 function validName(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 128 && /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(value);
+}
+
+function chunkIndex(suffix: string): number | null {
+  if (!/^(0|[1-9][0-9]{0,2})$/u.test(suffix)) return null;
+  const index = Number(suffix);
+  return Number.isSafeInteger(index) && index < MAX_CHUNKS ? index : null;
 }
 
 function baseName(options: CookieStorageOptions, key: string): string {
@@ -149,9 +156,8 @@ export function createCookieStorage(options: CookieStorageOptions): SupportedSto
       for (const cookie of await read()) {
         if (!cookie.name.startsWith(prefix)) continue;
         const suffix = cookie.name.slice(prefix.length);
-        if (!/^(0|[1-9][0-9]{0,2})$/u.test(suffix)) return invalidRecord;
-        const index = Number(suffix);
-        if (!Number.isSafeInteger(index) || index >= MAX_CHUNKS) return invalidRecord;
+        const index = chunkIndex(suffix);
+        if (index === null) return invalidRecord;
         chunks.push({ index, value: cookie.value });
       }
       if (chunks.length === 0) return null;
@@ -167,6 +173,7 @@ export function createCookieStorage(options: CookieStorageOptions): SupportedSto
     },
     async setItem(key: string, value: string): Promise<void> {
       if (typeof value !== "string") throw new CookieBoundaryError("Cookie value is malformed");
+      if (value.length === 0 || value.length > MAX_INPUT_CODE_UNITS) throw new CookieBoundaryError("Cookie value is oversized");
       const base = baseName(options, key);
       if (key === `mrjim-auth:${options.storageKey}` && isClearedSessionRecord(value)) {
         await clear(base);
@@ -179,8 +186,8 @@ export function createCookieStorage(options: CookieStorageOptions): SupportedSto
       const existing = (await read()).filter((cookie) => cookie.name.startsWith(`${base}.`));
       const writes: CookieToSet[] = chunks.map((chunk, index) => Object.freeze({ name: `${base}.${index}`, value: chunk, options: attributes(options) }));
       for (const cookie of existing) {
-        const suffix = Number(cookie.name.slice(base.length + 1));
-        if (!Number.isSafeInteger(suffix) || suffix >= chunks.length) writes.push(Object.freeze({ name: cookie.name, value: "", options: attributes(options, true) }));
+        const suffix = chunkIndex(cookie.name.slice(base.length + 1));
+        if (suffix === null || suffix >= chunks.length) writes.push(Object.freeze({ name: cookie.name, value: "", options: attributes(options, true) }));
       }
       await write(Object.freeze(writes));
     },

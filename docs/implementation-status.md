@@ -1331,10 +1331,12 @@ static Luna Max review remains mandatory. Tasks 12–14 remain.
 
 Gibbs's completed independent review supersedes that pending-review statement
 with `CHANGES_REQUIRED`: one Critical, six Important, and one Minor finding.
-Test-first remediation is active for the SSR authorization-proof warning,
-parsed-body content types, multi-value cookies, forwarded-header
+Test-first remediation is locally green for the SSR authorization-proof
+warning, parsed-body content types, multi-value cookies, forwarded-header
 canonicalization, response backpressure, HTTPS Secure enforcement,
-pre-encoding bounds, and stale suffix cleanup. Task 11 is not approved.
+pre-encoding bounds, and stale suffix cleanup: 41/41 focused tests and
+typecheck pass. Full release gates and same-reviewer re-review remain. Task 11
+is not approved.
 
 ## Task 7 final verification
 

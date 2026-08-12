@@ -16,6 +16,8 @@ export interface ExpressResponse {
   status?(status: number): ExpressResponse;
   setHeader(name: string, value: string | readonly string[]): unknown;
   write?(chunk: string | Uint8Array): unknown;
+  once?(event: "drain" | "error" | "close", listener: (error?: unknown) => void): unknown;
+  off?(event: "drain" | "error" | "close", listener: (error?: unknown) => void): unknown;
   end(chunk?: string | Uint8Array): unknown;
 }
 
@@ -35,16 +37,31 @@ function headerValue(headers: ExpressRequest["headers"], name: string): string |
   throw new TypeError("Ambiguous request header");
 }
 
-function requestHeaders(source: ExpressRequest["headers"], clientIp: string): Headers {
+interface RequestTarget {
+  readonly url: string;
+  readonly clientIp: string;
+  readonly host: string;
+  readonly protocol: "http" | "https";
+  readonly forwarded: boolean;
+}
+
+function requestHeaders(source: ExpressRequest["headers"], target: RequestTarget): Headers {
   const output = new Headers();
   if (source !== undefined) {
     for (const [name, value] of Object.entries(source)) {
-      if (value === undefined || name.toLowerCase() === "x-real-ip") continue;
+      const lower = name.toLowerCase();
+      if (value === undefined || lower === "x-real-ip" || lower === "x-forwarded-for"
+        || lower === "x-forwarded-host" || lower === "x-forwarded-proto") continue;
       if (typeof value === "string") output.append(name, value);
       else for (const item of value) output.append(name, item);
     }
   }
-  output.set("x-real-ip", clientIp);
+  output.set("x-real-ip", target.clientIp);
+  if (target.forwarded) {
+    output.set("x-forwarded-for", target.clientIp);
+    output.set("x-forwarded-host", target.host);
+    output.set("x-forwarded-proto", target.protocol);
+  }
   return output;
 }
 
@@ -54,10 +71,10 @@ function directIp(request: ExpressRequest): string {
   return value;
 }
 
-function requestTarget(request: ExpressRequest, options: ExpressAdapterOptions): { url: string; clientIp: string } {
+function requestTarget(request: ExpressRequest, options: ExpressAdapterOptions): RequestTarget {
   const direct = directIp(request);
   let host = headerValue(request.headers, "host");
-  let protocol = request.socket?.encrypted === true || request.connection?.encrypted === true ? "https" : "http";
+  let protocol: "http" | "https" = request.socket?.encrypted === true || request.connection?.encrypted === true ? "https" : "http";
   let clientIp = direct;
   if (options.trustProxy !== undefined) {
     const hops = options.trustProxy.hops;
@@ -70,7 +87,7 @@ function requestTarget(request: ExpressRequest, options: ExpressAdapterOptions):
     const chain = forwardedFor.split(",").map((value) => value.trim());
     if (chain.length === 0 || chain.length > 33 || chain.some((value) => isIP(value) === 0)) throw new TypeError("Forwarded request is malformed");
     host = forwardedHost;
-    protocol = forwardedProtocol;
+    protocol = forwardedProtocol as "http" | "https";
     clientIp = chain[Math.max(0, chain.length - hops)] ?? chain[0]!;
   }
   if (host === undefined || host.length === 0 || host.length > 253 || /[\s,@/\\]/u.test(host)) throw new TypeError("Host is malformed");
@@ -78,7 +95,23 @@ function requestTarget(request: ExpressRequest, options: ExpressAdapterOptions):
   if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.length > 16_384) throw new TypeError("Request URL is malformed");
   const url = new URL(path, `${protocol}://${host}`);
   if (url.username !== "" || url.password !== "") throw new TypeError("Request URL is malformed");
-  return { url: url.href, clientIp };
+  return { url: url.href, clientIp, host, protocol, forwarded: options.trustProxy !== undefined };
+}
+
+function formBody(value: object): string {
+  const params = new URLSearchParams();
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !("value" in descriptor)) throw new TypeError("Request body is malformed");
+    const item = descriptor.value as unknown;
+    const values = Array.isArray(item) ? item : [item];
+    if (values.length > 256) throw new TypeError("Request body is malformed");
+    for (const entry of values) {
+      if (typeof entry !== "string" && typeof entry !== "number" && typeof entry !== "boolean") throw new TypeError("Request body is malformed");
+      params.append(key, String(entry));
+    }
+  }
+  return params.toString();
 }
 
 function requestBody(request: ExpressRequest, method: string): RequestInit["body"] | undefined {
@@ -90,7 +123,12 @@ function requestBody(request: ExpressRequest, method: string): RequestInit["body
   if (typeof request.body === "string") return request.body;
   if (request.body instanceof Uint8Array) return new Uint8Array(request.body).buffer;
   if (request.body instanceof ArrayBuffer) return request.body;
-  if (typeof request.body === "object") return JSON.stringify(request.body);
+  if (typeof request.body === "object") {
+    const rawContentType = headerValue(request.headers, "content-type");
+    const contentType = rawContentType?.split(";", 1)[0]?.trim().toLowerCase();
+    if (contentType === "application/json" || contentType?.endsWith("+json") === true) return JSON.stringify(request.body);
+    if (contentType === "application/x-www-form-urlencoded") return formBody(request.body);
+  }
   throw new TypeError("Request body is malformed");
 }
 
@@ -111,27 +149,55 @@ function fail(response: ExpressResponse, status: 400 | 500): void {
 }
 
 async function sendWebResponse(source: Response, target: ExpressResponse): Promise<void> {
-  setStatus(target, source.status);
   const getSetCookie = (source.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  const combinedCookie = source.headers.get("set-cookie");
+  if (combinedCookie !== null && typeof getSetCookie !== "function") throw new TypeError("Multi-value response cookies are unavailable");
   const cookies = typeof getSetCookie === "function" ? getSetCookie.call(source.headers) : [];
+  if (!Array.isArray(cookies) || cookies.some((cookie) => typeof cookie !== "string")) throw new TypeError("Response cookies are malformed");
+  setStatus(target, source.status);
   for (const [name, value] of source.headers.entries()) if (name.toLowerCase() !== "set-cookie") target.setHeader(name, value);
   if (cookies.length > 0) target.setHeader("set-cookie", cookies);
-  else {
-    const cookie = source.headers.get("set-cookie");
-    if (cookie !== null) target.setHeader("set-cookie", cookie);
-  }
   if (source.body !== null && typeof target.write === "function") {
     const reader = source.body.getReader();
-    for (;;) {
-      const item = await reader.read();
-      if (item.done) break;
-      if (item.value !== undefined) target.write(item.value);
+    try {
+      for (;;) {
+        const item = await reader.read();
+        if (item.done) break;
+        if (item.value !== undefined && target.write(item.value) === false) await waitForDrain(target);
+      }
+    } catch (error) {
+      try { await reader.cancel(); } catch { /* Preserve the original stream failure. */ }
+      throw error;
     }
     target.end();
   } else {
     const bytes = new Uint8Array(await source.arrayBuffer());
     target.end(bytes.length === 0 ? undefined : bytes);
   }
+}
+
+function waitForDrain(target: ExpressResponse): Promise<void> {
+  if (typeof target.once !== "function") throw new TypeError("Response backpressure is unsupported");
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => {
+      if (typeof target.off !== "function") return;
+      target.off("drain", onDrain);
+      target.off("error", onFailure);
+      target.off("close", onFailure);
+    };
+    const finish = (operation: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      operation();
+    };
+    const onDrain = (): void => finish(resolve);
+    const onFailure = (): void => finish(() => reject(new TypeError("Response stream closed")));
+    target.once!("drain", onDrain);
+    target.once!("error", onFailure);
+    target.once!("close", onFailure);
+  });
 }
 
 /** Adapts a framework-neutral AuthServer to an Express-compatible handler. */
@@ -147,7 +213,7 @@ export function toExpressHandler(server: WebAuthServer, options: ExpressAdapterO
       const body = requestBody(request, method);
       webRequest = new Request(target.url, {
         method,
-        headers: requestHeaders(request.headers, target.clientIp),
+        headers: requestHeaders(request.headers, target),
         ...(body === undefined ? {} : { body, duplex: "half" }),
       } as RequestInit);
     } catch {

@@ -24,7 +24,13 @@ function safeHeaders(...sources: Array<Readonly<Record<string, string>> | undefi
   return output;
 }
 
-/** Creates one request-local, cookie-backed user auth client. */
+/**
+ * Creates one request-local, cookie-backed user auth client.
+ *
+ * @remarks Cookie state returned by `auth.getSession()` is advisory and is not
+ * authorization proof. Server authorization must use `auth.getUser()` or the
+ * backend's verified JWT/session boundary before trusting identity or claims.
+ */
 export function createServerClient(
   authUrl: string,
   publishableKey: string,
@@ -34,7 +40,7 @@ export function createServerClient(
   let parsed: URL;
   try { parsed = new URL(authUrl); } catch { throw new TypeError("Server auth URL is malformed"); }
   const storageKey = options.auth?.storageKey ?? "default";
-  const secure = options.secure ?? parsed.protocol === "https:";
+  const secure = parsed.protocol === "https:" || options.secure === true;
   const storage = createCookieStorage({
     adapter: options.cookies,
     storageKey,
