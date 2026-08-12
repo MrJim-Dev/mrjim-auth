@@ -485,7 +485,7 @@ export function createAdminClient(authUrl: string, secretKey: string, options?: 
     findUser: (input) => {
       const source = bodyObject(input, "find-user input");
       const email = validString(source.email, "user email", 320);
-      return request("GET", "/admin/users", [{ name: "email", value: email }]);
+      return request("GET", "/admin/users/find", [{ name: "email", value: email }]);
     },
     createUser: (attributes) => request("POST", "/admin/users", [], bodyObject(attributes, "create-user attributes")),
     updateUserById: (userId, attributes) => request("PATCH", `/admin/users/${encodeURIComponent(validId(userId, "user id"))}`, [], bodyObject(attributes, "update-user attributes")),
@@ -507,7 +507,7 @@ export function createAdminClient(authUrl: string, secretKey: string, options?: 
     deleteRole: (roleId) => request("DELETE", `/admin/roles/${encodeURIComponent(validId(roleId, "role id"))}`),
     setRolePermissions: (roleId, permissionIds) => request("PUT", `/admin/roles/${encodeURIComponent(validId(roleId, "role id"))}/permissions`, [], { permission_ids: idList(permissionIds, "permission ids") }),
     setRoleInheritance: (roleId, inheritedRoleIds) => request("PUT", `/admin/roles/${encodeURIComponent(validId(roleId, "role id"))}/inheritance`, [], { inherited_role_ids: idList(inheritedRoleIds, "inherited role ids") }),
-    assignRole: (userId, roleId, scope) => request("PUT", `/admin/users/${encodeURIComponent(validId(userId, "user id"))}/roles/${encodeURIComponent(validId(roleId, "role id"))}`, [], { scope: scopeValue(scope) }),
+    assignRole: (userId, roleId, scope) => request("PUT", `/admin/users/${encodeURIComponent(validId(userId, "user id"))}/roles/${encodeURIComponent(validId(roleId, "role id"))}`, scopeQuery(scope)),
     unassignRole: (userId, roleId, scope) => request("DELETE", `/admin/users/${encodeURIComponent(validId(userId, "user id"))}/roles/${encodeURIComponent(validId(roleId, "role id"))}`, scopeQuery(scope)),
     listPermissions: () => request("GET", "/admin/permissions"),
     createPermission: (permission) => request("POST", "/admin/permissions", [], bodyObject(permission, "create-permission input")),
