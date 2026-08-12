@@ -454,7 +454,7 @@ database, external network, or paid SaaS service is required.
 | 7. OAuth and identities | Complete — Fix Pass 4 approved | Same-reviewer approval closed all findings; targeted 2/2, token 7/7, focused 61/61, selected races 5/5, provider/export/migration 45/45, migration 23/23, export/browser 12/12, full 198/198, packed consumer, protected-file identity, and clean-diff evidence recorded in Task 7 report |
 | 8. Dynamic authorization | Complete — third post-pass route-boundary hardening approved | Same-reviewer approval and sealed zero-finding security scan; 42/42 focused source, packed 1/1 (22 skipped), 240/240 full, 24/24 migration/state, 36/36 repository/shared-contract, 15/15 export/browser, frozen install, build, typecheck, lint, docs, direct imports, packed install/import, diff, and protected-hash gates; evidence in Task 8 report |
 | 9. HTTP and OpenAPI | Complete — round 8 independently approved | Raman approved `916d615ca8627d200e9261688bbbb5d8903d541e` with zero Critical, Important, or Minor findings after round-8 error-prototype, OIDC, HTTP, provider allowlist, `Set.delete`, packed, OpenAPI, migration, export, and full 318-test verification; evidence is recorded in the Task 9 report |
-| 10. Browser client | Fix candidate green — re-review pending | All 12 Important and 2 Minor findings from the `343a602` review are remediated locally; focused 73/73, full 342/342 Vitest, 11/11 Chrome, browser repeat 22/22, packaging, bundle, migration-hash, OpenAPI, and static gates pass; same-reviewer approval is still required |
+| 10. Browser client | Changes required — remediation round 2 | Same-reviewer re-review of `088a2e9`/`d6eca65` returned 0 Critical, 4 Important, 1 Minor: fallback acquisition-timeout overlap, non-atomic recovery mutation, post-disposal mutation, overstated docs, and recovery schema bounds; Task 11 remains gated |
 | 11. Express and Next.js | Pending | Not run |
 | 12. Administration controls | Pending | Not run |
 | 13. Documentation and examples | Pending | Not run |
@@ -513,16 +513,21 @@ also authored before source changes. Recovery completion will expose the
 existing purpose-bound one-time recovery-token transaction through a strict
 HTTP/client method; it will not misuse OAuth PKCE.
 
-The bounded fix candidate now closes those findings locally. It adds strict
+The first bounded fix candidate added strict
 `POST /recover/verify` and `client.auth.resetPassword`, persisted-session
 refresh, acquisition-only lock timeouts, lock-atomic PKCE use, exact token-free
 storage-fallback events, complete callback cleanup and safe redirect defaults,
 expanded redaction/header controls, streaming UTF-8 response limits, abort on
 dispose, complete public input TSDoc, and portable Chrome-channel selection.
-Current GREEN is 73/73 focused, 342/342 full Vitest, 11/11 Chrome, and 22/22
+Its gate evidence was 73/73 focused, 342/342 full Vitest, 11/11 Chrome, and 22/22
 browser repeat plus frozen install, typecheck, lint, docs, packed-consumer,
-browser-graph, OpenAPI, migration-hash, and diff checks. Approval is not yet
-claimed and Task 11 has not started.
+browser-graph, OpenAPI, migration-hash, and diff checks. Confucius's same-reviewer
+re-review nevertheless returned `CHANGES_REQUIRED` with zero Critical, four
+Important, and one Minor finding. Fallback-lock acquisition timeouts can still
+disconnect later callers, recovery proof consumption is not atomic with the
+password/session/audit mutation, abort-ignoring injected fetch can mutate
+storage after disposal, docs overstated closure, and recovery wire schemas do
+not match service bounds. Task 10 is not approved and Task 11 has not started.
 
 ## Remaining work
 
@@ -1188,9 +1193,11 @@ hashes, and full gate evidence are in the Task 10 report. The exact bounded impl
 target is `343a602fd21e638a665710dc4345e3f0ed0b5b19`; the subsequent docs-ledger commit
 changes no product code.
 
-The exact bounded remediation review target is
-`088a2e90d6596e2676174f1e7a1f6407629434be`. Same-reviewer re-review is pending;
-the subsequent ledger commit changes documentation only.
+The exact bounded remediation review target was
+`088a2e90d6596e2676174f1e7a1f6407629434be`; the docs-only ledger was
+`d6eca658ad7a0a16f77bf54fd740b4c7f1fa93a0`. Same-reviewer re-review returned
+`CHANGES_REQUIRED` (0 Critical, 4 Important, 1 Minor), so remediation round 2
+is required.
 
 Task 2 Review Fix Pass 1 final verification:
 
