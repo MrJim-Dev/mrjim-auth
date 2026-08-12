@@ -2,6 +2,7 @@ import { createHmac, generateKeyPairSync } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AuthConfigurationError } from "../../src/shared/errors.js";
 import { AuthServer } from "../../src/server/auth-server.js";
+import { createAdminClient } from "../../src/server/admin.js";
 
 const BASE_URL = "https://project.example.com/auth/v1";
 const SITE_URL = "https://project.example.com";
@@ -234,6 +235,8 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect(secret.status).toBe(200);
     expect(await body(secret)).toMatchObject({ data: { users: [], page: 2, per_page: 25 }, error: null });
     expect(calls.at(-1)).toMatchObject({ name: "admin.listUsers", input: { principal: { kind: "secret" } } });
+    const client = createAdminClient(BASE_URL, SECRET_KEY, { global: { fetch: (input, init) => auth.handle(new Request(input, init)) } });
+    await expect(client.auth.admin.listUsers({ page: 2, perPage: 25 })).resolves.toMatchObject({ data: { users: [], page: 2, per_page: 25 }, error: null });
 
     const delegated = await auth.handle(request(`/admin/users/${USER_ID}`, { headers: { apikey: PUBLISHABLE_KEY, authorization: `Bearer ${ACCESS_TOKEN}` } }));
     expect(delegated.status).toBe(200);

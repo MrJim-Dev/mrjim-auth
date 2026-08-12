@@ -235,15 +235,6 @@ function bodyObject(value: unknown, label: string): Readonly<Record<string, unkn
   return snapshot as Readonly<Record<string, unknown>>;
 }
 
-function mergeBody(left: unknown, right: unknown, label: string): Readonly<Record<string, unknown>> {
-  const first = bodyObject(left, label);
-  const second = right === undefined ? {} : bodyObject(right, label);
-  const merged: Record<string, unknown> = adminObjectCreate(null) as Record<string, unknown>;
-  for (const [key, value] of Object.entries(first)) adminObjectDefineProperty(merged, key, { configurable: true, enumerable: true, writable: true, value });
-  for (const [key, value] of Object.entries(second)) adminObjectDefineProperty(merged, key, { configurable: true, enumerable: true, writable: true, value });
-  return adminObjectFreeze(merged);
-}
-
 function idList(value: unknown, label: string): readonly string[] {
   const snapshot = snapshotJson(value, label);
   if (!adminArrayIsArray(snapshot) || snapshot.length > 1000) throw new AuthProgrammingError(`${label} is malformed`);
@@ -448,7 +439,6 @@ export function createAdminClient(authUrl: string, secretKey: string, options?: 
       adminObjectDefineProperty(requestHeaders, entry.name, { configurable: true, enumerable: true, writable: true, value: entry.value });
     }
     adminObjectDefineProperty(requestHeaders, "apikey", { configurable: true, enumerable: true, writable: true, value: key });
-    adminObjectDefineProperty(requestHeaders, "authorization", { configurable: true, enumerable: true, writable: true, value: `Bearer ${key}` });
     adminObjectDefineProperty(requestHeaders, "accept", { configurable: true, enumerable: true, writable: true, value: "application/json" });
     if (serializedBody !== undefined) adminObjectDefineProperty(requestHeaders, "content-type", { configurable: true, enumerable: true, writable: true, value: "application/json" });
     const init: RequestInit = adminObjectFreeze({
@@ -499,7 +489,10 @@ export function createAdminClient(authUrl: string, secretKey: string, options?: 
     },
     inviteUserByEmail: (email, optionsValue) => {
       const normalizedEmail = validString(email, "invite email", 320);
-      return request("POST", "/admin/users/invite", [], mergeBody({ email: normalizedEmail }, optionsValue, "invite options"));
+      const inviteBody = optionsValue === undefined
+        ? adminObjectFreeze({ email: normalizedEmail })
+        : adminObjectFreeze({ email: normalizedEmail, options: bodyObject(optionsValue, "invite options") });
+      return request("POST", "/admin/users/invite", [], inviteBody);
     },
     listRoles: () => request("GET", "/admin/roles"),
     createRole: (role) => request("POST", "/admin/roles", [], bodyObject(role, "create-role input")),
