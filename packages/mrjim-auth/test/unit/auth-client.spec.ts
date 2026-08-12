@@ -259,6 +259,15 @@ describe("browser-safe public auth client", () => {
     expect(events).toEqual(["PASSWORD_RECOVERY"]);
   });
 
+  it("rejects recovery proofs and replacement passwords outside service bounds before fetch", () => {
+    const { fetcher, calls } = createFetch([]);
+    const client = createTestClient(fetcher);
+    expect(() => client.auth.resetPassword({ email: "user@example.com", token: "recovery-token", password: "short" })).toThrow(AuthProgrammingError);
+    expect(() => client.auth.resetPassword({ email: "user@example.com", token: "x".repeat(129), password: "valid password" })).toThrow(AuthProgrammingError);
+    expect(() => client.auth.resetPassword({ email: "user@example.com", token: "recovery-token", password: "😀".repeat(300) })).toThrow(AuthProgrammingError);
+    expect(calls).toHaveLength(0);
+  });
+
   it("refreshes a persisted session when automatic initialization is skipped", async () => {
     const storage = createStorage();
     storage.values.set("mrjim-auth:default", JSON.stringify({ version: 1, revision: 1, session: session() }));
@@ -474,6 +483,28 @@ describe("browser-safe public auth client", () => {
     client.auth.dispose();
     expect(capturedSignal?.aborted).toBe(true);
     if (capturedSignal?.aborted === true) await expect(pending).resolves.toMatchObject({ data: null, error: { code: "internal_error" } });
+  });
+
+  it.each([
+    ["successful", success(session({ access_token: "late-access", refresh_token: "late-refresh" }))],
+    ["terminal-error", failure(401, { code: "invalid_token", message: "Refresh token is invalid" })],
+  ])("does not mutate persisted sessions after disposal when injected fetch ignores abort (%s)", async (_case, lateResponse) => {
+    const storage = createStorage();
+    storage.values.set("mrjim-auth:default", JSON.stringify({ version: 1, revision: 1, session: session() }));
+    let resolveFetch: ((response: Response) => void) | undefined;
+    const fetcher = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    })) as unknown as typeof fetch;
+    const client = createTestClient(fetcher, { auth: { persistSession: true, storage } });
+    const before = [...storage.values.entries()];
+
+    const pending = client.auth.refreshSession();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    client.auth.dispose();
+    resolveFetch?.(lateResponse);
+    await pending;
+
+    expect([...storage.values.entries()]).toEqual(before);
   });
 
   it("rejects provider-secret identity fields instead of returning a hostile server snapshot", async () => {
