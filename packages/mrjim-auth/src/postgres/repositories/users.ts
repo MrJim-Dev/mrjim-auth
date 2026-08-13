@@ -1,5 +1,6 @@
 import type {
   CreateUserInput,
+  ImportUserInput,
   IdentityRepository,
   OneTimeTokenRepository,
   OAuthStateConsumeOptions,
@@ -15,7 +16,7 @@ import {
   safeIdentityDataSchema,
 } from "../../shared/types.js";
 import { sql, type InsertObject, type Selectable, type UpdateObject } from "kysely";
-import { PostgresRepositoryError, mapDuplicateIdentity, mapDuplicateNormalizedEmail, requireTransaction } from "./errors.js";
+import { PostgresRepositoryError, mapDuplicateIdentity, mapDuplicateImportedUser, mapDuplicateNormalizedEmail, requireTransaction } from "./errors.js";
 import type { OneTimeTokenInput } from "../../shared/contracts.js";
 import {
   assertDigest,
@@ -168,6 +169,46 @@ function createUsersRepository(context: RepositoryContext): UserRepository {
         return mapUserRow(row);
       } catch (error) {
         mapDuplicateNormalizedEmail(error);
+      }
+    },
+
+    async createWithId(input: ImportUserInput, options) {
+      const email = normalizeEmail(input.email);
+      const phone = normalizePhone(input.phone);
+      const confirmedAt = input.confirmed_at;
+      const emailConfirmedAt = input.email_confirmed_at !== undefined
+        ? input.email_confirmed_at
+        : confirmedAt !== undefined && email.display !== null ? confirmedAt : null;
+      const phoneConfirmedAt = input.phone_confirmed_at !== undefined
+        ? input.phone_confirmed_at
+        : confirmedAt !== undefined && email.display === null && phone.display !== null ? confirmedAt : null;
+      const now = operationNow(options);
+      const values: InsertObject<Database, "users"> = {
+        id: input.id,
+        email: email.display,
+        email_normalized: email.normalized,
+        phone: phone.display,
+        phone_normalized: phone.normalized,
+        email_confirmed_at: emailConfirmedAt,
+        phone_confirmed_at: phoneConfirmedAt,
+        last_sign_in_at: input.last_sign_in_at ?? null,
+        banned_until: input.banned_until ?? null,
+        user_metadata: input.user_metadata ?? {},
+        app_metadata: input.app_metadata ?? {},
+        created_at: now,
+        updated_at: now,
+        deleted_at: null,
+      };
+
+      try {
+        const row = await authDb(context)
+          .insertInto("users")
+          .values(values)
+          .returning(USER_COLUMNS)
+          .executeTakeFirstOrThrow();
+        return mapUserRow(row);
+      } catch (error) {
+        mapDuplicateImportedUser(error);
       }
     },
 

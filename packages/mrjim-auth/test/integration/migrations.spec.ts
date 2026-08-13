@@ -1506,7 +1506,7 @@ describe("Task 3 PostgreSQL migrations", () => {
             const packedNoop = async () => undefined;
             const packedRepository = {
               transaction: async (callback) => callback(packedRepository),
-              users: { findById: packedNoop, findByIdForUpdate: packedNoop, findByNormalizedEmail: packedNoop, findByNormalizedEmailForUpdate: packedNoop, create: packedNoop, createIfAvailable: packedNoop, update: packedNoop, softDelete: packedNoop },
+              users: { findById: packedNoop, findByIdForUpdate: packedNoop, findByNormalizedEmail: packedNoop, findByNormalizedEmailForUpdate: packedNoop, create: packedNoop, createWithId: packedNoop, createIfAvailable: packedNoop, update: packedNoop, softDelete: packedNoop },
               identities: { findByProviderSubject: packedNoop, listByUserId: packedNoop, create: packedNoop, createIfAvailable: packedNoop, deleteById: packedNoop },
               passwordCredentials: { findByUserId: packedNoop, upsert: packedNoop, deleteByUserId: packedNoop },
               sessions: { create: packedNoop, findByIdForUpdate: packedNoop, findRefreshForUpdate: packedNoop, rotate: packedNoop, revokeSession: packedNoop, revokeFamily: packedNoop, revokeUserSessions: packedNoop },

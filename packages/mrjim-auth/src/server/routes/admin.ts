@@ -1,5 +1,5 @@
 import { AuthApiError } from "../../shared/errors.js";
-import type { CreatePermissionInput, CreateRoleInput, CreateUserInput, UpdatePermissionInput, UpdateRoleInput, UpdateUserInput } from "../../shared/contracts.js";
+import type { CreatePermissionInput, CreateRoleInput, CreateUserInput, ImportUserInput, UpdatePermissionInput, UpdateRoleInput, UpdateUserInput } from "../../shared/contracts.js";
 import {
   lowercaseKeySchema,
   permissionKeySchema,
@@ -24,6 +24,7 @@ import {
   adminRolesDataSchema,
   adminUserCreateRequestSchema,
   adminUserDataSchema,
+  adminUserImportRequestSchema,
   adminUserUpdateRequestSchema,
   adminUsersDataSchema,
   nullDataSchema,
@@ -81,6 +82,20 @@ function userInput(value: typeof adminUserUpdateRequestSchema._output): CreateUs
   return output;
 }
 
+function importedUserInput(value: typeof adminUserImportRequestSchema._output): ImportUserInput {
+  const output: ImportUserInput = { id: value.id as ImportUserInput["id"] };
+  if (value.email !== undefined) output.email = value.email;
+  if (value.phone !== undefined) output.phone = value.phone;
+  if (value.email_confirmed_at !== undefined) output.email_confirmed_at = parsedDate(value.email_confirmed_at);
+  if (value.phone_confirmed_at !== undefined) output.phone_confirmed_at = parsedDate(value.phone_confirmed_at);
+  if (value.confirmed_at !== undefined) output.confirmed_at = parsedDate(value.confirmed_at);
+  if (value.last_sign_in_at !== undefined) output.last_sign_in_at = parsedDate(value.last_sign_in_at);
+  if (value.banned_until !== undefined) output.banned_until = parsedDate(value.banned_until);
+  if (value.user_metadata !== undefined) output.user_metadata = value.user_metadata as NonNullable<ImportUserInput["user_metadata"]>;
+  if (value.app_metadata !== undefined) output.app_metadata = value.app_metadata as NonNullable<ImportUserInput["app_metadata"]>;
+  return output;
+}
+
 function scope(context: RouteContext): AuthorizationScope | null {
   const type = context.query.get("scope_type");
   const id = context.query.get("scope_id");
@@ -98,6 +113,7 @@ export async function handleAdminRoute(path: string, context: RouteContext): Pro
   const method = context.request.method;
   if (path === "/admin/users" && method === "GET") return service(await context.invoke(() => admin.listUsers(pagination(context), actor)), adminUsersDataSchema);
   if (path === "/admin/users" && method === "POST") return service(await context.invoke(() => admin.createUser(userInput(context.body as typeof adminUserCreateRequestSchema._output), actor)), adminUserDataSchema);
+  if (path === "/admin/users/import" && method === "POST") return service(await context.invoke(() => admin.importUser(importedUserInput(context.body as typeof adminUserImportRequestSchema._output), actor)), adminUserDataSchema);
   if (path === "/admin/users/find" && method === "GET") return service(await context.invoke(() => admin.findUser({ email: context.query.get("email") ?? "" }, actor)), adminUserDataSchema);
   if (path === "/admin/users/invite" && method === "POST") {
     const value = context.body as typeof adminInviteRequestSchema._output;

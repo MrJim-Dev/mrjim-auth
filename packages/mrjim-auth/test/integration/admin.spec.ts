@@ -27,6 +27,7 @@ describe("server-only admin client contract", () => {
       "deleteUser",
       "findUser",
       "getUserById",
+      "importUser",
       "inviteUserByEmail",
       "listAudit",
       "listPermissions",

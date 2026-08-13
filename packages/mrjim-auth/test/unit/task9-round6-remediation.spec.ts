@@ -30,7 +30,7 @@ function repositoryFixture(overrides: Record<string, unknown> = {}): AuthReposit
     transaction: async (callback: (value: AuthRepository) => unknown) => callback(repository as unknown as AuthRepository),
     users: {
       findById: noop, findByIdForUpdate: noop, findByNormalizedEmail: noop,
-      findByNormalizedEmailForUpdate: noop, create: noop, createIfAvailable: noop,
+      findByNormalizedEmailForUpdate: noop, create: noop, createWithId: noop, createIfAvailable: noop,
       update: noop, softDelete: noop,
     },
     identities: {

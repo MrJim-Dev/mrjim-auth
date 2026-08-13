@@ -40,6 +40,45 @@ const recoveryPasswordString = passwordString.refine((value) => {
 });
 const redirectString = z.string().min(1).max(2048);
 const jsonObject = z.record(z.string(), z.json());
+const IMPORT_METADATA_MAX_DEPTH = 8;
+const IMPORT_METADATA_MAX_KEYS = 100;
+const IMPORT_METADATA_MAX_STRING_LENGTH = 4096;
+const IMPORT_METADATA_MAX_BYTES = 16_384;
+
+function boundedImportJsonValue(value: unknown, depth: number, seen: Set<object>): boolean {
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "string") return value.length <= IMPORT_METADATA_MAX_STRING_LENGTH;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object" || depth >= IMPORT_METADATA_MAX_DEPTH || seen.has(value)) return false;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (value.length > IMPORT_METADATA_MAX_KEYS) return false;
+      return value.every((entry) => boundedImportJsonValue(entry, depth + 1, seen));
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const keys = Object.keys(value);
+    if (keys.length > IMPORT_METADATA_MAX_KEYS) return false;
+    return keys.every((key) => key.length <= 128 && boundedImportJsonValue((value as Record<string, unknown>)[key], depth + 1, seen));
+  } catch {
+    return false;
+  }
+}
+
+function validBoundedImportMetadata(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!boundedImportJsonValue(value, 0, new Set<object>())) return false;
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength <= IMPORT_METADATA_MAX_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+const boundedImportMetadataSchema = z.record(z.string().max(128), z.json()).superRefine((value, context) => {
+  if (!validBoundedImportMetadata(value)) context.addIssue({ code: "custom", message: "metadata exceeds the import bounds" });
+});
 
 export const userSchema = z.object({
   id: z.string().uuid(),
@@ -220,6 +259,14 @@ export const adminUserCreateRequestSchema = z.object({
   email_confirmed_at: nullableIsoInput.optional(), phone_confirmed_at: nullableIsoInput.optional(),
   confirmed_at: nullableIsoInput.optional(), user_metadata: jsonObject.optional(), app_metadata: jsonObject.optional(),
 }).strict();
+export const adminUserImportRequestSchema = z.object({
+  id: uuidString,
+  email: emailString.nullable().optional(), phone: z.string().min(1).max(64).nullable().optional(),
+  email_confirmed_at: nullableIsoInput.optional(), phone_confirmed_at: nullableIsoInput.optional(),
+  confirmed_at: nullableIsoInput.optional(), last_sign_in_at: nullableIsoInput.optional(),
+  banned_until: nullableIsoInput.optional(), user_metadata: boundedImportMetadataSchema.optional(),
+  app_metadata: boundedImportMetadataSchema.optional(),
+}).strict();
 export const adminUserUpdateRequestSchema = adminUserCreateRequestSchema.extend({
   last_sign_in_at: nullableIsoInput.optional(), banned_until: nullableIsoInput.optional(),
 }).strict();
@@ -369,6 +416,7 @@ export const routeContracts: readonly RouteContract[] = Object.freeze([
   { method: "GET", path: "/.well-known/jwks.json", operationId: "jwks", security: "api_key", response: authResult(jwksDataSchema) },
   { method: "GET", path: "/admin/users", operationId: "adminListUsers", security: "admin", query: adminPageQuery, response: authResult(adminUsersDataSchema) },
   { method: "POST", path: "/admin/users", operationId: "adminCreateUser", security: "admin", body: adminUserCreateRequestSchema, response: authResult(adminUserDataSchema) },
+  { method: "POST", path: "/admin/users/import", operationId: "adminImportUser", security: "admin", body: adminUserImportRequestSchema, response: authResult(adminUserDataSchema), example: { id: "11111111-1111-4111-8111-111111111111", email: "user@example.com", user_metadata: { source: "legacy" } } },
   { method: "GET", path: "/admin/users/find", operationId: "adminFindUser", security: "admin", query: [{ name: "email", required: true, description: "Exact normalized email" }], response: authResult(adminUserDataSchema) },
   { method: "POST", path: "/admin/users/invite", operationId: "adminInviteUser", security: "admin", body: adminInviteRequestSchema, response: authResult(z.object({ invited: z.unknown() }).strict()) },
   { method: "GET", path: "/admin/users/{id}", operationId: "adminGetUser", security: "admin", response: authResult(adminUserDataSchema) },

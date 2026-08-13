@@ -85,6 +85,8 @@ export interface AdminNamespace {
   readonly getUserById: (userId: string) => Promise<AuthResult<unknown>>;
   readonly findUser: (input: { readonly email: string }) => Promise<AuthResult<unknown>>;
   readonly createUser: (attributes: Readonly<Record<string, unknown>>) => Promise<AuthResult<unknown>>;
+  /** Import-only user operation; the server requires the exact import scope. */
+  readonly importUser: (attributes: Readonly<Record<string, unknown>>) => Promise<AuthResult<unknown>>;
   readonly updateUserById: (userId: string, attributes: Readonly<Record<string, unknown>>) => Promise<AuthResult<unknown>>;
   readonly deleteUser: (userId: string, options?: { readonly soft?: boolean }) => Promise<AuthResult<unknown>>;
   readonly inviteUserByEmail: (email: string, options?: Readonly<Record<string, unknown>>) => Promise<AuthResult<unknown>>;
@@ -478,6 +480,7 @@ export function createAdminClient(authUrl: string, secretKey: string, options?: 
       return request("GET", "/admin/users/find", [{ name: "email", value: email }]);
     },
     createUser: (attributes) => request("POST", "/admin/users", [], bodyObject(attributes, "create-user attributes")),
+    importUser: (attributes) => request("POST", "/admin/users/import", [], bodyObject(attributes, "import-user attributes")),
     updateUserById: (userId, attributes) => request("PATCH", `/admin/users/${encodeURIComponent(validId(userId, "user id"))}`, [], bodyObject(attributes, "update-user attributes")),
     deleteUser: (userId, optionsValue) => {
       const id = validId(userId, "user id");

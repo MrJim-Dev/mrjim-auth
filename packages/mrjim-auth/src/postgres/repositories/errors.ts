@@ -1,6 +1,8 @@
 /** Stable adapter error codes for expected repository-boundary failures. */
 export type PostgresRepositoryErrorCode =
   | "email_exists"
+  | "phone_exists"
+  | "user_id_exists"
   | "identity_exists"
   | "transaction_required"
   | "not_found"
@@ -58,6 +60,33 @@ export function mapDuplicateNormalizedEmail(error: unknown): never {
     throw new PostgresRepositoryError(
       "email_exists",
       "a user with this normalized email already exists",
+      { constraint: details.constraint, cause: error },
+    );
+  }
+  throw error;
+}
+
+/** Map import-only user UUID/email/phone uniqueness failures deterministically. */
+export function mapDuplicateImportedUser(error: unknown): never {
+  const details = postgresErrorDetails(error);
+  if (details.code === "23505" && details.constraint === "users_pkey") {
+    throw new PostgresRepositoryError(
+      "user_id_exists",
+      "a user with this UUID already exists",
+      { constraint: details.constraint, cause: error },
+    );
+  }
+  if (details.code === "23505" && details.constraint === "users_email_normalized_key") {
+    throw new PostgresRepositoryError(
+      "email_exists",
+      "a user with this normalized email already exists",
+      { constraint: details.constraint, cause: error },
+    );
+  }
+  if (details.code === "23505" && details.constraint === "users_phone_normalized_key") {
+    throw new PostgresRepositoryError(
+      "phone_exists",
+      "a user with this normalized phone already exists",
       { constraint: details.constraint, cause: error },
     );
   }

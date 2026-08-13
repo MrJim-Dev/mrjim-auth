@@ -271,7 +271,7 @@ const SESSION_SERVICE_METHODS = ["refresh", "authorizeSession", "signOut"] as co
 const TOKEN_SERVICE_METHODS = ["verifyAccessToken", "jwks"] as const;
 const AUTHORIZATION_SERVICE_METHODS = ["getPermissions", "authorize"] as const;
 const OAUTH_SERVICE_METHODS = ["listProviders", "authorize", "callback", "exchangeCode", "listIdentities", "unlinkIdentity"] as const;
-const ADMIN_SERVICE_METHODS = ["listUsers", "getUserById", "findUser", "createUser", "updateUserById", "deleteUser", "inviteUserByEmail", "listRoles", "createRole", "updateRole", "deleteRole", "setRolePermissions", "setRoleInheritance", "assignRole", "unassignRole", "listPermissions", "createPermission", "updatePermission", "deletePermission", "listAudit"] as const;
+const ADMIN_SERVICE_METHODS = ["listUsers", "getUserById", "findUser", "createUser", "importUser", "updateUserById", "deleteUser", "inviteUserByEmail", "listRoles", "createRole", "updateRole", "deleteRole", "setRolePermissions", "setRoleInheritance", "assignRole", "unassignRole", "listPermissions", "createPermission", "updatePermission", "deletePermission", "listAudit"] as const;
 const AUTH_SERVER_SERVICE_MEMBERS = ["users", "sessions", "tokens", "authorization", "oauth", "admin"] as const;
 
 function capturedService(
@@ -769,7 +769,7 @@ function exactPath(path: string, basePath: string): { readonly path: string; rea
       const decoded = decodeSegment(value);
       return decoded !== null && uuidSchema.safeParse(decoded).success ? decoded : null;
     };
-    if (parts.length === 3 && parts[0] === "admin" && parts[1] === "users" && parts[2] !== "find" && parts[2] !== "invite") {
+    if (parts.length === 3 && parts[0] === "admin" && parts[1] === "users" && parts[2] !== "find" && parts[2] !== "invite" && parts[2] !== "import") {
       const id = decodedUuid(2); if (id === null) return null;
       return { path: "/admin/users/{id}", params: objectFreeze({ id }) };
     }

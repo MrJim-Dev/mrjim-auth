@@ -71,6 +71,7 @@ const completeRepository = {
     findByNormalizedEmail: asyncMethod,
     findByNormalizedEmailForUpdate: asyncMethod,
     create: asyncMethod,
+    createWithId: asyncMethod,
     createIfAvailable: asyncMethod,
     update: asyncMethod,
     softDelete: asyncMethod,

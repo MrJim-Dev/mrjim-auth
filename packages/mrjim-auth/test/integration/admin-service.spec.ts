@@ -15,7 +15,7 @@ function repository(overrides: Partial<AuthRepository> = {}): AuthRepository {
     users: {
       findById: async () => null, findByIdForUpdate: async () => null,
       findByNormalizedEmail: async () => null, findByNormalizedEmailForUpdate: async () => null,
-      create: async () => { throw new Error("unused"); }, createIfAvailable: async () => null,
+      create: async () => { throw new Error("unused"); }, createWithId: async () => { throw new Error("unused"); }, createIfAvailable: async () => null,
       update: async () => { throw new Error("unused"); }, softDelete: async () => undefined,
     },
     sessions: { revokeUserSessions: async () => undefined },

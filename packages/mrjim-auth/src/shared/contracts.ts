@@ -110,6 +110,21 @@ export interface CreateUserInput {
   app_metadata?: JsonObject;
 }
 
+/** @internal Import-only user input with an externally supplied stable UUID. */
+export interface ImportUserInput {
+  /** Existing-project UUID to preserve; ordinary user creation never accepts this field. */
+  id: UUID;
+  email?: string | null;
+  phone?: string | null;
+  email_confirmed_at?: Date | null;
+  phone_confirmed_at?: Date | null;
+  confirmed_at?: Date | null;
+  last_sign_in_at?: Date | null;
+  banned_until?: Date | null;
+  user_metadata?: JsonObject;
+  app_metadata?: JsonObject;
+}
+
 /** @internal Fields that may be changed by a user or an authorized administrator. */
 export interface UpdateUserInput {
   email?: string | null;
@@ -146,6 +161,8 @@ export interface UserRepository {
   ): Promise<User | null>;
   /** Creates a user and returns the safe public record. */
   create(input: CreateUserInput, options?: RepositoryOperationOptions): Promise<User>;
+  /** Import-only create with a caller-supplied UUID; never used by signup/admin create. */
+  createWithId(input: ImportUserInput, options?: RepositoryOperationOptions): Promise<User>;
   /** Creates a user, or returns null when a normalized login target conflicts. */
   createIfAvailable(
     input: CreateUserInput,

@@ -118,7 +118,7 @@ function makeOptions(calls: Array<{ readonly name: string; readonly input: unkno
     users: {
       findById: async () => user(), findByIdForUpdate: async () => user(),
       findByNormalizedEmail: async () => user(), findByNormalizedEmailForUpdate: async () => user(),
-      create: async () => user(), createIfAvailable: async () => user(), update: async () => user(), softDelete: async () => undefined,
+      create: async () => user(), createWithId: async () => user(), createIfAvailable: async () => user(), update: async () => user(), softDelete: async () => undefined,
     },
     identities: {
       findByProviderSubject: async () => identity(), listByUserId: async () => [identity()],
@@ -228,6 +228,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
       listRoles: unused, createRole: unused, updateRole: unused, deleteRole: unused, setRolePermissions: unused,
       setRoleInheritance: unused, assignRole: unused, unassignRole: unused, listPermissions: unused,
       createPermission: unused, updatePermission: unused, deletePermission: unused, listAudit: unused,
+      importUser: async (input: unknown, principal: unknown) => { calls.push({ name: "admin.importUser", input: { input, principal } }); return result({ user: user() }); },
     };
     const auth = serverModule.createAuthServer(options);
 
@@ -235,6 +236,13 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect(secret.status).toBe(200);
     expect(await body(secret)).toMatchObject({ data: { users: [], page: 2, per_page: 25 }, error: null });
     expect(calls.at(-1)).toMatchObject({ name: "admin.listUsers", input: { principal: { kind: "secret" } } });
+    const imported = await auth.handle(request("/admin/users/import", {
+      method: "POST",
+      headers: { apikey: SECRET_KEY, "content-type": "application/json" },
+      body: JSON.stringify({ id: USER_ID, email: "member@example.test", user_metadata: { source: "courtera" } }),
+    }));
+    expect(imported.status).toBe(200);
+    expect(calls.at(-1)).toMatchObject({ name: "admin.importUser", input: { input: { id: USER_ID }, principal: { kind: "secret" } } });
     const client = createAdminClient(BASE_URL, SECRET_KEY, { global: { fetch: (input, init) => auth.handle(new Request(input, init)) } });
     await expect(client.auth.admin.listUsers({ page: 2, perPage: 25 })).resolves.toMatchObject({ data: { users: [], page: 2, per_page: 25 }, error: null });
 

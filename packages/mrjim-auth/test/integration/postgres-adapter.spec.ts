@@ -337,6 +337,26 @@ describe("Task 4 PostgreSQL adapter", () => {
     );
   });
 
+  it("preserves a supplied import UUID and maps duplicate UUID/email constraints deterministically", async () => {
+    const repository = requireRepository();
+    type CreateWithId = (input: {
+      readonly id: UUID;
+      readonly email?: string | null;
+      readonly user_metadata?: Record<string, unknown>;
+    }) => Promise<{ readonly id: UUID; readonly email: string | null }>;
+    const createWithId = (repository.users as unknown as { readonly createWithId: CreateWithId }).createWithId.bind(repository.users);
+    const stableId = uuid("00000000-0000-4000-8000-000000000921");
+    const duplicateId = uuid("00000000-0000-4000-8000-000000000922");
+    const email = "stable-import-921@example.com";
+
+    const imported = await createWithId({ id: stableId, email, user_metadata: { source: "courtera" } });
+    expect(imported).toMatchObject({ id: stableId, email });
+    await expectCode(createWithId({ id: stableId, email: "different-921@example.com" }), "user_id_exists");
+    await expectCode(createWithId({ id: duplicateId, email: email.toUpperCase() }), "email_exists");
+    expect((await repository.users.findById(stableId))?.id).toBe(stableId);
+    await repository.users.softDelete(stableId);
+  });
+
   it("treats SQL-injection-like values as data and keeps the schema intact", async () => {
     const repository = requireRepository();
     const injectionLike = "x'); DROP TABLE auth.users; --@example.com";

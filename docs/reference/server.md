@@ -140,7 +140,7 @@ The admin namespace is immutable and each method returns
 `Promise<AuthResult<unknown>>`; the server response remains under `data` and
 expected failures under `error`.
 
-### Admin namespace: 20 methods
+### Admin namespace: 21 methods
 
 | Method | HTTP operation | Notes |
 | --- | --- | --- |
@@ -148,6 +148,7 @@ expected failures under `error`.
 | `getUserById` | `GET /admin/users/{id}` | Returns `{ user }` or a safe error. |
 | `findUser` | `GET /admin/users/find?email=...` | Exact normalized-email lookup; callers must handle `user: null`. |
 | `createUser` | `POST /admin/users` | Sends the validated user-creation object. |
+| `importUser` | `POST /admin/users/import` | Import-only stable UUID operation; requires a secret API key with the exact `auth.users.import` scope and accepts only bounded profile/auth metadata, never credentials or sessions. |
 | `updateUserById` | `PATCH /admin/users/{id}` | Sends the validated update patch. |
 | `deleteUser` | `DELETE /admin/users/{id}?soft=true` | Only soft deletion is supported; `soft: false` throws/returns invalid request. |
 | `inviteUserByEmail` | `POST /admin/users/invite` | Body is `{ email, options? }`; options are nested and project-defined. |
@@ -167,9 +168,21 @@ expected failures under `error`.
 
 Administrative operations are checked against dynamic permissions such as
 `auth.users.manage`, `auth.roles.manage`, `auth.permissions.manage`, and
-`auth.audit.read`, with project role/rank policy enforced by the server. The
-server writes redacted audit records for administrative mutations and rate
-limits administrative writes when a limiter is configured.
+`auth.audit.read`, with project role/rank policy enforced by the server. Stable
+UUID import is deliberately separate: only a non-interactive secret API-key
+principal carrying the exact `auth.users.import` scope may use it; interactive
+admins and wildcard/ordinary user-management scopes are rejected. Equivalent
+same-UUID retries return the existing row, while UUID/email conflicts fail
+without overwriting. Import metadata is bounded to 8 nested levels, 100 keys
+per object or array, 4,096 characters per string, and 16 KiB of serialized
+JSON per metadata object. Equivalence compares the normalized email, trimmed
+phone, persisted confirmation/last-sign-in/ban timestamps, metadata, and
+non-deleted state; `created_at` and `updated_at` are intentionally ignored.
+Omitted optional fields compare as their persistence defaults (`null` or `{}`).
+Passwords, password hashes, sessions, refresh tokens, OAuth secrets, and other
+credential material are not accepted. The server writes redacted audit records
+for administrative mutations and rate limits administrative writes when a
+limiter is configured.
 
 ## Direct service and authorization APIs
 

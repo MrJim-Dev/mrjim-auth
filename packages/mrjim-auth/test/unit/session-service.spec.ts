@@ -110,6 +110,7 @@ function makeRepository(
     findByNormalizedEmail: async () => null,
     findByNormalizedEmailForUpdate: async () => null,
     create: async () => null,
+    createWithId: async () => null,
     createIfAvailable: async () => null,
     update: async () => null,
     softDelete: async () => undefined,
