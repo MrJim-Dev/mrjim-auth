@@ -26,7 +26,7 @@ zero skipped security or migration-version suites.
 
 ## Schema and documentation
 
-- [x] All six forward migrations retain approved checksums.
+- [x] All seven forward migrations retain approved checksums.
 - [x] Fresh install and upgrades preserve sentinel users/roles/permissions.
 - [x] README, API/schema references, OpenAPI, security guide, migration guide,
       compatibility matrix, and changelog are current.

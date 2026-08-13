@@ -44,6 +44,7 @@ startup migration, baseline command, or rollback/down operation in v1.
 | 4 | `0004_repository_hardening.sql` | One-time-token metadata redaction and exact OAuth flow constraint (`sign_in` or `link_identity`). |
 | 5 | `0005_oauth_callback.sql` | `oauth_callback` one-time-token purpose with a maximum 60-second lifetime. |
 | 6 | `0006_admin_operations.sql` | API-key names, dotted permission resources, admin/audit indexes, and durable rate-limit buckets. |
+| 7 | `0007_legacy_bcrypt_passwords.sql` | Transitional bcrypt password verification and constraint support; successful login rehashes to Argon2id. |
 
 Every manifest entry exposes `migrationOrder`, `version`, `fileName`, `sql`,
 `checksum`, and `introducedIn`. Checksums are SHA-256 of the packaged SQL.

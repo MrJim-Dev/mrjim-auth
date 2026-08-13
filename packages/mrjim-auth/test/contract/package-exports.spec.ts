@@ -41,6 +41,7 @@ const migrationAssetFiles = [
   "dist/postgres/migrations/0004_repository_hardening.sql",
   "dist/postgres/migrations/0005_oauth_callback.sql",
   "dist/postgres/migrations/0006_admin_operations.sql",
+  "dist/postgres/migrations/0007_legacy_bcrypt_passwords.sql",
 ] as const;
 const nodeOnlyImportPattern = /^(?:node:)?(?:assert|buffer|child_process|cluster|crypto|dgram|dns|events|fs|http|https|module|net|os|path|perf_hooks|process|readline|stream|string_decoder|timers|tls|tty|url|util|v8|vm|worker_threads|zlib)(?:\/.*)?$/;
 const serverOnlyDependencyPattern = /^(?:@node-rs\/argon2|argon2|kysely|pg|pg-native|postgres|postgresjs)(?:\/.*)?$/;
@@ -228,6 +229,13 @@ describe("package export boundaries", () => {
         migrationOrder: 6,
         version: "0006_admin_operations",
         fileName: "0006_admin_operations.sql",
+        checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+        introducedIn: "0.1.0",
+      },
+      {
+        migrationOrder: 7,
+        version: "0007_legacy_bcrypt_passwords",
+        fileName: "0007_legacy_bcrypt_passwords.sql",
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
         introducedIn: "0.1.0",
       },

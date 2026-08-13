@@ -1,4 +1,5 @@
 import argon2 from "argon2";
+import bcrypt from "bcryptjs";
 import { AuthApiError, AuthConfigurationError } from "../shared/errors.js";
 import {
   assertBoundaryObject,
@@ -24,6 +25,8 @@ const DUMMY_PASSWORD_HASH =
 const MAX_VERIFIABLE_MEMORY_COST = 256 * 1024;
 const MAX_VERIFIABLE_TIME_COST = 10;
 
+const BCRYPT_HASH_PATTERN = /^\$2[aby]\$(\d{2})\$[./A-Za-z0-9]{53}$/u;
+
 export interface PasswordPolicy {
   readonly memoryCost?: number;
   readonly timeCost?: number;
@@ -34,6 +37,11 @@ export interface PasswordPolicy {
 export interface PasswordVerification {
   readonly valid: boolean;
   readonly needsRehash: boolean;
+}
+
+/** Returns whether a hash is a legacy bcrypt credential accepted only for migration. */
+export function isLegacyBcryptHash(encodedHash: unknown): boolean {
+  return typeof encodedHash === "string" && BCRYPT_HASH_PATTERN.test(encodedHash);
 }
 
 function validatePassword(password: unknown): asserts password is string {
@@ -149,8 +157,18 @@ export async function verifyPassword(
 ): Promise<PasswordVerification> {
   validatePassword(password);
   const required = normalizedPolicy(policy);
-  const knownHash = typeof encodedHash === "string" && parseParams(encodedHash) !== null;
-  const hash = knownHash ? encodedHash : DUMMY_PASSWORD_HASH;
+  const knownArgonHash = typeof encodedHash === "string" && parseParams(encodedHash) !== null;
+  const knownBcryptHash = isLegacyBcryptHash(encodedHash);
+  if (knownBcryptHash) {
+    let valid = false;
+    try {
+      valid = await bcrypt.compare(password, encodedHash as string);
+    } catch {
+      valid = false;
+    }
+    return { valid, needsRehash: valid };
+  }
+  const hash = knownArgonHash ? encodedHash : DUMMY_PASSWORD_HASH;
   let valid = false;
   try {
     valid = await argon2.verify(hash, password);
@@ -158,8 +176,8 @@ export async function verifyPassword(
     valid = false;
   }
   return {
-    valid: knownHash && valid,
-    needsRehash: knownHash && valid && !isStrongArgon2idHash(hash, required),
+    valid: knownArgonHash && valid,
+    needsRehash: knownArgonHash && valid && !isStrongArgon2idHash(hash, required),
   };
 }
 

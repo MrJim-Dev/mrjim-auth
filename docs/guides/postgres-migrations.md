@@ -39,8 +39,8 @@ invalidate older rows; tampering with a row's provenance does. The runner
 rejects unknown, duplicate, gapped, and out-of-order history before writing.
 The Task 4 base files `0001_core.sql`, `0002_authorization.sql`, and
 `0003_oauth_operations.sql` are immutable history: their bytes and checksums
-are never rewritten. Existing installations apply only the new `0004`
-hardening migration, while fresh installations apply all four in order.
+are never rewritten. Existing installations apply only the new migrations,
+while fresh installations apply all seven in order.
 
 The only application schema created is `auth`, with these 15 tables:
 

@@ -43,6 +43,10 @@ const EXPECTED_MIGRATIONS = [
     version: "0006_admin_operations",
     checksum: "9f2c434215f7b9adf33f918271de725a57f7577ea232268b1f0d3691df0caadd",
   },
+  {
+    version: "0007_legacy_bcrypt_passwords",
+    checksum: "19b36ca48602194cd831f47cf652bed188e52b2ab308a5d478ffc9557ae1bce0",
+  },
 ] as const;
 
 type CommandOptions = {
@@ -721,7 +725,7 @@ it("requires the default PostgreSQL 15/16/17 matrix, or an explicit focused matr
 it("matches every committed migration version and checksum", () => {
   expect(MIGRATIONS).toHaveLength(EXPECTED_MIGRATIONS.length);
   expect(MIGRATIONS.map((migration) => migration.version)).toEqual(EXPECTED_MIGRATIONS.map((migration) => migration.version));
-  expect(MIGRATIONS.map((migration) => migration.migrationOrder)).toEqual([1, 2, 3, 4, 5, 6]);
+  expect(MIGRATIONS.map((migration) => migration.migrationOrder)).toEqual([1, 2, 3, 4, 5, 6, 7]);
   expect(MIGRATIONS.map((migration) => migration.checksum)).toEqual(EXPECTED_MIGRATIONS.map((migration) => migration.checksum));
 });
 

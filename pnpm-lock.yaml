@@ -94,6 +94,9 @@ importers:
       argon2:
         specifier: 0.44.0
         version: 0.44.0
+      bcryptjs:
+        specifier: 3.0.3
+        version: 3.0.3
       jose:
         specifier: 6.2.8
         version: 6.2.8
@@ -809,6 +812,10 @@ packages:
   baseline-browser-mapping@2.11.13:
     resolution: {integrity: sha512-k9HNuUVMlqVjQ9UHzfPjIqiDbWw7WqT1AoT7GL8VwvF3r0ZfArtgiSPAlmupyNquNgOJHTuH4CKYf8ttMTWBTQ==}
     engines: {node: '>=6.0.0'}
+    hasBin: true
+
+  bcryptjs@3.0.3:
+    resolution: {integrity: sha512-GlF5wPWnSa/X5LKM1o0wz0suXIINz1iHRLvTS+sLyi7XPbe5ycmYI3DlZqVGZZtDgl4DmasFg7gOB3JYbphV5g==}
     hasBin: true
 
   body-parser@2.3.0:
@@ -2147,6 +2154,8 @@ snapshots:
   assertion-error@2.0.1: {}
 
   baseline-browser-mapping@2.11.13: {}
+
+  bcryptjs@3.0.3: {}
 
   body-parser@2.3.0:
     dependencies:

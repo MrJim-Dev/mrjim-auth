@@ -486,7 +486,7 @@ describe("Task 3 PostgreSQL migrations", () => {
     expect(await authSchemaExists()).toBe(false);
   });
 
-  it("upgrades the immutable 0001-0005 history with only admin/rate-limit migration 0006", async () => {
+  it("upgrades the immutable 0001-0005 history with the forward-only 0006 and 0007 migrations", async () => {
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
       "0001_core",
       "0002_authorization",
@@ -494,6 +494,7 @@ describe("Task 3 PostgreSQL migrations", () => {
       "0004_repository_hardening",
       "0005_oauth_callback",
       "0006_admin_operations",
+      "0007_legacy_bcrypt_passwords",
     ]);
     expect(MIGRATIONS.find((migration) => migration.version === "0001_core")?.checksum).toBe(
       immutableMigrationChecksums["0001_core"],
@@ -518,9 +519,10 @@ describe("Task 3 PostgreSQL migrations", () => {
       const before = await migrationStatus(legacy.pool);
       expect(before.slice(0, 5).every((migration) => migration.state === "applied")).toBe(true);
       expect(before[5]?.state).toBe("pending");
+      expect(before[6]?.state).toBe("pending");
 
       const result = await migrate(legacy.pool, { direction: "up" });
-      expect(result.applied).toEqual(["0006_admin_operations"]);
+      expect(result.applied).toEqual(["0006_admin_operations", "0007_legacy_bcrypt_passwords"]);
 
       const after = await migrationStatus(legacy.pool);
       expect(after.map((migration) => migration.version)).toEqual(
@@ -1213,6 +1215,7 @@ describe("Task 3 PostgreSQL migrations", () => {
             WHEN '0004_repository_hardening' THEN 4
             WHEN '0005_oauth_callback' THEN 5
             WHEN '0006_admin_operations' THEN 6
+            WHEN '0007_legacy_bcrypt_passwords' THEN 7
           END`,
     );
     try {
@@ -1228,6 +1231,7 @@ describe("Task 3 PostgreSQL migrations", () => {
     }
 
     await pool.query("UPDATE auth.schema_migrations SET migration_order = 8 WHERE version = '0006_admin_operations'");
+    await pool.query("UPDATE auth.schema_migrations SET migration_order = 9 WHERE version = '0007_legacy_bcrypt_passwords'");
     await pool.query("UPDATE auth.schema_migrations SET migration_order = 6 WHERE version = '0002_authorization'");
     await pool.query("UPDATE auth.schema_migrations SET migration_order = 7 WHERE version = '0003_oauth_operations'");
     try {
@@ -1237,6 +1241,7 @@ describe("Task 3 PostgreSQL migrations", () => {
       await pool.query("UPDATE auth.schema_migrations SET migration_order = 2 WHERE version = '0002_authorization'");
       await pool.query("UPDATE auth.schema_migrations SET migration_order = 3 WHERE version = '0003_oauth_operations'");
       await pool.query("UPDATE auth.schema_migrations SET migration_order = 6 WHERE version = '0006_admin_operations'");
+      await pool.query("UPDATE auth.schema_migrations SET migration_order = 7 WHERE version = '0007_legacy_bcrypt_passwords'");
     }
   });
 

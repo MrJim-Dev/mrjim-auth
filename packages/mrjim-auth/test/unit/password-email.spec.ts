@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import bcrypt from "bcryptjs";
 import {
   EmailService,
   normalizeAndValidateEmail,
@@ -43,6 +44,13 @@ describe("Task 6 password and email primitives", () => {
     await expect(service.verify(PASSWORD, null)).resolves.toEqual({ valid: false, needsRehash: false });
     expect(() => new PasswordService({ memoryCost: 32 * 1024 })).toThrowError(/security floor/i);
     expect(() => new PasswordService({ parallelism: 2 })).toThrowError(/security floor/i);
+  });
+
+  it("accepts legacy bcrypt credentials long enough to rehash them", async () => {
+    const service = new PasswordService();
+    const legacyHash = await bcrypt.hash(PASSWORD, 4);
+    await expect(service.verify(PASSWORD, legacyHash)).resolves.toEqual({ valid: true, needsRehash: true });
+    await expect(service.verify("wrong password", legacyHash)).resolves.toEqual({ valid: false, needsRehash: false });
   });
 
   it("requires exact configured redirects and only derives bearer links in memory", () => {
