@@ -7,6 +7,7 @@ const packageRoot = resolve(import.meta.dirname, "../..");
 const browserEntries = [
   "src/index.ts",
   "src/adapters/nextjs-browser.ts",
+  "src/storage/index.ts",
 ] as const;
 
 function normalizePath(value: string): string {
@@ -93,11 +94,14 @@ describe("browser bundle boundaries", () => {
     for (const entryPoint of browserEntries) {
       const result = await buildBrowserEntry(entryPoint);
       const inputs = inputPaths(result.metafile!);
-      expect(includesPath(inputs, "src/client/auth-client.ts")).toBe(true);
       expect(includesPath(inputs, "src/shared/safe-intrinsics.ts")).toBe(true);
-      if (entryPoint.includes("nextjs-browser")) {
+      if (entryPoint.includes("storage/index")) {
+        expect(includesPath(inputs, "src/storage/client.ts")).toBe(true);
+      } else if (entryPoint.includes("nextjs-browser")) {
+        expect(includesPath(inputs, "src/client/auth-client.ts")).toBe(true);
         expect(includesPath(inputs, "src/adapters/nextjs-browser.ts")).toBe(true);
       } else {
+        expect(includesPath(inputs, "src/client/auth-client.ts")).toBe(true);
         expect(includesPath(inputs, "src/index.ts")).toBe(true);
       }
     }

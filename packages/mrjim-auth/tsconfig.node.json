@@ -12,6 +12,7 @@
     "src/adapters/express.ts",
     "src/adapters/nextjs-server.ts",
     "src/testing/index.ts",
+    "src/storage/s3.ts",
     "src/cli/index.ts"
   ]
 }

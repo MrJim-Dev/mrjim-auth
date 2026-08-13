@@ -1,13 +1,14 @@
 # mrjim-auth
 
-Project-owned authentication for Node.js and PostgreSQL, with a familiar
-Supabase-shaped client API. Each application runs its own auth server and keeps
+Project-owned authentication and object storage for Node.js and PostgreSQL,
+with a familiar Supabase-shaped client API. Each application runs its own auth server and keeps
 users, sessions, identities, roles, permissions, API keys, and audit events in
 its own PostgreSQL database.
 
 The package includes:
 
-- a browser-safe `createClient(...).auth` API;
+- browser-safe `createClient(...).auth` and `createClient(...).storage` APIs;
+- a server-only S3 adapter with logical bucket and prefix mappings;
 - a Node-only `createAdminClient(...).auth.admin` API;
 - a framework-neutral Fetch `AuthServer` plus Express and Next.js adapters;
 - forward-only migrations for a clean `auth` schema;
@@ -16,7 +17,7 @@ The package includes:
 - project-owned mail and rate-limit adapters.
 
 It has no Supabase runtime dependency and no mandatory paid or hosted service.
-PostgreSQL, signing keys, email delivery, deployment, and observability remain
+PostgreSQL, S3-compatible infrastructure, signing keys, email delivery, deployment, and observability remain
 under the installing project's control.
 
 ## Start here

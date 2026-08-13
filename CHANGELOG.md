@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add an immutable browser storage namespace with signed read, constrained
+  signed upload, and bounded delete operations.
+- Add a server-only AWS SDK v3 S3 adapter with logical bucket/prefix mappings,
+  checksum-bound presigned uploads, signed reads, and bounded deletion.
+- Keep AWS SDK and credentials outside browser entry points.
+
 All notable changes are recorded here. The project follows Semantic Versioning
 once `1.0.0` is released.
 

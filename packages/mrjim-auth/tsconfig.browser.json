@@ -8,6 +8,7 @@
   },
   "files": [
     "src/index.ts",
+    "src/storage/index.ts",
     "src/adapters/nextjs-browser.ts",
     "src/client/pkce.ts"
   ]

@@ -23,6 +23,7 @@ function optionSignature(options: ClientOptions | undefined): string {
     detectSessionInUrl: auth?.detectSessionInUrl,
     flowType: auth?.flowType,
     skipAutoInitialize: auth?.skipAutoInitialize,
+    storageUrl: options?.storage?.url,
     headers: headerEntries,
   });
 }
