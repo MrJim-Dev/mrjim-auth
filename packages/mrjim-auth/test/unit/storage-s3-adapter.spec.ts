@@ -2,7 +2,7 @@ import {
   DeleteObjectsCommand,
   GetObjectCommand,
   PutObjectCommand,
-  type S3Client,
+  S3Client,
 } from "@aws-sdk/client-s3";
 import { describe, expect, it } from "vitest";
 import { createS3StorageAdapter } from "../../src/storage/s3.js";
@@ -77,6 +77,35 @@ describe("S3 storage adapter", () => {
       ContentLength: 2048,
       ContentType: "image/webp",
     });
+  });
+
+  it("signs checksum and upload control headers in the default presigner", async () => {
+    const adapter = createS3StorageAdapter({
+      client: new S3Client({
+        region: "ap-southeast-1",
+        credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret" },
+      }),
+      buckets: { media: { bucket: "courtera-production-assets" } },
+    });
+
+    const result = await adapter.createSignedUploadUrl({
+      bucket: "media",
+      key: "health-check.txt",
+      expiresIn: 300,
+      contentType: "text/plain",
+      contentLength: 5,
+      checksumSha256: "qUiQTy8PR5uPgZdpSzAYSw0u0cHNKh7A+4XSmaGSpEc=",
+      cacheControl: "no-store",
+    });
+
+    const signedHeaders = new URL(result.signedUrl).searchParams.get("X-Amz-SignedHeaders") ?? "";
+    expect(signedHeaders.split(";")).toEqual([
+      "cache-control",
+      "content-length",
+      "content-type",
+      "host",
+      "x-amz-checksum-sha256",
+    ]);
   });
 
   it("deletes only resolved keys from one configured physical bucket", async () => {
