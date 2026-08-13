@@ -313,6 +313,8 @@ export interface OAuthServiceOptions {
   readonly encryptionKey: string | Uint8Array;
   readonly allowedRedirects: readonly string[];
   readonly defaultRedirect?: string;
+  /** Base URL hosting `/callback/{provider}` for provider redirects. */
+  readonly callbackBaseUrl?: string;
   readonly allowVerifiedEmailAutoLink?: boolean;
   /** Role keys assigned atomically whenever OAuth creates a user. */
   readonly defaultRoleKeys?: readonly string[];
@@ -766,6 +768,24 @@ function redirectWithCode(redirect: string, code: string): string {
   return url.toString();
 }
 
+function normalizeCallbackBaseUrl(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || safeStringTrim(value) === null || safeStringTrim(value) === "") {
+    throw new AuthConfigurationError("OAuth callback base URL is invalid");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new AuthConfigurationError("OAuth callback base URL is invalid");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:" || parsed.username !== "" || parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") {
+    throw new AuthConfigurationError("OAuth callback base URL is invalid");
+  }
+  const pathname = parsed.pathname.replace(/\/+$/u, "");
+  return `${parsed.origin}${pathname}`;
+}
+
 /**
  * Server-only Google/OIDC state, callback-code, and identity orchestration.
  *
@@ -782,6 +802,7 @@ export class OAuthService {
   private readonly encryptionKey: Buffer;
   private readonly allowedRedirects: readonly string[];
   private readonly defaultRedirect: string;
+  private readonly callbackBaseUrl: string | undefined;
   private readonly allowVerifiedEmailAutoLink: boolean;
   private readonly defaultRoleKeys: readonly string[];
   private readonly freshSessionMaxAgeSeconds: number;
@@ -798,6 +819,7 @@ export class OAuthService {
     const encryptionKey = oauthOption(source, "encryptionKey");
     const allowedRedirectsValue = oauthOption(source, "allowedRedirects");
     const defaultRedirectValue = oauthOption(source, "defaultRedirect");
+    const callbackBaseUrlValue = oauthOption(source, "callbackBaseUrl");
     const allowVerifiedEmailAutoLinkValue = oauthOption(source, "allowVerifiedEmailAutoLink");
     const defaultRoleKeysValue = oauthOption(source, "defaultRoleKeys");
     const freshSessionMaxAgeValue = oauthOption(source, "freshSessionMaxAgeSeconds");
@@ -892,6 +914,7 @@ export class OAuthService {
     this.encryptionKey = deriveEncryptionKey(encryptionKey as string | Uint8Array);
     this.allowedRedirects = captureBoundaryStringArray(allowed, "OAuth redirects", 1, 128);
     this.defaultRedirect = defaultRedirect;
+    this.callbackBaseUrl = normalizeCallbackBaseUrl(callbackBaseUrlValue);
     this.allowVerifiedEmailAutoLink = allowVerifiedEmailAutoLinkValue === true;
     this.defaultRoleKeys = captureBoundaryStringArray(defaultRoleKeys, "OAuth default roles", 0, 128);
     this.freshSessionMaxAgeSeconds = freshAge;
@@ -934,10 +957,11 @@ export class OAuthService {
       const state = randomOpaque();
       const nonce = generateProviderNonce();
       const expiresAt = new Date(now.getTime() + OAUTH_STATE_TTL_SECONDS * 1000);
+      const providerRedirect = this.providerCallbackRedirect(providerName, redirect);
       const url = await providerCall(async () => {
         const value = await provider.authorizationUrl({
           clientId: provider.clientId,
-          redirectUri: redirect,
+          redirectUri: providerRedirect,
           state,
           nonce,
           scopes: provider.scopes,
@@ -1043,7 +1067,7 @@ export class OAuthService {
           code: input.code,
           state: input.state,
           expectedState: input.state,
-          redirectUri: redirect,
+          redirectUri: this.providerCallbackRedirect(providerName, redirect),
           codeVerifier: payload.verifier,
           nonce: payload.nonce,
         })));
@@ -1312,6 +1336,11 @@ export class OAuthService {
     const candidate = value ?? this.defaultRedirect;
     if (!containsOAuthString(this.allowedRedirects, candidate)) throw new AuthApiError("redirect_not_allowed", 400, "Redirect URL is not allowed");
     return candidate;
+  }
+
+  private providerCallbackRedirect(provider: string, fallbackRedirect: string): string {
+    if (this.callbackBaseUrl === undefined) return fallbackRedirect;
+    return `${this.callbackBaseUrl}/callback/${provider}`;
   }
 
   private async authorizeSubject(subject: OAuthSubject): Promise<AuthResult<AuthenticatedSession>> {

@@ -156,6 +156,7 @@ type TestOAuthServiceOptions = {
   readonly allowVerifiedEmailAutoLink?: boolean;
   readonly defaultRoleKeys?: readonly string[];
   readonly allowedRedirects?: readonly string[];
+  readonly callbackBaseUrl?: string;
   readonly tokenHashKey?: string | Uint8Array;
   readonly encryptionKey?: string | Uint8Array;
 };
@@ -170,6 +171,7 @@ function createOAuthService(options: TestOAuthServiceOptions = {}): OAuthService
     tokenHashKey: options.tokenHashKey ?? TOKEN_HASH_KEY,
     encryptionKey: options.encryptionKey ?? ENCRYPTION_KEY,
     allowedRedirects: options.allowedRedirects ?? [CALLBACK, ALT_CALLBACK],
+    ...(options.callbackBaseUrl === undefined ? {} : { callbackBaseUrl: options.callbackBaseUrl }),
     allowVerifiedEmailAutoLink: options.allowVerifiedEmailAutoLink ?? false,
     defaultRoleKeys: options.defaultRoleKeys ?? [],
     clock: () => now,
@@ -362,6 +364,18 @@ describe("Task 7 OAuth and identity safety", () => {
     const discoveryResponse = providersRoute(service, new Request("https://project.example.com/providers"));
     expect(discoveryResponse.headers.get("cache-control")).toBe("no-store");
     expect(await discoveryResponse.json()).toMatchObject({ data: [{ name: "google" }], error: null });
+    let providerRedirect = "";
+    const callbackService = createOAuthService({
+      callbackBaseUrl: "https://api.example.com/auth/v1",
+      provider: deterministicProvider({
+        authorizationUrl: (input) => {
+          providerRedirect = input.redirectUri;
+          return "https://provider.example/authorize";
+        },
+      }),
+    });
+    await callbackService.authorize({ provider: "google", redirectTo: CALLBACK });
+    expect(providerRedirect).toBe("https://api.example.com/auth/v1/callback/google");
     expect(await service.authorize({ provider: "bad provider", redirectTo: CALLBACK })).toMatchObject({
       data: null,
       error: { code: "invalid_request" },

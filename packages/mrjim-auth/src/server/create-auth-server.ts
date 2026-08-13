@@ -471,6 +471,7 @@ function createDefaultServices(
     encryptionKey: options.secrets.encryptionKey,
     allowedRedirects,
     defaultRedirect,
+    callbackBaseUrl: options.baseUrl,
     ...(options.authorization?.defaultRoleKeys === undefined ? {} : { defaultRoleKeys: options.authorization.defaultRoleKeys }),
     clock,
   });
