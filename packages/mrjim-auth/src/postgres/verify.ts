@@ -2,7 +2,7 @@ import type { Pool, QueryResultRow } from "pg";
 import { queryRows, readSchemaCatalog } from "./internal/catalog.js";
 import { readMigrationStatuses } from "./internal/migration-state.js";
 import {
-  FORBIDDEN_AUTH_NAMES,
+  containsForbiddenAuthName,
   REQUIRED_COLUMNS,
   REQUIRED_CONSTRAINTS,
   REQUIRED_FUNCTIONS,
@@ -150,14 +150,12 @@ export async function verifySchema(pool: Pool): Promise<SchemaVerification> {
   }
 
   for (const object of catalog.objects) {
-    const normalizedName = object.object_name.toLowerCase();
-    if (FORBIDDEN_AUTH_NAMES.some((forbidden) => normalizedName.includes(forbidden))) {
+    if (containsForbiddenAuthName(object.object_name)) {
       errors.push(`forbidden auth ${object.object_type} name exists: ${object.object_name}`);
     }
   }
   for (const type of catalog.types) {
-    const normalizedName = type.type_name.toLowerCase();
-    if (FORBIDDEN_AUTH_NAMES.some((forbidden) => normalizedName.includes(forbidden))) {
+    if (containsForbiddenAuthName(type.type_name)) {
       errors.push(`forbidden auth type name exists: ${type.type_name}`);
     }
   }

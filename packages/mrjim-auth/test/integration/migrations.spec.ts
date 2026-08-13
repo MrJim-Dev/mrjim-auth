@@ -10,7 +10,7 @@ import { runCli } from "../../src/cli/runner.js";
 import { runDoctor } from "../../src/cli/commands/doctor.js";
 import { runMigrateCommand } from "../../src/cli/commands/migrate.js";
 import { MIGRATIONS } from "../../src/postgres/manifest.js";
-import { FORBIDDEN_AUTH_NAMES } from "../../src/postgres/internal/schema-contract.js";
+import { containsForbiddenAuthName } from "../../src/postgres/internal/schema-contract.js";
 import {
   migrate,
   migrationStatus,
@@ -551,9 +551,8 @@ describe("Task 3 PostgreSQL migrations", () => {
       ).toEqual(expectedColumns[table]);
     }
 
-    const forbiddenPattern = new RegExp(FORBIDDEN_AUTH_NAMES.join("|"), "i");
-    expect((await authObjectNames()).join(" ")).not.toMatch(forbiddenPattern);
-    expect(MIGRATIONS.map((migration) => migration.sql).join(" ")).not.toMatch(forbiddenPattern);
+    expect((await authObjectNames()).some(containsForbiddenAuthName)).toBe(false);
+    expect(MIGRATIONS.some((migration) => containsForbiddenAuthName(migration.sql))).toBe(false);
   });
 
   it("accepts dotted dynamic permission resources while preserving legacy resources", async () => {
@@ -1194,8 +1193,8 @@ describe("Task 3 PostgreSQL migrations", () => {
     );
     await pool.query(
       `INSERT INTO auth.schema_migrations (version, migration_order, checksum, package_version)
-       VALUES ('0004_unknown', 7, repeat('a', 64), $1)`,
-      [packageVersion],
+       VALUES ('0004_unknown', $1, repeat('a', 64), $2)`,
+      [MIGRATIONS.length + 1, packageVersion],
     );
 
     try {

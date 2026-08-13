@@ -9,7 +9,7 @@
   "scripts": {
     "build": "node scripts/build-package.mjs",
     "typecheck": "tsc -p packages/mrjim-auth/tsconfig.json --noEmit",
-    "test": "pnpm build && vitest run --exclude 'packages/mrjim-auth/test/browser/**/*.spec.ts' --exclude 'packages/mrjim-auth/test/contract/package-build.spec.ts' && vitest run packages/mrjim-auth/test/contract/package-build.spec.ts && playwright test",
+    "test": "pnpm build && vitest run --config vitest.config.ts --exclude 'packages/mrjim-auth/test/browser/**/*.spec.ts' --exclude 'packages/mrjim-auth/test/contract/package-build.spec.ts' && vitest run --config vitest.config.ts packages/mrjim-auth/test/contract/package-build.spec.ts && playwright test --config playwright.config.ts",
     "lint": "tsc -p packages/mrjim-auth/tsconfig.json --noEmit",
     "docs:check": "node scripts/check-docs.mjs",
     "release:check": "node scripts/release-check.mjs"

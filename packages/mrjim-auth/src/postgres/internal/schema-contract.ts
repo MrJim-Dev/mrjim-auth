@@ -45,6 +45,16 @@ export const FORBIDDEN_AUTH_NAMES = [
   "ayahay",
 ] as const;
 
+/**
+ * Checks forbidden project/domain names as identifier tokens. Substring
+ * matching would incorrectly reject legitimate names such as
+ * `is_supported_password_hash` because `supported` contains `port`.
+ */
+export function containsForbiddenAuthName(value: string): boolean {
+  const tokens = value.toLowerCase().split(/[^a-z0-9]+/u).filter(Boolean);
+  return FORBIDDEN_AUTH_NAMES.some((forbidden) => tokens.includes(forbidden));
+}
+
 /** Expected PostgreSQL column shape, including type, nullability, and critical defaults. */
 export interface ColumnContract {
   readonly columnName: string;
