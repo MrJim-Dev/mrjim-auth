@@ -145,7 +145,7 @@ describe("browser-safe public auth client", () => {
     const { fetcher } = createFetch([success({ user: null, session: null })]);
     const client = createTestClient(fetcher);
 
-    expect(Object.keys(client)).toEqual(["auth"]);
+    expect(Object.keys(client)).toEqual(["auth", "storage"]);
     expect(Object.isFrozen(client)).toBe(true);
     expect(Object.isFrozen(client.auth)).toBe(true);
     expect(Object.keys(client.auth).sort()).toEqual([

@@ -1,8 +1,8 @@
 # Client reference
 
 The root `mrjim-auth` entrypoint is the browser-safe, isomorphic client. It
-talks to the project's own auth HTTP endpoint; it does not connect to a
-database and it never accepts a server secret.
+talks to the project's own auth and storage HTTP endpoints; it does not connect
+to a database and it never accepts a server secret.
 
 ## `createClient`
 
@@ -49,7 +49,9 @@ createClient(
 in `/auth/v1`. `publishableKey` is sent as the `apikey` header and may be
 exposed to a browser. The optional `global.fetch` and `auth.storage` values
 are captured at construction. The returned client and its `auth` namespace
-are immutable.
+and `storage` namespaces are immutable. By default, an auth URL ending in
+`/auth/v1` maps storage calls to the sibling `/storage/v1` endpoint. Set
+`storage.url` when the storage API is hosted elsewhere.
 
 Malformed configuration or method input throws an
 `AuthConfigurationError`/`AuthProgrammingError`. Expected HTTP and auth
@@ -73,6 +75,10 @@ public contract.
 | `auth.skipAutoInitialize` | Skip initial storage/URL processing. | `false`. |
 | `global.fetch` | Fetch implementation for browser, SSR, tests, or a custom runtime. | `globalThis.fetch`. |
 | `global.headers` | Additional validated request headers. | `{}`. |
+| `storage.url` | Absolute storage API URL. | Sibling `/storage/v1` URL. |
+
+See the [storage reference](storage.md) for object operations and the
+server-only S3 adapter.
 
 The client never interprets `auth.getSession()` as authorization proof. It is a
 local storage read. Server-rendered code and APIs should use `auth.getUser()`

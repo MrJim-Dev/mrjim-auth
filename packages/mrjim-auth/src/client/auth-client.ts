@@ -36,6 +36,7 @@ import {
 } from "./boundary.js";
 import { generatePkcePair } from "./pkce.js";
 import { safeArrayIsArray, safeDefineData, safeStringSlice, safeStringTrim } from "../shared/safe-intrinsics.js";
+import type { StorageClient } from "../storage/client.js";
 
 const clientGlobal = globalThis as unknown as Record<string, unknown>;
 const clientPromiseResolve = Promise.resolve.bind(Promise);
@@ -258,7 +259,12 @@ export interface AuthNamespace {
 export interface MrJimAuthClient {
   /** Project-scoped authentication operations. */
   readonly auth: AuthNamespace;
+  /** Project-scoped object storage operations. */
+  readonly storage: StorageClient;
 }
+
+/** Internal auth-only client composed by the public project client. */
+export type MrJimAuthOnlyClient = Pick<MrJimAuthClient, "auth">;
 
 /** Fully validated client auth options after defaulting. */
 export interface ClientAuthOptions {
@@ -674,7 +680,7 @@ function currentUnixSeconds(): number {
   return clientMathFloor(clientDateNow() / 1000);
 }
 
-export function createAuthClient(baseUrl: string, publishableKey: string | undefined, options: unknown): MrJimAuthClient {
+export function createAuthClient(baseUrl: string, publishableKey: string | undefined, options: unknown): MrJimAuthOnlyClient {
   const snapshot = snapshotClientOptions(options);
   const debug = typeof snapshot.auth.debug === "function" ? snapshot.auth.debug : undefined;
   const transport: Transport = createTransport({ baseUrl, publishableKey, fetch: snapshot.global.fetch, headers: snapshot.global.headers, debug });

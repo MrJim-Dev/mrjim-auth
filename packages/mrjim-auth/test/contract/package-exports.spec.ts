@@ -28,10 +28,12 @@ const requiredExportKeys = [
   "./nextjs",
   "./nextjs/server",
   "./client/pkce",
+  "./storage",
+  "./storage/s3",
   "./testing",
 ] as const;
 
-const browserEntryFiles = ["dist/index.js", "dist/adapters/nextjs-browser.js", "dist/client/pkce.js"] as const;
+const browserEntryFiles = ["dist/index.js", "dist/adapters/nextjs-browser.js", "dist/client/pkce.js", "dist/storage/index.js"] as const;
 const migrationAssetFiles = [
   "dist/postgres/migrations/0001_core.sql",
   "dist/postgres/migrations/0002_authorization.sql",
@@ -143,7 +145,8 @@ describe("package export boundaries", () => {
       "publishable-key",
     );
     expect(Object.isFrozen(client)).toBe(true);
-    expect(Object.keys(client)).toEqual(["auth"]);
+    expect(Object.keys(client)).toEqual(["auth", "storage"]);
+    expect(Object.isFrozen(client.storage)).toBe(true);
     expect(Object.isFrozen(client.auth)).toBe(true);
     expect(Object.keys(client.auth).sort()).toEqual([
       "dispose",
@@ -311,6 +314,18 @@ describe("package export boundaries", () => {
     expect(Object.keys(await import("mrjim-auth/nextjs/server"))).toEqual(["createServerClient"]);
   });
 
+  it("exposes bounded browser and S3 storage entry points", async () => {
+    expect(Object.keys(await import("mrjim-auth/storage")).sort()).toEqual([
+      "StorageApiError",
+      "StorageError",
+      "StorageProgrammingError",
+      "createStorageClient",
+    ].sort());
+    expect(Object.keys(await import("mrjim-auth/storage/s3"))).toEqual([
+      "createS3StorageAdapter",
+    ]);
+  });
+
   it("keeps the canonical forbidden-name list in reviewable documentation", async () => {
     const guide = await readFile(resolve(packageRoot, "../../docs/guides/postgres-migrations.md"), "utf8");
     expect(guide).toContain(FORBIDDEN_AUTH_NAMES.join(", "));
@@ -325,7 +340,7 @@ describe("package export boundaries", () => {
   it("does not expose unfinished behavior from later-task subpaths", async () => {
     for (const exportKey of requiredExportKeys
       .slice(1)
-      .filter((key) => key !== "./postgres" && key !== "./server" && key !== "./express" && key !== "./nextjs" && key !== "./nextjs/server" && key !== "./client/pkce" && key !== "./testing")) {
+      .filter((key) => key !== "./postgres" && key !== "./server" && key !== "./express" && key !== "./nextjs" && key !== "./nextjs/server" && key !== "./client/pkce" && key !== "./storage" && key !== "./storage/s3" && key !== "./testing")) {
       expect(Object.keys(await import(packageSpecifier(exportKey)))).toEqual([]);
     }
   });

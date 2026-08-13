@@ -141,6 +141,11 @@ export const clientOptionsSchema = z.object({
       headers: z.record(z.string(), z.string()).optional(),
     })
     .optional(),
+  storage: z
+    .object({
+      url: z.string().url().optional(),
+    })
+    .optional(),
 });
 
 /**

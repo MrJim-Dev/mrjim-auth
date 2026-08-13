@@ -8,6 +8,7 @@ const requiredDocuments = [
   "docs/concepts/architecture.md",
   "docs/concepts/sessions.md",
   "docs/reference/client.md",
+  "docs/reference/storage.md",
   "docs/reference/server.md",
   "docs/reference/schema.md",
   "docs/guides/email-password.md",

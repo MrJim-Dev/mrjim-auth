@@ -87,12 +87,13 @@ describe("Next.js browser and SSR adapter contracts", () => {
     expect(() => createBrowserClient("https://other.example.test/auth/v1", KEY, { global: { fetch }, auth: { storageKey: "conflict-contract", persistSession: false } })).toThrow(/storage key/i);
     expect(() => createBrowserClient(AUTH_URL, "other-key", { global: { fetch }, auth: { storageKey: "conflict-contract", persistSession: false } })).toThrow(/storage key/i);
     expect(() => createBrowserClient(AUTH_URL, KEY, { global: { fetch }, auth: { storageKey: "conflict-contract", persistSession: true } })).toThrow(/storage key/i);
+    expect(() => createBrowserClient(AUTH_URL, KEY, { global: { fetch }, auth: { storageKey: "conflict-contract", persistSession: false }, storage: { url: "https://other.example.test/storage/v1" } })).toThrow(/storage key/i);
   });
 
   it("exposes only browser-safe client behavior from the browser helper", () => {
     const fetch = async () => response({ user: null, session: null });
     const client = createBrowserClient(AUTH_URL, KEY, { global: { fetch }, auth: { storageKey: "export-contract" } });
-    expect(Object.keys(client)).toEqual(["auth"]);
+    expect(Object.keys(client)).toEqual(["auth", "storage"]);
     expect(client).not.toHaveProperty("admin");
     expect(client).not.toHaveProperty("database");
     expect(client).not.toHaveProperty("server");

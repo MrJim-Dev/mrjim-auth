@@ -108,7 +108,10 @@ and has no bearer header. Keep the secret out of all user-controlled code.
 | --- | --- | --- |
 | `from` query builder | Unsupported in v1 | `mrjim-auth` is an auth SDK; it does not expose a general database query builder. |
 | `rpc` | Unsupported in v1 | Database procedures remain the project's own backend concern. |
-| `storage` | Unsupported in v1 | Object/file storage is outside the auth package. |
+| `storage.from(bucket).createSignedUrl` | Compatible | Requests an authorized, time-bounded private object URL from the project storage API. |
+| `storage.from(bucket).createSignedUploadUrl` | Different | Requires content type, content length, and a base64 SHA-256 checksum; returns every header that must be sent to S3. |
+| `storage.from(bucket).remove` | Compatible | Deletes one bounded list of validated object keys after project authorization. |
+| General bucket administration | Unsupported in v1 | Bucket creation, policy editing, and arbitrary provider administration remain server-owned infrastructure concerns. |
 | `realtime` | Unsupported in v1 | No hosted or self-hosted realtime client is bundled. |
 | Phone auth | Unsupported in v1 | Phone fields are represented in the schema, but phone sign-in/OTP routes are not implemented. |
 | MFA | Unsupported in v1 | `aal` is stored for session compatibility, but MFA enrollment/challenge APIs are absent. |
@@ -116,7 +119,7 @@ and has no bearer header. Keep the secret out of all user-controlled code.
 | SAML | Unsupported in v1 | v1 supports Google and generic OIDC authorization-code PKCE providers only. |
 
 The package also does not claim Supabase's managed dashboard, hosted email,
-managed database, storage, realtime, or billing features. It can be deployed
+managed database, hosted storage, realtime, or billing features. It can be deployed
 with free/self-hosted project infrastructure and has no paid or hosted
 dependency requirement.
 

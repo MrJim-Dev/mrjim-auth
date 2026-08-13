@@ -36,7 +36,7 @@ This is not a hosted identity service. Installing projects do not call a central
 
 ## 3. Non-goals for v1
 
-- Database querying, realtime, storage, and edge-function APIs similar to the rest of `supabase-js`.
+- General database querying, realtime, and edge-function APIs similar to the rest of `supabase-js`; object storage is limited to the separately documented project-owned client and provider adapter.
 - A shared cross-project identity database or automatic SSO between projects.
 - SMS/WhatsApp authentication.
 - SAML, SCIM, enterprise directory sync, passkeys, or TOTP MFA.
@@ -571,7 +571,7 @@ The compatibility target is familiarity and a low-effort migration path, not byt
 
 - Method names, argument shapes, `{ data, error }` results, session events, and common options match Supabase where practical.
 - MrJim-specific functionality lives under `auth.admin` or explicit server helpers.
-- The package never implements unrelated `from`, `rpc`, storage, or realtime namespaces.
+- The package never implements unrelated `from`, `rpc`, or realtime namespaces. Its storage namespace is constrained to project-authorized object operations.
 - Differences in cookies, refresh-token policy, unsupported providers, error codes, and database schema are documented.
 - A compatibility test suite locks the supported surface and prevents accidental drift.
 
