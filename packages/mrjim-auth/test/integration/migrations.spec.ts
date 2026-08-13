@@ -1356,7 +1356,6 @@ describe("Task 3 PostgreSQL migrations", () => {
         join(consumerRoot, "package.json"),
         JSON.stringify({ name: "mrjim-auth-consumer", private: true, type: "module" }, null, 2),
       );
-      await runCommand("pnpm", ["build"], { cwd: workspaceRoot });
       const packResult = await runCommandResult(
         "pnpm",
         ["--filter", "mrjim-auth", "pack", "--pack-destination", consumerRoot],
