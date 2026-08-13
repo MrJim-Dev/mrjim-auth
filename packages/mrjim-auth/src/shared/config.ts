@@ -416,6 +416,7 @@ export const authServerOptionsSchema = z
     rateLimiter: rateLimiterSchema.optional(),
     oauth: z
       .object({
+        facebook: oauthClientSchema.optional(),
         google: oauthClientSchema.optional(),
         oidc: oidcClientSchema.optional(),
       })

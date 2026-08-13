@@ -66,6 +66,7 @@ export {
   type OAuthSubject,
 } from "./oauth.js";
 export {
+  FacebookOAuthProvider,
   GenericOidcProvider,
   GoogleOAuthProvider,
   OAuthProviderError,

@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import {
   authorizationCodeGrant,
   buildAuthorizationUrl,
@@ -113,6 +114,20 @@ function captureGoogleOptions(value: unknown): { readonly clientId: unknown; rea
   return {
     clientId: requiredBoundaryOption(source, "clientId", "Google client ID"),
     clientSecret: requiredBoundaryOption(source, "clientSecret", "Google client secret"),
+  };
+}
+
+function captureFacebookOptions(value: unknown): { readonly clientId: unknown; readonly clientSecret: unknown; readonly customFetch?: unknown } {
+  if (value === null || typeof value !== "object") {
+    throw new TypeError("Facebook provider options are incomplete");
+  }
+  const source = value as object;
+  assertBoundaryObject(source, "Facebook provider options");
+  const customFetch = optionalBoundaryOption(source, "customFetch", "Facebook custom fetch");
+  return {
+    clientId: requiredBoundaryOption(source, "clientId", "Facebook client ID"),
+    clientSecret: requiredBoundaryOption(source, "clientSecret", "Facebook client secret"),
+    ...(customFetch === undefined ? {} : { customFetch }),
   };
 }
 
@@ -325,6 +340,112 @@ export class GoogleOAuthProvider extends OidcOAuthProvider {
       issuer: "https://accounts.google.com",
       scopes: ["openid", "email", "profile"],
     });
+  }
+}
+
+/** Facebook Login adapter using the authorization-code flow and Graph API. */
+export class FacebookOAuthProvider implements OAuthProvider {
+  readonly name = "facebook";
+  readonly issuer = "https://www.facebook.com";
+  readonly scopes = ["email", "public_profile"] as const;
+  readonly capabilities: OAuthProviderCapabilities = {
+    authorization_code: true,
+    pkce: true,
+    identity_linking: true,
+  };
+
+  readonly clientId: string;
+  private readonly clientSecret: string;
+  private readonly providerFetch: typeof fetch;
+
+  constructor(options: { readonly clientId: string; readonly clientSecret: string; readonly customFetch?: typeof fetch }) {
+    const captured = captureFacebookOptions(options);
+    this.clientId = validString(captured.clientId, "Facebook client ID");
+    this.clientSecret = validString(captured.clientSecret, "Facebook client secret");
+    this.providerFetch = captured.customFetch === undefined
+      ? fetch
+      : captureBoundaryFunction(captured.customFetch, "Facebook custom fetch") as typeof fetch;
+  }
+
+  async authorizationUrl(input: OAuthProviderAuthorizationInput): Promise<string> {
+    try {
+      if (input.codeChallengeMethod !== "S256") throw new OAuthProviderError("Invalid PKCE method");
+      const url = new URL("https://www.facebook.com/dialog/oauth");
+      url.searchParams.set("client_id", input.clientId);
+      url.searchParams.set("redirect_uri", input.redirectUri);
+      url.searchParams.set("state", input.state);
+      url.searchParams.set("response_type", "code");
+      url.searchParams.set("scope", input.scopes.join(","));
+      url.searchParams.set("code_challenge", input.codeChallenge);
+      url.searchParams.set("code_challenge_method", "S256");
+      return url.toString();
+    } catch (error) {
+      if (error instanceof OAuthProviderError) throw error;
+      throw new OAuthProviderError();
+    }
+  }
+
+  async exchange(input: OAuthProviderExchangeInput): Promise<OAuthProviderProfile> {
+    try {
+      if (!/^[A-Za-z0-9._~-]{43,128}$/.test(input.codeVerifier)) {
+        throw new OAuthProviderError("Invalid PKCE verifier");
+      }
+      const tokenUrl = new URL("https://graph.facebook.com/oauth/access_token");
+      tokenUrl.searchParams.set("client_id", this.clientId);
+      tokenUrl.searchParams.set("client_secret", this.clientSecret);
+      tokenUrl.searchParams.set("redirect_uri", input.redirectUri);
+      tokenUrl.searchParams.set("code", input.code);
+      tokenUrl.searchParams.set("code_verifier", input.codeVerifier);
+      const tokenResponse = await this.providerFetch(tokenUrl, { method: "GET", headers: { accept: "application/json" } });
+      const tokenPayload: unknown = await tokenResponse.json();
+      if (!tokenResponse.ok || tokenPayload === null || typeof tokenPayload !== "object" || Array.isArray(tokenPayload)) {
+        throw new OAuthProviderError("Facebook token exchange failed");
+      }
+      const accessToken = (tokenPayload as Record<string, unknown>).access_token;
+      if (typeof accessToken !== "string" || accessToken.length < 1 || accessToken.length > 4096) {
+        throw new OAuthProviderError("Facebook access token is malformed");
+      }
+
+      const appSecretProof = createHmac("sha256", this.clientSecret).update(accessToken, "utf8").digest("hex");
+      const profileUrl = new URL("https://graph.facebook.com/me");
+      profileUrl.searchParams.set("fields", "id,name,email,picture");
+      profileUrl.searchParams.set("access_token", accessToken);
+      profileUrl.searchParams.set("appsecret_proof", appSecretProof);
+      const profileResponse = await this.providerFetch(profileUrl, { method: "GET", headers: { accept: "application/json" } });
+      const profilePayload: unknown = await profileResponse.json();
+      if (!profileResponse.ok || profilePayload === null || typeof profilePayload !== "object" || Array.isArray(profilePayload)) {
+        throw new OAuthProviderError("Facebook profile request failed");
+      }
+      const profile = profilePayload as Record<string, unknown>;
+      const subject = profile.id;
+      if (typeof subject !== "string" || subject.trim() === "") throw new OAuthProviderError("Facebook subject is missing");
+      const email = typeof profile.email === "string" && profile.email.trim() !== "" ? profile.email : null;
+      const pictureData = profile.picture;
+      const picture = pictureData !== null && typeof pictureData === "object" && !Array.isArray(pictureData)
+        ? (pictureData as Record<string, unknown>).data
+        : undefined;
+      const pictureUrl = picture !== null && typeof picture === "object" && !Array.isArray(picture)
+        ? (picture as Record<string, unknown>).url
+        : undefined;
+      const emailVerified = profile.email_verified === true || profile.verified === true;
+      return {
+        provider: this.name,
+        subject,
+        issuer: this.issuer,
+        email,
+        emailVerified,
+        claims: sanitizeIdentityData({
+          sub: subject,
+          email: email ?? undefined,
+          email_verified: email === null ? undefined : emailVerified,
+          name: typeof profile.name === "string" ? profile.name : undefined,
+          picture: typeof pictureUrl === "string" ? pictureUrl : undefined,
+        }),
+      };
+    } catch (error) {
+      if (error instanceof OAuthProviderError) throw error;
+      throw new OAuthProviderError("Facebook validation failed");
+    }
   }
 }
 

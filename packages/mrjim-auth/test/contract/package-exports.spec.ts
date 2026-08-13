@@ -259,6 +259,7 @@ describe("package export boundaries", () => {
       "AuthorizationService",
       "ES256_ALGORITHM",
       "EmailService",
+      "FacebookOAuthProvider",
       "GenericOidcProvider",
       "GoogleOAuthProvider",
       "InMemoryRateLimiter",

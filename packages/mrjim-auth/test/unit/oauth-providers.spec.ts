@@ -6,6 +6,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import type { CustomFetch } from "openid-client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  FacebookOAuthProvider,
   GoogleOAuthProvider,
   OAuthProviderError,
   OidcOAuthProvider,
@@ -304,6 +305,56 @@ describe("OAuth provider adapters with a local HTTPS OIDC server", () => {
     })).toThrow(/HTTPS/i);
     const google = new GoogleOAuthProvider({ clientId: "google-client", clientSecret: "google-secret" });
     expect(google.scopes).toEqual(["openid", "email", "profile"]);
+  });
+
+  it("builds a Facebook authorization URL and validates the Graph profile", async () => {
+    const calls: string[] = [];
+    const facebook = new FacebookOAuthProvider({
+      clientId: "facebook-client",
+      clientSecret: "facebook-secret",
+      customFetch: async (input) => {
+        const url = new URL(String(input));
+        calls.push(url.pathname);
+        if (url.pathname.endsWith("/oauth/access_token")) {
+          return new Response(JSON.stringify({ access_token: "facebook-access-token" }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          id: "facebook-subject",
+          name: "Facebook User",
+          email: "facebook@example.com",
+          picture: { data: { url: "https://example.com/avatar.png" } },
+        }), { status: 200 });
+      },
+    });
+    const authorization = await facebook.authorizationUrl({
+      clientId: facebook.clientId,
+      redirectUri: CALLBACK,
+      state: "facebook-state",
+      nonce: "facebook-nonce",
+      scopes: facebook.scopes,
+      codeChallenge: "challenge-value",
+      codeChallengeMethod: "S256",
+    });
+    const authorizationUrl = new URL(authorization);
+    expect(authorizationUrl.hostname).toBe("www.facebook.com");
+    expect(authorizationUrl.searchParams.get("state")).toBe("facebook-state");
+    expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    const profile = await facebook.exchange({
+      code: "facebook-code",
+      state: "facebook-state",
+      expectedState: "facebook-state",
+      redirectUri: CALLBACK,
+      codeVerifier: VERIFIER,
+      nonce: "facebook-nonce",
+    });
+    expect(profile).toMatchObject({
+      provider: "facebook",
+      subject: "facebook-subject",
+      issuer: "https://www.facebook.com",
+      email: "facebook@example.com",
+    });
+    expect(profile.claims).toMatchObject({ sub: "facebook-subject", name: "Facebook User" });
+    expect(calls).toEqual(["/oauth/access_token", "/me"]);
   });
 
   it("rejects a custom-fetch accessor without invoking it", () => {

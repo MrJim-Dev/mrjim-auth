@@ -21,7 +21,7 @@ import {
 import { EmailService } from "./email.js";
 import { OneTimeTokenService } from "./one-time-tokens.js";
 import { OAuthService } from "./oauth.js";
-import { GoogleOAuthProvider, OidcOAuthProvider, type OAuthProvider } from "./oauth-providers.js";
+import { FacebookOAuthProvider, GoogleOAuthProvider, OidcOAuthProvider, type OAuthProvider } from "./oauth-providers.js";
 import { PasswordService } from "./passwords.js";
 import { SessionService } from "./sessions.js";
 import { TokenService } from "./tokens.js";
@@ -292,6 +292,8 @@ function snapshotOAuth(value: unknown): Record<string, unknown> {
   const copy = configObjectCreate(null) as Record<string, unknown>;
   const google = configMember(value, "google", "oauth.google", false);
   if (google !== undefined) configObjectDefineProperty(copy, "google", { configurable: false, enumerable: true, writable: false, value: snapshotOAuthClient(google, "oauth.google", false) });
+  const facebook = configMember(value, "facebook", "oauth.facebook", false);
+  if (facebook !== undefined) configObjectDefineProperty(copy, "facebook", { configurable: false, enumerable: true, writable: false, value: snapshotOAuthClient(facebook, "oauth.facebook", false) });
   const oidc = configMember(value, "oidc", "oauth.oidc", false);
   if (oidc !== undefined) configObjectDefineProperty(copy, "oidc", { configurable: false, enumerable: true, writable: false, value: snapshotOAuthClient(oidc, "oauth.oidc", true) });
   return configObjectFreeze(copy);
@@ -387,6 +389,12 @@ function createProviders(options: AuthServerOptions): readonly OAuthProvider[] {
   const configured = options.oauth;
   if (configured === undefined) return [];
   const providers: OAuthProvider[] = [];
+  if (configured.facebook !== undefined) {
+    defineBoundaryArrayValue(providers, providers.length, new FacebookOAuthProvider({
+      clientId: configured.facebook.clientId,
+      clientSecret: secretString(configured.facebook.clientSecret),
+    }), "OAuth providers");
+  }
   if (configured.google !== undefined) {
     defineBoundaryArrayValue(providers, providers.length, new GoogleOAuthProvider({
       clientId: configured.google.clientId,
