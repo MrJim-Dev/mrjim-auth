@@ -51,7 +51,7 @@ run("pnpm", ["--filter", "nextjs-app-router", "typecheck"]);
 run("pnpm", ["--filter", "nextjs-app-router", "test"]);
 run("pnpm", ["--filter", "nextjs-app-router", "build"]);
 
-const packed = JSON.parse(capture("pnpm", ["--filter", "mrjim-auth", "pack", "--dry-run", "--json"]));
+const packed = JSON.parse(capture("pnpm", ["--config.ignore-scripts=true", "--filter", "mrjim-auth", "pack", "--dry-run", "--json"]));
 const files = new Set(packed.files.map((entry) => entry.path));
 const required = [
   "README.md",
