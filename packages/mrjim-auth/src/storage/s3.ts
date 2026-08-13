@@ -148,9 +148,20 @@ export function createS3StorageAdapter(options: S3StorageAdapterOptions): S3Stor
     throw new TypeError("S3 storage adapter options are malformed");
   }
   const mappings = validateMappings(options.buckets);
-  const signer = options.sign ?? (async (client, command, signOptions) => (
-    await getSignedUrl(client, command as GetObjectCommand | PutObjectCommand, signOptions)
-  ));
+  const signer = options.sign ?? (async (client, command, signOptions) => {
+    const uploadSigningOptions = command instanceof PutObjectCommand
+      ? {
+          ...signOptions,
+          signableHeaders: new Set(["cache-control", "content-length", "content-type"]),
+          unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
+        }
+      : signOptions;
+    return await getSignedUrl(
+      client,
+      command as GetObjectCommand | PutObjectCommand,
+      uploadSigningOptions,
+    );
+  });
 
   const createSignedReadUrl = async (input: SignedReadInput): Promise<string> => {
     const mapping = resolveBucket(mappings, input.bucket);
