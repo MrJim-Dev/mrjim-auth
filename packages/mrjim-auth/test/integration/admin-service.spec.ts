@@ -14,7 +14,7 @@ function repository(overrides: Partial<AuthRepository> = {}): AuthRepository {
     async transaction<T>(callback: (repository: AuthRepository) => Promise<T>) { return callback(base as AuthRepository); },
     users: {
       findById: async () => null, findByIdForUpdate: async () => null,
-      findByNormalizedEmail: async () => null, findByNormalizedEmailForUpdate: async () => null,
+      findByNormalizedEmail: async () => null, findByNormalizedEmailForUpdate: async () => null, findByNormalizedPhoneForUpdate: async () => null,
       create: async () => { throw new Error("unused"); }, createWithId: async () => { throw new Error("unused"); }, createIfAvailable: async () => null,
       update: async () => { throw new Error("unused"); }, softDelete: async () => undefined,
     },

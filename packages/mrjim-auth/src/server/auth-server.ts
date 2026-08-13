@@ -8,7 +8,7 @@ import {
 } from "../shared/errors.js";
 import type { AuthRepository, Mailer, RateLimiter } from "../shared/contracts.js";
 import type { AuthServerOptions } from "../shared/config.js";
-import { uuidSchema, type Session, type User } from "../shared/types.js";
+import { sanitizeRedactedMetadata, uuidSchema, type Session, type User } from "../shared/types.js";
 import { createAuthorizationRequestContext, type AuthorizationRequestContext, type AuthorizationRequirement, type AuthorizationSubject } from "./authorization.js";
 import type { AuthenticatedSession } from "./sessions.js";
 import type { AccessTokenClaims } from "./tokens.js";
@@ -926,6 +926,8 @@ export class AuthServer {
   /** Handles one framework-neutral Web Request without hidden network work. */
   async handle(request: Request): Promise<Response> {
     let meta: RequestMeta | null = null;
+    let contract: RouteContract | undefined;
+    let auth: RouteAuthContext | undefined;
     try {
       meta = this.snapshotRequest(request);
       if (meta === null) return this.errorResponse(null, "invalid_request", 400);
@@ -934,14 +936,14 @@ export class AuthServer {
       const routed = exactPath(meta.url.pathname, this.basePath);
       if (meta.method === "OPTIONS") return this.preflight(meta, routed);
       if (routed === null) return this.errorResponse(meta, "not_found", 404);
-      const contract = routeContract(routed.path, meta.method);
+      contract = routeContract(routed.path, meta.method);
       if (contract === undefined) {
         if (routeContract(routed.path) !== undefined) return this.errorResponse(meta, "invalid_request", 405);
         return this.errorResponse(meta, "not_found", 404);
       }
       const query = this.queryFor(meta.url, contract);
+      auth = await this.authenticate(meta, contract, query);
       const body = await this.parseRequestBody(meta, contract, query);
-      const auth = await this.authenticate(meta, contract, query);
       const context: RouteContext = {
         request: meta.request,
         requestId: meta.requestId,
@@ -969,6 +971,9 @@ export class AuthServer {
       return this.outputResponse(meta, output);
     } catch (error) {
       const safe = safeError(error);
+      if (contract?.security === "admin_import" && (auth !== undefined || safe.code === "internal_error") && (safe.code === "invalid_request" || safe.code === "internal_error")) {
+        await this.appendImportFailureAudit(safe.code === "invalid_request" ? "admin_import_invalid_request" : "admin_import_failed", meta?.requestId, auth?.key.id, auth?.authorizationSubject?.user_id);
+      }
       return this.errorResponse(meta, safe.code, safe.status);
     }
   }
@@ -1252,17 +1257,25 @@ export class AuthServer {
     if (contract?.security === "signed") return undefined;
     const now = new Date();
     if (meta.apiKey.state !== "valid") {
+      if (contract?.security === "admin_import") await this.appendImportFailureAudit("admin_authentication_denied", meta.requestId);
       throw new AuthApiError("unauthorized", 401, "API key is required", meta.requestId);
     }
     const rawApiKey = meta.apiKey.value;
     if (runtimeStringTrim(rawApiKey) !== rawApiKey || rawApiKey.length < 8 || rawApiKey.length > 512) {
+      if (contract?.security === "admin_import") await this.appendImportFailureAudit("admin_authentication_denied", meta.requestId);
       throw new AuthApiError("unauthorized", 401, "API key is required", meta.requestId);
     }
     const expectedHash = nativeUint8ArrayFrom(createHmac("sha256", this.apiKeyHashKey).update(`apikey\0${rawApiKey}`, "utf8").digest());
     const record = await invokeUntrusted<unknown>(() => this.repository.operations.findApiKeyByHash(expectedHash, { now }));
     const key = safeApiKey(record, expectedHash, now);
-    if (key === null) throw new AuthApiError("unauthorized", 401, "Invalid API key", meta.requestId);
-    if (key.kind === "secret" && (meta.origin !== null || meta.browserMarked)) throw new AuthApiError("forbidden", 403, "Secret API keys are not accepted from browser origins", meta.requestId);
+    if (key === null) {
+      if (contract?.security === "admin_import") await this.appendImportFailureAudit("admin_authentication_denied", meta.requestId);
+      throw new AuthApiError("unauthorized", 401, "Invalid API key", meta.requestId);
+    }
+    if (key.kind === "secret" && (meta.origin !== null || meta.browserMarked)) {
+      if (contract?.security === "admin_import") await this.appendImportFailureAudit("admin_permission_denied", meta.requestId, key.id);
+      throw new AuthApiError("forbidden", 403, "Secret API keys are not accepted from browser origins", meta.requestId);
+    }
     try {
       const lastUse = this.repository.admin?.touchApiKeyLastUsed(key.id as never, now);
       if (lastUse !== undefined) drainNativePromise(lastUse);
@@ -1272,12 +1285,19 @@ export class AuthServer {
 
     let bearer: string | null = null;
     if (meta.authorization.state === "valid") {
-      if (!isValidBearer(meta.authorization.value)) throw new AuthApiError("invalid_request", 400, "Invalid bearer authorization", meta.requestId);
+      if (!isValidBearer(meta.authorization.value)) {
+        if (contract?.security === "admin_import") await this.appendImportFailureAudit("admin_permission_denied", meta.requestId, key.id);
+        throw new AuthApiError("invalid_request", 400, "Invalid bearer authorization", meta.requestId);
+      }
       bearer = runtimeStringSlice(meta.authorization.value, "Bearer ".length);
+    }
+    if (contract?.security === "admin_import" && (key.kind !== "secret" || bearer !== null)) {
+      await this.appendImportFailureAudit("admin_permission_denied", meta.requestId, key.id);
+      throw new AuthApiError("forbidden", 403, "Stable user import requires a non-interactive secret API key", meta.requestId);
     }
     const requiresBearer = forceBearer || contract?.security === "user" || (contract?.security === "admin" && key.kind !== "secret") || (contract?.path === "/authorize" && invoke<string | null>(searchParamsGet, query, ["flow"]) === "link_identity");
     if (requiresBearer && bearer === null) throw new AuthApiError("unauthorized", 401, "Authenticated session is required", meta.requestId);
-    if (!requiresBearer && bearer !== null && contract?.security !== "admin" && contract?.path !== "/logout" && contract?.path !== "/authorize") throw new AuthApiError("invalid_request", 400, "Conflicting credentials", meta.requestId);
+    if (!requiresBearer && bearer !== null && contract?.security !== "admin" && contract?.security !== "admin_import" && contract?.path !== "/logout" && contract?.path !== "/authorize") throw new AuthApiError("invalid_request", 400, "Conflicting credentials", meta.requestId);
     if (bearer === null) return { key };
     const authenticated = await this.authenticateBearer(bearer, meta.requestId);
     return {
@@ -1290,6 +1310,26 @@ export class AuthServer {
         return authorizationContext === null ? {} : { authorizationContext };
       })(),
     };
+  }
+
+  private async appendImportFailureAudit(event: string, requestId?: string, keyId?: string, userId?: string): Promise<void> {
+    const now = new Date();
+    try {
+      await this.repository.transaction(async (repository) => {
+        await repository.operations.appendAudit({
+          ...(keyId === undefined ? {} : { actor_key_id: keyId as never }),
+          ...(userId === undefined ? {} : { actor_user_id: userId as never }),
+          action: "admin.user.imported",
+          target_type: "user",
+          target_id: null,
+          metadata: sanitizeRedactedMetadata({ event, ...(requestId === undefined ? {} : { request_id: requestId }) }),
+          outcome: "failure",
+          occurred_at: now,
+        }, { now });
+      });
+    } catch {
+      // Authentication failures remain safe and deterministic when audit storage is unavailable.
+    }
   }
 
   private async authenticateBearer(bearer: string, requestId: string): Promise<AuthenticatedSession> {

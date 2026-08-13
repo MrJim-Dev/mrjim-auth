@@ -227,16 +227,24 @@
       },
       "Request_adminImportUser": {
         "additionalProperties": false,
+        "description": "Import-only user creation. Requires a secret API key carrying the literal auth.users.import scope. The supplied UUID is preserved; equivalent retries are idempotent, conflicts return 409, and detectable credential/session material is rejected. Callers must not send secrets or sessions.",
         "properties": {
           "app_metadata": {
             "additionalProperties": {
               "$ref": "#/components/schemas/Request_adminImportUser___schema0"
             },
+            "description": "Bounded JSON metadata up to 16 KiB; detectable reserved credential-bearing keys and values are rejected recursively. Callers must not send secrets or sessions.",
             "propertyNames": {
               "maxLength": 128,
               "type": "string"
             },
-            "type": "object"
+            "type": "object",
+            "x-mrjim-maxBytes": 16384,
+            "x-mrjim-maxDepth": 8,
+            "x-mrjim-maxKeyLength": 128,
+            "x-mrjim-maxKeys": 100,
+            "x-mrjim-maxStringLength": 4096,
+            "x-mrjim-reservedKeyRule": "Rejects detectable password, password_hash, access/refresh tokens, sessions, OAuth/client secrets, private keys, and other sensitive key segments at every depth; detectable credential-bearing values are also rejected."
           },
           "banned_until": {
             "anyOf": [
@@ -331,11 +339,18 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/Request_adminImportUser___schema0"
             },
+            "description": "Bounded JSON metadata up to 16 KiB; detectable reserved credential-bearing keys and values are rejected recursively. Callers must not send secrets or sessions.",
             "propertyNames": {
               "maxLength": 128,
               "type": "string"
             },
-            "type": "object"
+            "type": "object",
+            "x-mrjim-maxBytes": 16384,
+            "x-mrjim-maxDepth": 8,
+            "x-mrjim-maxKeyLength": 128,
+            "x-mrjim-maxKeys": 100,
+            "x-mrjim-maxStringLength": 4096,
+            "x-mrjim-reservedKeyRule": "Rejects detectable password, password_hash, access/refresh tokens, sessions, OAuth/client secrets, private keys, and other sensitive key segments at every depth; detectable credential-bearing values are also rejected."
           }
         },
         "required": [
@@ -8077,7 +8092,7 @@
     },
     "/admin/users/import": {
       "post": {
-        "description": "Authentication operation adminImportUser.",
+        "description": "Import one user with a preserved UUID. Requires a non-interactive secret API key with the literal auth.users.import scope; publishable keys, bearer sessions, wildcard scopes, and detectable reserved credential material are rejected. Callers must not send secrets or sessions.",
         "operationId": "adminImportUser",
         "parameters": [],
         "requestBody": {
@@ -8212,10 +8227,6 @@
         "security": [
           {
             "secretKey": []
-          },
-          {
-            "bearerAuth": [],
-            "publishableKey": []
           }
         ],
         "summary": "adminImportUser",

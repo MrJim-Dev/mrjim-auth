@@ -15,10 +15,12 @@ import {
   permissionKeySchema,
   roleKeySchema,
   sanitizeRedactedMetadata,
+  isSafeImportMetadata,
   uuidSchema,
   type AuthorizationScope,
   type Permission,
   type Role,
+  type User,
   type UUID,
 } from "../shared/types.js";
 import { normalizeAndValidateEmail, normalizeEmailParts } from "./email.js";
@@ -53,42 +55,6 @@ const IMPORT_USER_FIELDS = new Set([
   "id", "email", "phone", "email_confirmed_at", "phone_confirmed_at", "confirmed_at",
   "last_sign_in_at", "banned_until", "user_metadata", "app_metadata",
 ]);
-const IMPORT_METADATA_MAX_DEPTH = 8;
-const IMPORT_METADATA_MAX_KEYS = 100;
-const IMPORT_METADATA_MAX_STRING_LENGTH = 4096;
-const IMPORT_METADATA_MAX_BYTES = 16_384;
-
-function boundedImportJsonValue(value: unknown, depth: number, seen: Set<object>): boolean {
-  if (value === null || typeof value === "boolean") return true;
-  if (typeof value === "string") return value.length <= IMPORT_METADATA_MAX_STRING_LENGTH;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value !== "object" || depth >= IMPORT_METADATA_MAX_DEPTH || seen.has(value)) return false;
-  seen.add(value);
-  try {
-    if (Array.isArray(value)) {
-      if (value.length > IMPORT_METADATA_MAX_KEYS) return false;
-      return value.every((entry) => boundedImportJsonValue(entry, depth + 1, seen));
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return false;
-    const keys = Object.keys(value);
-    if (keys.length > IMPORT_METADATA_MAX_KEYS) return false;
-    return keys.every((key) => key.length <= 128 && boundedImportJsonValue((value as Record<string, unknown>)[key], depth + 1, seen));
-  } catch {
-    return false;
-  }
-}
-
-function boundedImportMetadata(value: unknown): boolean {
-  if (value === undefined) return true;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  if (!boundedImportJsonValue(value, 0, new Set<object>())) return false;
-  try {
-    return new TextEncoder().encode(JSON.stringify(value)).byteLength <= IMPORT_METADATA_MAX_BYTES;
-  } catch {
-    return false;
-  }
-}
 
 function validImportDate(value: unknown): boolean {
   return value === undefined || value === null || (value instanceof Date && Number.isFinite(value.getTime()));
@@ -123,7 +89,8 @@ function validatedImportInput(input: ImportUserInput): { readonly id: UUID; read
   if (!validImportDate(source.email_confirmed_at) || !validImportDate(source.phone_confirmed_at)
     || !validImportDate(source.confirmed_at) || !validImportDate(source.last_sign_in_at)
     || !validImportDate(source.banned_until)
-    || !boundedImportMetadata(source.user_metadata) || !boundedImportMetadata(source.app_metadata)) return null;
+    || (source.user_metadata !== undefined && !isSafeImportMetadata(source.user_metadata))
+    || (source.app_metadata !== undefined && !isSafeImportMetadata(source.app_metadata))) return null;
   return { id, input };
 }
 
@@ -185,7 +152,7 @@ function equivalentJson(left: unknown, right: unknown): boolean {
   return leftKeys.every((key, index) => key === rightKeys[index] && equivalentJson((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]));
 }
 
-function equivalentImportedUser(user: import("../shared/types.js").User, input: ImportUserInput): boolean {
+function equivalentImportedUser(user: User, input: ImportUserInput): boolean {
   const expected = importComparable(input);
   return normalizeEmailParts(user.email).normalized === expected.email
     && importPhone(user.phone) === expected.phone
@@ -249,6 +216,32 @@ function knownMutationFailure(error: unknown): AuthResult<never> | null {
   return null;
 }
 
+function errorCode(error: unknown): string {
+  return typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+}
+
+function isImportConflict(error: unknown): boolean {
+  const code = errorCode(error);
+  return code === "duplicate"
+    || code === "23505"
+    || code === "email_exists"
+    || code === "phone_exists"
+    || code === "user_id_exists"
+    || code === "user_import_conflict";
+}
+
+type MutationAudit = {
+  readonly action: string;
+  readonly targetType: string;
+  readonly targetId?: UUID | null;
+  readonly metadata?: unknown;
+};
+
+type MutationOptions = {
+  readonly exactSecretScope?: boolean;
+  readonly deferredFailureAudit?: boolean;
+};
+
 /** Trusted, transaction-oriented implementation behind the Node-only admin client. */
 export class AdminService {
   readonly #repository: AuthRepository;
@@ -288,9 +281,31 @@ export class AdminService {
     }
   }
 
-  async #mutate<T>(principal: AdminPrincipal, required: AdminPermission, audit: { action: string; targetType: string; targetId?: UUID | null; metadata?: unknown }, operation: (repository: AuthRepository, now: Date) => Promise<T>, options: { readonly exactSecretScope?: boolean } = {}): Promise<AuthResult<T>> {
+  async #appendFreshFailureAudit(principal: AdminPrincipal, audit: MutationAudit, event: string): Promise<void> {
+    const now = this.#clock();
     try {
-      return await this.#repository.transaction(async (repository) => {
+      await this.#repository.transaction(async (repository) => {
+        await repository.operations.appendAudit({
+          ...principalActor(principal),
+          action: audit.action,
+          target_type: audit.targetType,
+          target_id: audit.targetId ?? null,
+          metadata: sanitizeRedactedMetadata({ event }),
+          outcome: "failure",
+          occurred_at: now,
+        }, { now });
+      });
+    } catch {
+      // Failure audit is best effort and must never replace the safe client result.
+    }
+  }
+
+  async #mutate<T>(principal: AdminPrincipal, required: AdminPermission, audit: MutationAudit, operation: (repository: AuthRepository, now: Date) => Promise<T>, options: MutationOptions = {}): Promise<AuthResult<T>> {
+    const deferredFailureAudit = options.deferredFailureAudit === true;
+    let deferredFailure: AuthResult<T> | null = null;
+    let deferredEvent = "admin_import_failed";
+    try {
+      const result = await this.#repository.transaction(async (repository) => {
         const now = this.#clock();
         const appendOutcome = async (outcome: "success" | "failure", metadata: unknown) => repository.operations.appendAudit({
           ...principalActor(principal), action: audit.action, target_type: audit.targetType,
@@ -304,6 +319,11 @@ export class AdminService {
               : failure("insufficient_permission", 403, "The stable user import scope is required")
           : await this.#authorize(repository, principal, required);
         if (authorization.error) {
+          if (deferredFailureAudit) {
+            deferredFailure = authorization as AuthResult<T>;
+            deferredEvent = "admin_permission_denied";
+            return authorization as AuthResult<T>;
+          }
           await appendOutcome("failure", { event: "admin_permission_denied", required });
           return authorization as AuthResult<T>;
         }
@@ -311,8 +331,14 @@ export class AdminService {
           const limiterKey = principal.kind === "user" ? `user:${principal.userId}` : principal.kind === "secret" ? `key:${principal.keyId}` : "trusted";
           const decision = await this.#rateLimiter.consume(limiterKey, ADMIN_MUTATION_RATE_LIMIT_POLICY);
           if (!decision.allowed) {
+            const limited = authFailure(new AuthApiError("rate_limit_exceeded", 429, "Too many administration requests")) as AuthResult<T>;
+            if (deferredFailureAudit) {
+              deferredFailure = limited;
+              deferredEvent = "admin_rate_limited";
+              return limited;
+            }
             await appendOutcome("failure", { event: "admin_rate_limited" });
-            return authFailure(new AuthApiError("rate_limit_exceeded", 429, "Too many administration requests")) as AuthResult<T>;
+            return limited;
           }
         }
         let data: T;
@@ -321,14 +347,32 @@ export class AdminService {
         } catch (error) {
           const known = knownMutationFailure(error);
           if (known === null) throw error;
+          if (deferredFailureAudit) {
+            deferredFailure = known as AuthResult<T>;
+            deferredEvent = "admin_policy_denied";
+            return known as AuthResult<T>;
+          }
           await appendOutcome("failure", { event: "admin_policy_denied" });
           return known as AuthResult<T>;
         }
         await appendOutcome("success", audit.metadata ?? {});
         return authSuccess(data);
       });
+      if (deferredFailureAudit && result.error !== null) {
+        await this.#appendFreshFailureAudit(principal, audit, deferredEvent);
+      }
+      return result;
     } catch (error) {
-      const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+      const result = deferredFailure
+        ?? (deferredFailureAudit && isImportConflict(error)
+          ? failure("conflict", 409, "The imported user conflicts with existing data") as AuthResult<T>
+          : internalFailure() as AuthResult<T>);
+      if (deferredFailureAudit) {
+        if (deferredFailure === null && isImportConflict(error)) deferredEvent = "admin_policy_denied";
+        await this.#appendFreshFailureAudit(principal, audit, deferredEvent);
+        return result;
+      }
+      const code = errorCode(error);
       if (code === "duplicate" || code === "23505") return failure("conflict", 409, "Resource already exists");
       return internalFailure();
     }
@@ -374,7 +418,10 @@ export class AdminService {
   /** Imports one stable UUID through the exact secret-key import scope only. */
   async importUser(input: ImportUserInput, principal: AdminPrincipal) {
     const parsed = validatedImportInput(input);
-    if (parsed === null) return failure("invalid_request", 400, "Invalid stable user import");
+    if (parsed === null) {
+      await this.#appendFreshFailureAudit(principal, { action: "admin.user.imported", targetType: "user" }, "admin_import_invalid_request");
+      return failure("invalid_request", 400, "Invalid stable user import");
+    }
     const imported = parsed.input;
     const userId = parsed.id;
     return this.#mutate(
@@ -391,9 +438,14 @@ export class AdminService {
           const emailOwner = await repository.users.findByNormalizedEmailForUpdate(imported.email, { now });
           if (emailOwner !== null && emailOwner.id !== userId) throw Object.assign(new Error("stable user import email conflict"), { code: "user_import_conflict" });
         }
+        const phone = importPhone(imported.phone);
+        if (phone !== null) {
+          const phoneOwner = await repository.users.findByNormalizedPhoneForUpdate(phone, { now });
+          if (phoneOwner !== null && phoneOwner.id !== userId) throw Object.assign(new Error("stable user import phone conflict"), { code: "user_import_conflict" });
+        }
         return { user: await repository.users.createWithId(imported, { now }) };
       },
-      { exactSecretScope: true },
+      { exactSecretScope: true, deferredFailureAudit: true },
     );
   }
 

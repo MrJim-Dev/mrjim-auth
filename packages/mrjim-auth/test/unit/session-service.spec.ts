@@ -109,6 +109,7 @@ function makeRepository(
     findByIdForUpdate: async () => null,
     findByNormalizedEmail: async () => null,
     findByNormalizedEmailForUpdate: async () => null,
+    findByNormalizedPhoneForUpdate: async () => null,
     create: async () => null,
     createWithId: async () => null,
     createIfAvailable: async () => null,

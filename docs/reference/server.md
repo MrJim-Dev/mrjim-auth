@@ -148,7 +148,7 @@ expected failures under `error`.
 | `getUserById` | `GET /admin/users/{id}` | Returns `{ user }` or a safe error. |
 | `findUser` | `GET /admin/users/find?email=...` | Exact normalized-email lookup; callers must handle `user: null`. |
 | `createUser` | `POST /admin/users` | Sends the validated user-creation object. |
-| `importUser` | `POST /admin/users/import` | Import-only stable UUID operation; requires a secret API key with the exact `auth.users.import` scope and accepts only bounded profile/auth metadata, never credentials or sessions. |
+| `importUser` | `POST /admin/users/import` | Import-only stable UUID operation; requires a non-interactive secret API key with the exact `auth.users.import` scope and accepts only bounded profile/auth metadata. Detectable credential/session material is rejected; callers must not send secrets or sessions. |
 | `updateUserById` | `PATCH /admin/users/{id}` | Sends the validated update patch. |
 | `deleteUser` | `DELETE /admin/users/{id}?soft=true` | Only soft deletion is supported; `soft: false` throws/returns invalid request. |
 | `inviteUserByEmail` | `POST /admin/users/invite` | Body is `{ email, options? }`; options are nested and project-defined. |
@@ -172,17 +172,24 @@ Administrative operations are checked against dynamic permissions such as
 UUID import is deliberately separate: only a non-interactive secret API-key
 principal carrying the exact `auth.users.import` scope may use it; interactive
 admins and wildcard/ordinary user-management scopes are rejected. Equivalent
-same-UUID retries return the existing row, while UUID/email conflicts fail
+same-UUID retries return the existing row, while UUID/email/phone conflicts fail
 without overwriting. Import metadata is bounded to 8 nested levels, 100 keys
 per object or array, 4,096 characters per string, and 16 KiB of serialized
 JSON per metadata object. Equivalence compares the normalized email, trimmed
 phone, persisted confirmation/last-sign-in/ban timestamps, metadata, and
 non-deleted state; `created_at` and `updated_at` are intentionally ignored.
 Omitted optional fields compare as their persistence defaults (`null` or `{}`).
-Passwords, password hashes, sessions, refresh tokens, OAuth secrets, and other
-credential material are not accepted. The server writes redacted audit records
-for administrative mutations and rate limits administrative writes when a
-limiter is configured.
+The shared validator rejects detectable passwords, password hashes, sessions,
+refresh/access tokens, OAuth/client secrets, private keys, credential-bearing
+URLs, and other sensitive key/value patterns at every metadata depth. It is a
+conservative detector rather than a proof about arbitrary opaque strings;
+callers must never use import metadata for secrets, passwords, sessions, or
+tokens. The server writes redacted success and failure audit records for the
+import operation and rate limits administrative writes when a limiter is
+configured. Service-level failures retain actor-key or actor-user correlation;
+HTTP requests rejected before a valid principal exists can carry only a
+request-id audit correlation, while an interactive bearer rejection is
+correlated to its presenting API key rather than treated as an admin user.
 
 ## Direct service and authorization APIs
 

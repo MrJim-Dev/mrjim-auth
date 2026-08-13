@@ -210,6 +210,7 @@ function securityFor(contract: RouteContract): Record<string, readonly string[]>
   if (contract.security === "admin") {
     return [{ secretKey: [] }, { publishableKey: [], bearerAuth: [] }];
   }
+  if (contract.security === "admin_import") return [{ secretKey: [] }];
   return [{ publishableKey: [] }, { secretKey: [] }];
 }
 
@@ -245,7 +246,7 @@ function operation(contract: RouteContract): Record<string, JsonValue> {
   const operation: Record<string, JsonValue> = {
     operationId: contract.operationId,
     summary: contract.operationId,
-    description: `Authentication operation ${contract.operationId}.`,
+    description: contract.description ?? `Authentication operation ${contract.operationId}.`,
     tags: [openapiReflectApply(openapiStringStartsWith, contract.path, ["/user"]) ? "current-user" : "public"],
     security: securityFor(contract),
     parameters: [],

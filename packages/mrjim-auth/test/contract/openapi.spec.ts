@@ -69,6 +69,15 @@ describe("Task 9 deterministic OpenAPI contract", () => {
       { secretKey: [] },
       { publishableKey: [], bearerAuth: [] },
     ]);
+    const importOperation = paths["/admin/users/import"].post as Record<string, any>;
+    expect(importOperation.security).toEqual([{ secretKey: [] }]);
+    expect(importOperation.description).toContain("auth.users.import");
+    const importRequestRef = importOperation.requestBody.content["application/json"].schema.$ref as string;
+    const importRequest = schemas[importRequestRef.slice("#/components/schemas/".length)] as Record<string, any>;
+    expect(importRequest.description).toContain("credential");
+    expect(importRequest.properties.user_metadata.description).toContain("16 KiB");
+    expect(importRequest.properties.user_metadata["x-mrjim-maxDepth"]).toBe(8);
+    expect(importRequest.properties.user_metadata["x-mrjim-reservedKeyRule"]).toContain("password");
     expect(refs.every((ref) => ref.startsWith("#/components/schemas/") && Object.hasOwn(schemas, ref.slice("#/components/schemas/".length)))).toBe(true);
     expect(collectReferences(configured).some((ref) => ref.startsWith("#/$defs/"))).toBe(false);
 

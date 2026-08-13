@@ -11,7 +11,7 @@ function importSchema(): SchemaLike | undefined {
 describe("stable UUID import HTTP contract", () => {
   it("declares a distinct import-only admin route and request schema", () => {
     const route = routeContractModule.routeContracts.find((candidate) => candidate.path === "/admin/users/import" && candidate.method === "POST");
-    expect(route).toMatchObject({ operationId: "adminImportUser", security: "admin" });
+    expect(route).toMatchObject({ operationId: "adminImportUser", security: "admin_import" });
     expect(importSchema()).toBeDefined();
   });
 
@@ -26,6 +26,9 @@ describe("stable UUID import HTTP contract", () => {
     expect(schema?.safeParse(valid).success).toBe(true);
     expect(schema?.safeParse({ ...valid, id: "not-a-uuid" }).success).toBe(false);
     expect(schema?.safeParse({ ...valid, password_hash: "must-not-be-accepted" }).success).toBe(false);
+    expect(schema?.safeParse({ ...valid, user_metadata: { nested: { refresh_token: "refresh" } } }).success).toBe(false);
+    expect(schema?.safeParse({ ...valid, user_metadata: { nested: { sessionId: "session" } } }).success).toBe(false);
+    expect(schema?.safeParse({ ...valid, app_metadata: { nested: { value: "Bearer access-token" } } }).success).toBe(false);
     expect(schema?.safeParse({ ...valid, user_metadata: { oversized: "x".repeat(4097) } }).success).toBe(false);
   });
 

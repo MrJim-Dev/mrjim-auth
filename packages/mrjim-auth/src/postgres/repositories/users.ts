@@ -127,6 +127,19 @@ function createUsersRepository(context: RepositoryContext): UserRepository {
       return row === undefined ? null : mapUserRow(row);
     },
 
+    async findByNormalizedPhoneForUpdate(phone) {
+      requireTransaction(context.inTransaction);
+      const normalized = normalizePhone(phone).normalized;
+      if (normalized === null) return null;
+      const row = await authDb(context)
+        .selectFrom("users")
+        .select(USER_COLUMNS)
+        .where("phone_normalized", "=", normalized)
+        .forUpdate()
+        .executeTakeFirst();
+      return row === undefined ? null : mapUserRow(row);
+    },
+
     async create(input: CreateUserInput, options) {
       const email = normalizeEmail(input.email);
       const phone = normalizePhone(input.phone);
@@ -204,9 +217,45 @@ function createUsersRepository(context: RepositoryContext): UserRepository {
         const row = await authDb(context)
           .insertInto("users")
           .values(values)
+          .onConflict((conflict) => conflict.doNothing())
           .returning(USER_COLUMNS)
-          .executeTakeFirstOrThrow();
-        return mapUserRow(row);
+          .executeTakeFirst();
+        if (row !== undefined) return mapUserRow(row);
+
+        // The conflict lookup deliberately follows UUID, email, then phone so
+        // a multi-unique race produces one stable repository error.
+        const conflictById = await authDb(context)
+          .selectFrom("users")
+          .select(["id", "email_normalized", "phone_normalized"])
+          .where("id", "=", input.id)
+          .forUpdate()
+          .executeTakeFirst();
+        if (conflictById !== undefined) {
+          throw new PostgresRepositoryError("user_id_exists", "a user with this UUID already exists", { constraint: "users_pkey" });
+        }
+        if (email.normalized !== null) {
+          const conflictByEmail = await authDb(context)
+            .selectFrom("users")
+            .select(["id"])
+            .where("email_normalized", "=", email.normalized)
+            .forUpdate()
+            .executeTakeFirst();
+          if (conflictByEmail !== undefined) {
+            throw new PostgresRepositoryError("email_exists", "a user with this normalized email already exists", { constraint: "users_email_normalized_key" });
+          }
+        }
+        if (phone.normalized !== null) {
+          const conflictByPhone = await authDb(context)
+            .selectFrom("users")
+            .select(["id"])
+            .where("phone_normalized", "=", phone.normalized)
+            .forUpdate()
+            .executeTakeFirst();
+          if (conflictByPhone !== undefined) {
+            throw new PostgresRepositoryError("phone_exists", "a user with this normalized phone already exists", { constraint: "users_phone_normalized_key" });
+          }
+        }
+        throw new PostgresRepositoryError("user_id_exists", "an imported user conflicts with existing data", { constraint: "users_pkey" });
       } catch (error) {
         mapDuplicateImportedUser(error);
       }

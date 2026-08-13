@@ -1,7 +1,7 @@
 import { z, type ZodType } from "zod";
 import type { AuthRepository } from "../../shared/contracts.js";
 import type { AuthResult } from "../../shared/result.js";
-import type { JsonObject, Session, User } from "../../shared/types.js";
+import { IMPORT_METADATA_LIMITS, isSafeImportMetadata, type JsonObject, type Session, type User } from "../../shared/types.js";
 import type { AdminService } from "../admin-service.js";
 import type {
   AuthenticatedSubject,
@@ -40,44 +40,16 @@ const recoveryPasswordString = passwordString.refine((value) => {
 });
 const redirectString = z.string().min(1).max(2048);
 const jsonObject = z.record(z.string(), z.json());
-const IMPORT_METADATA_MAX_DEPTH = 8;
-const IMPORT_METADATA_MAX_KEYS = 100;
-const IMPORT_METADATA_MAX_STRING_LENGTH = 4096;
-const IMPORT_METADATA_MAX_BYTES = 16_384;
-
-function boundedImportJsonValue(value: unknown, depth: number, seen: Set<object>): boolean {
-  if (value === null || typeof value === "boolean") return true;
-  if (typeof value === "string") return value.length <= IMPORT_METADATA_MAX_STRING_LENGTH;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value !== "object" || depth >= IMPORT_METADATA_MAX_DEPTH || seen.has(value)) return false;
-  seen.add(value);
-  try {
-    if (Array.isArray(value)) {
-      if (value.length > IMPORT_METADATA_MAX_KEYS) return false;
-      return value.every((entry) => boundedImportJsonValue(entry, depth + 1, seen));
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return false;
-    const keys = Object.keys(value);
-    if (keys.length > IMPORT_METADATA_MAX_KEYS) return false;
-    return keys.every((key) => key.length <= 128 && boundedImportJsonValue((value as Record<string, unknown>)[key], depth + 1, seen));
-  } catch {
-    return false;
-  }
-}
-
-function validBoundedImportMetadata(value: unknown): boolean {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  if (!boundedImportJsonValue(value, 0, new Set<object>())) return false;
-  try {
-    return new TextEncoder().encode(JSON.stringify(value)).byteLength <= IMPORT_METADATA_MAX_BYTES;
-  } catch {
-    return false;
-  }
-}
-
-const boundedImportMetadataSchema = z.record(z.string().max(128), z.json()).superRefine((value, context) => {
-  if (!validBoundedImportMetadata(value)) context.addIssue({ code: "custom", message: "metadata exceeds the import bounds" });
+const boundedImportMetadataSchema = z.record(z.string().max(IMPORT_METADATA_LIMITS.maxKeyLength), z.json()).superRefine((value, context) => {
+  if (!isSafeImportMetadata(value)) context.addIssue({ code: "custom", message: "metadata contains reserved credential material or exceeds the import bounds" });
+}).meta({
+  description: "Bounded JSON metadata up to 16 KiB; detectable reserved credential-bearing keys and values are rejected recursively. Callers must not send secrets or sessions.",
+  "x-mrjim-maxDepth": IMPORT_METADATA_LIMITS.maxDepth,
+  "x-mrjim-maxKeys": IMPORT_METADATA_LIMITS.maxKeys,
+  "x-mrjim-maxKeyLength": IMPORT_METADATA_LIMITS.maxKeyLength,
+  "x-mrjim-maxStringLength": IMPORT_METADATA_LIMITS.maxStringLength,
+  "x-mrjim-maxBytes": IMPORT_METADATA_LIMITS.maxBytes,
+  "x-mrjim-reservedKeyRule": "Rejects detectable password, password_hash, access/refresh tokens, sessions, OAuth/client secrets, private keys, and other sensitive key segments at every depth; detectable credential-bearing values are also rejected.",
 });
 
 export const userSchema = z.object({
@@ -266,7 +238,9 @@ export const adminUserImportRequestSchema = z.object({
   confirmed_at: nullableIsoInput.optional(), last_sign_in_at: nullableIsoInput.optional(),
   banned_until: nullableIsoInput.optional(), user_metadata: boundedImportMetadataSchema.optional(),
   app_metadata: boundedImportMetadataSchema.optional(),
-}).strict();
+}).strict().meta({
+  description: "Import-only user creation. Requires a secret API key carrying the literal auth.users.import scope. The supplied UUID is preserved; equivalent retries are idempotent, conflicts return 409, and detectable credential/session material is rejected. Callers must not send secrets or sessions.",
+});
 export const adminUserUpdateRequestSchema = adminUserCreateRequestSchema.extend({
   last_sign_in_at: nullableIsoInput.optional(), banned_until: nullableIsoInput.optional(),
 }).strict();
@@ -385,11 +359,12 @@ export interface RouteContract {
   readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path: string;
   readonly operationId: string;
-  readonly security: "api_key" | "user" | "admin" | "signed";
+  readonly security: "api_key" | "user" | "admin" | "admin_import" | "signed";
   readonly query?: readonly { readonly name: string; readonly required: boolean; readonly description: string }[];
   readonly body?: ZodType;
   readonly response: ZodType;
   readonly example?: Readonly<Record<string, unknown>>;
+  readonly description?: string;
 }
 
 const authResult = (schema: ZodType) => z.object({ data: schema, error: z.null() }).strict();
@@ -416,7 +391,7 @@ export const routeContracts: readonly RouteContract[] = Object.freeze([
   { method: "GET", path: "/.well-known/jwks.json", operationId: "jwks", security: "api_key", response: authResult(jwksDataSchema) },
   { method: "GET", path: "/admin/users", operationId: "adminListUsers", security: "admin", query: adminPageQuery, response: authResult(adminUsersDataSchema) },
   { method: "POST", path: "/admin/users", operationId: "adminCreateUser", security: "admin", body: adminUserCreateRequestSchema, response: authResult(adminUserDataSchema) },
-  { method: "POST", path: "/admin/users/import", operationId: "adminImportUser", security: "admin", body: adminUserImportRequestSchema, response: authResult(adminUserDataSchema), example: { id: "11111111-1111-4111-8111-111111111111", email: "user@example.com", user_metadata: { source: "legacy" } } },
+  { method: "POST", path: "/admin/users/import", operationId: "adminImportUser", security: "admin_import", body: adminUserImportRequestSchema, response: authResult(adminUserDataSchema), example: { id: "11111111-1111-4111-8111-111111111111", email: "user@example.com", user_metadata: { source: "legacy" } }, description: "Import one user with a preserved UUID. Requires a non-interactive secret API key with the literal auth.users.import scope; publishable keys, bearer sessions, wildcard scopes, and detectable reserved credential material are rejected. Callers must not send secrets or sessions." },
   { method: "GET", path: "/admin/users/find", operationId: "adminFindUser", security: "admin", query: [{ name: "email", required: true, description: "Exact normalized email" }], response: authResult(adminUserDataSchema) },
   { method: "POST", path: "/admin/users/invite", operationId: "adminInviteUser", security: "admin", body: adminInviteRequestSchema, response: authResult(z.object({ invited: z.unknown() }).strict()) },
   { method: "GET", path: "/admin/users/{id}", operationId: "adminGetUser", security: "admin", response: authResult(adminUserDataSchema) },

@@ -10,6 +10,7 @@ const CALLBACK = "https://project.example.com/auth/callback";
 const TOKEN_HASH_KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const PUBLISHABLE_KEY = "pk_test_task9_contract";
 const SECRET_KEY = "sk_test_task9_contract";
+const WILDCARD_SECRET_KEY = "sk_test_task9_wildcard";
 const ACCESS_TOKEN = "access-token-task9";
 const REFRESH_TOKEN = "refresh-token-task9";
 const USER_ID = "00000000-0000-4000-8000-000000000901";
@@ -96,28 +97,30 @@ function success<T>(data: T) {
   return { data, error: null };
 }
 
-function apiKeyRecord(value: string, kind: "publishable" | "secret" = "publishable") {
+function apiKeyRecord(value: string, kind: "publishable" | "secret" = "publishable", scopes: readonly string[] = []) {
   return {
     id: "00000000-0000-4000-8000-000000000904",
     prefix: value.slice(0, 8),
     kind,
-    scopes: [],
+    scopes,
     key_hash: apiKeyHash(value),
     expires_at: null,
     revoked_at: null,
   };
 }
 
-function makeOptions(calls: Array<{ readonly name: string; readonly input: unknown }>) {
+function makeOptions(calls: Array<{ readonly name: string; readonly input: unknown }>, auditEvents: unknown[] = []) {
   const records = new Map<string, ReturnType<typeof apiKeyRecord>>([
     [PUBLISHABLE_KEY, apiKeyRecord(PUBLISHABLE_KEY)],
-    [SECRET_KEY, apiKeyRecord(SECRET_KEY, "secret")],
+    [SECRET_KEY, apiKeyRecord(SECRET_KEY, "secret", ["auth.users.import"])],
+    [WILDCARD_SECRET_KEY, apiKeyRecord(WILDCARD_SECRET_KEY, "secret", ["auth.*"])],
   ]);
   const repository = {
     transaction: async (callback: (value: unknown) => Promise<unknown>) => callback(repository),
     users: {
       findById: async () => user(), findByIdForUpdate: async () => user(),
       findByNormalizedEmail: async () => user(), findByNormalizedEmailForUpdate: async () => user(),
+      findByNormalizedPhoneForUpdate: async () => user(),
       create: async () => user(), createWithId: async () => user(), createIfAvailable: async () => user(), update: async () => user(), softDelete: async () => undefined,
     },
     identities: {
@@ -139,11 +142,11 @@ function makeOptions(calls: Array<{ readonly name: string; readonly input: unkno
     roles: { list: async () => [], findById: async () => null, create: async () => ({}), update: async () => ({}), delete: async () => undefined },
     permissions: { list: async () => [], findById: async () => null, create: async () => ({}), update: async () => ({}), delete: async () => undefined },
     operations: {
-      appendAudit: async () => undefined,
+      appendAudit: async (input: unknown) => { auditEvents.push(input); },
       findApiKeyByHash: async (hash: Uint8Array) => {
         for (const [raw, record] of records) {
           if (raw === PUBLISHABLE_KEY && Buffer.from(hash).equals(Buffer.from(record.key_hash))) return record;
-          if (raw === SECRET_KEY && Buffer.from(hash).equals(Buffer.from(record.key_hash))) return record;
+          if ((raw === SECRET_KEY || raw === WILDCARD_SECRET_KEY) && Buffer.from(hash).equals(Buffer.from(record.key_hash))) return record;
         }
         return null;
       },
@@ -218,7 +221,8 @@ describe("Task 9 framework-neutral HTTP contract", () => {
 
   it("dispatches Task 12 admin routes for non-browser secrets and delegated bearer sessions", async () => {
     const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
-    const options = makeOptions(calls) as any;
+    const auditEvents: unknown[] = [];
+    const options = makeOptions(calls, auditEvents) as any;
     const result = (data: unknown) => success(data);
     const unused = async () => result(null);
     options.services.admin = {
@@ -228,7 +232,13 @@ describe("Task 9 framework-neutral HTTP contract", () => {
       listRoles: unused, createRole: unused, updateRole: unused, deleteRole: unused, setRolePermissions: unused,
       setRoleInheritance: unused, assignRole: unused, unassignRole: unused, listPermissions: unused,
       createPermission: unused, updatePermission: unused, deletePermission: unused, listAudit: unused,
-      importUser: async (input: unknown, principal: unknown) => { calls.push({ name: "admin.importUser", input: { input, principal } }); return result({ user: user() }); },
+      importUser: async (input: unknown, principal: unknown) => {
+        calls.push({ name: "admin.importUser", input: { input, principal } });
+        const actor = principal as { kind?: string; scopes?: readonly string[] };
+        if (actor.kind !== "secret") return { data: null, error: { code: "forbidden", status: 403, message: "Stable user import requires a secret API key" } };
+        if (actor.scopes?.length !== 1 || actor.scopes[0] !== "auth.users.import") return { data: null, error: { code: "insufficient_permission", status: 403, message: "The stable user import scope is required" } };
+        return result({ user: user() });
+      },
     };
     const auth = serverModule.createAuthServer(options);
 
@@ -243,6 +253,23 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     }));
     expect(imported.status).toBe(200);
     expect(calls.at(-1)).toMatchObject({ name: "admin.importUser", input: { input: { id: USER_ID }, principal: { kind: "secret" } } });
+    const shadowed = await auth.handle(request("/admin/users/import", { method: "GET", headers: { apikey: SECRET_KEY } }));
+    expect(shadowed.status).toBe(405);
+    const publishable = await auth.handle(request("/admin/users/import", {
+      method: "POST",
+      headers: { apikey: PUBLISHABLE_KEY, authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ id: USER_ID }),
+    }));
+    expect(publishable.status).toBe(403);
+    expect(auditEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actor_key_id: "00000000-0000-4000-8000-000000000904", action: "admin.user.imported", outcome: "failure", metadata: expect.objectContaining({ event: "admin_permission_denied" }) }),
+    ]));
+    const wildcard = await auth.handle(request("/admin/users/import", {
+      method: "POST",
+      headers: { apikey: WILDCARD_SECRET_KEY, "content-type": "application/json" },
+      body: JSON.stringify({ id: USER_ID }),
+    }));
+    expect(wildcard.status).toBe(403);
     const client = createAdminClient(BASE_URL, SECRET_KEY, { global: { fetch: (input, init) => auth.handle(new Request(input, init)) } });
     await expect(client.auth.admin.listUsers({ page: 2, perPage: 25 })).resolves.toMatchObject({ data: { users: [], page: 2, per_page: 25 }, error: null });
 

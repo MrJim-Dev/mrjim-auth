@@ -6,6 +6,8 @@ import {
   safeGetPrototypeOf,
   safeOwnDataEntries,
   safeOwnDataProperty,
+  safeNumberIsFinite,
+  safeNumberIsSafeInteger,
   safeObjectPrototype,
   safeSetAddValue,
   safeSetHasValue,
@@ -412,6 +414,67 @@ function containsForbiddenValue(value: unknown, seen = new typesSetConstructor<o
     if (entry !== undefined && (isSensitiveKeyName(entry[0]) || containsForbiddenValue(entry[1], seen))) return true;
   }
   return false;
+}
+
+/** Runtime limits and reserved-material policy for imported user metadata. */
+export const IMPORT_METADATA_LIMITS = Object.freeze({
+  maxDepth: 8,
+  maxKeys: 100,
+  maxKeyLength: 128,
+  maxStringLength: 4_096,
+  maxBytes: 16_384,
+});
+
+function isImportReservedKeyName(key: string): boolean {
+  const compact = safeStringReplace(key, /[^a-zA-Z0-9]/g, "");
+  const normalized = compact === null ? "" : safeStringToLowerCase(compact) ?? "";
+  return isSensitiveKeyName(key) || normalized === "sessionid";
+}
+
+function isBoundedImportJsonValue(value: unknown, depth: number, seen: Set<object>): boolean {
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "string") return value.length <= IMPORT_METADATA_LIMITS.maxStringLength;
+  if (typeof value === "number") return safeNumberIsFinite(value);
+  if (typeof value !== "object" || depth >= IMPORT_METADATA_LIMITS.maxDepth || safeSetHasValue(seen, value)) return false;
+  if (!safeSetAddValue(seen, value)) return false;
+
+  if (safeArrayIsArray(value)) {
+    const length = safeOwnDataProperty(value, "length");
+    if (!length.valid || !length.present || !safeNumberIsSafeInteger(length.value) || length.value < 0 || length.value > IMPORT_METADATA_LIMITS.maxKeys) return false;
+    const entries = safeOwnDataEntries(value, IMPORT_METADATA_LIMITS.maxKeys + 2);
+    if (entries === null) return false;
+    let count = 0;
+    for (const entry of entries) {
+      if (entry === undefined || entry[0] === "length") continue;
+      const index = Number(entry[0]);
+      if (!/^\d+$/u.test(entry[0]) || String(index) !== entry[0] || index >= length.value) return false;
+      count += 1;
+      if (!isBoundedImportJsonValue(entry[1], depth + 1, seen)) return false;
+    }
+    return count === length.value;
+  }
+
+  if (!isPlainRecord(value)) return false;
+  const entries = safeOwnDataEntries(value, IMPORT_METADATA_LIMITS.maxKeys + 1);
+  if (entries === null) return false;
+  for (const entry of entries) {
+    if (entry === undefined || entry[0].length > IMPORT_METADATA_LIMITS.maxKeyLength || isImportReservedKeyName(entry[0])) return false;
+    if (!isBoundedImportJsonValue(entry[1], depth + 1, seen)) return false;
+  }
+  return true;
+}
+
+/** Returns true only for bounded JSON objects without detectable credential material. */
+export function isSafeImportMetadata(value: unknown): value is JsonObject {
+  if (!isPlainRecord(value)) return false;
+  if (!isBoundedImportJsonValue(value, 0, new typesSetConstructor<object>())) return false;
+  if (containsForbiddenValue(value)) return false;
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" && new TextEncoder().encode(serialized).byteLength <= IMPORT_METADATA_LIMITS.maxBytes;
+  } catch {
+    return false;
+  }
 }
 
 /**

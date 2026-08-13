@@ -159,6 +159,11 @@ export interface UserRepository {
     email: string,
     options?: RepositoryOperationOptions,
   ): Promise<User | null>;
+  /** Locks and re-reads a phone match, including a soft-deleted account. */
+  findByNormalizedPhoneForUpdate(
+    phone: string,
+    options?: RepositoryOperationOptions,
+  ): Promise<User | null>;
   /** Creates a user and returns the safe public record. */
   create(input: CreateUserInput, options?: RepositoryOperationOptions): Promise<User>;
   /** Import-only create with a caller-supplied UUID; never used by signup/admin create. */

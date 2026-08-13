@@ -654,7 +654,7 @@ export function captureBoundaryRepository(value: unknown): AuthRepository {
   const source = value as object;
   assertBoundaryObject(source, "database repository");
   const methods: Readonly<Record<string, readonly string[]>> = {
-    users: ["findById", "findByIdForUpdate", "findByNormalizedEmail", "findByNormalizedEmailForUpdate", "create", "createWithId", "createIfAvailable", "update", "softDelete"],
+    users: ["findById", "findByIdForUpdate", "findByNormalizedEmail", "findByNormalizedEmailForUpdate", "findByNormalizedPhoneForUpdate", "create", "createWithId", "createIfAvailable", "update", "softDelete"],
     identities: ["findByProviderSubject", "listByUserId", "create", "createIfAvailable", "deleteById"],
     passwordCredentials: ["findByUserId", "upsert", "deleteByUserId"],
     sessions: ["create", "findByIdForUpdate", "findRefreshForUpdate", "rotate", "revokeSession", "revokeFamily", "revokeUserSessions"],

@@ -98,6 +98,7 @@ function service(existingEmail?: string, suppliedLimiter?: RateLimiter, options:
       findById: async () => existingUser,
       findByIdForUpdate: async () => existingUser,
       findByNormalizedEmailForUpdate: async () => existingUser,
+      findByNormalizedPhoneForUpdate: async () => existingUser,
       create: async (input: { email?: string | null }) => ({ ...existingUser, email: input.email ?? null }),
       createWithId: async () => existingUser,
       createIfAvailable: async (input: { email?: string | null }) => ({ ...existingUser, email: input.email ?? null }),

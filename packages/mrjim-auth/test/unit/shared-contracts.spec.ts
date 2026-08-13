@@ -70,6 +70,7 @@ const completeRepository = {
     findByIdForUpdate: asyncMethod,
     findByNormalizedEmail: asyncMethod,
     findByNormalizedEmailForUpdate: asyncMethod,
+    findByNormalizedPhoneForUpdate: asyncMethod,
     create: asyncMethod,
     createWithId: asyncMethod,
     createIfAvailable: asyncMethod,

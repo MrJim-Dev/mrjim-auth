@@ -228,7 +228,7 @@ const keyMapSchema = z
 
 const requiredRepositoryMethods = {
   root: ["transaction"],
-  users: ["findById", "findByIdForUpdate", "findByNormalizedEmail", "findByNormalizedEmailForUpdate", "create", "createIfAvailable", "update", "softDelete"],
+  users: ["findById", "findByIdForUpdate", "findByNormalizedEmail", "findByNormalizedEmailForUpdate", "findByNormalizedPhoneForUpdate", "create", "createWithId", "createIfAvailable", "update", "softDelete"],
   identities: ["findByProviderSubject", "listByUserId", "create", "createIfAvailable", "deleteById"],
   passwordCredentials: ["findByUserId", "upsert", "deleteByUserId"],
   sessions: [
