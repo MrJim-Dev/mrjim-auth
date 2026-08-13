@@ -2,6 +2,8 @@
 .superpowers/
 node_modules/
 dist/
+packages/mrjim-auth/.dist-build-*/
+packages/mrjim-auth/.dist-quarantine-*/
 .next/
 *.tsbuildinfo
 coverage/

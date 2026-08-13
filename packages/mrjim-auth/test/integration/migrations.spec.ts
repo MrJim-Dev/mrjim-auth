@@ -30,6 +30,7 @@ const workspaceRoot = resolve(packageRoot, "../..");
 const originalDatabaseUrl = process.env.DATABASE_URL;
 const ignoredGenericDatabaseUrl = "postgresql://not-used.invalid:5432/not-a-test-database";
 process.env.DATABASE_URL = ignoredGenericDatabaseUrl;
+const runSerialPackageLifecycleTests = process.env.MRJIM_AUTH_SERIAL_PACK_TESTS === "1";
 
 const requiredTables = [
   "users",
@@ -1348,7 +1349,7 @@ describe("Task 3 PostgreSQL migrations", () => {
     expect(await scalar<number>("SELECT count(*)::int AS value FROM auth.api_keys WHERE name = 'invalid-key'")).toBe(0);
   });
 
-  it("installs the packed package and executes its real shim-backed CLI", async () => {
+  it.skipIf(!runSerialPackageLifecycleTests)("installs the packed package and executes its real shim-backed CLI", async () => {
     await migrate(pool, { direction: "up" });
     const consumerRoot = await mkdtemp(join(tmpdir(), "mrjim-auth-consumer-"));
     try {

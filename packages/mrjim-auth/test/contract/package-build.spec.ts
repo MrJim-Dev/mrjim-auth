@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, readdir, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,19 @@ function runCommand(command: string, args: readonly string[]): Promise<CommandRe
 
 async function exists(path: string): Promise<boolean> {
   return access(path).then(() => true).catch(() => false);
+}
+
+async function removeGeneratedPath(path: string): Promise<void> {
+  const info = await lstat(path).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!info) return;
+  if (info.isSymbolicLink()) {
+    await unlink(path);
+    return;
+  }
+  await rm(path, { recursive: true, force: true });
 }
 
 async function packPackage(): Promise<readonly string[]> {
@@ -81,5 +94,25 @@ describe.sequential("package build and pack lifecycle", () => {
     expect(await exists(join(distRoot, "index.js"))).toBe(true);
     expect(await exists(join(distRoot, "postgres/migrations/0001_core.sql"))).toBe(true);
     expect((await stat(join(distRoot, "cli/index.js"))).mode & 0o111).toBeGreaterThan(0);
+  });
+
+  it("fails closed on a symlinked package dist without touching its external target", async () => {
+    await removeGeneratedPath(distRoot);
+    const externalRoot = await mkdtemp(join(tmpdir(), "mrjim-auth-external-dist-"));
+    const externalSentinel = join(externalRoot, "must-survive.txt");
+    await writeFile(externalSentinel, "external output must remain untouched\n");
+    await symlink(externalRoot, distRoot, "dir");
+
+    try {
+      const result = await runCommand("pnpm", ["build"]);
+
+      expect(result.code).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("symlink");
+      expect(await exists(externalSentinel)).toBe(true);
+      expect(await exists(distRoot)).toBe(false);
+    } finally {
+      await removeGeneratedPath(distRoot);
+      await rm(externalRoot, { recursive: true, force: true });
+    }
   });
 });

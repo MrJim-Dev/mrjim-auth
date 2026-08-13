@@ -9,7 +9,9 @@
   "scripts": {
     "build": "node scripts/build-package.mjs",
     "typecheck": "tsc -p packages/mrjim-auth/tsconfig.json --noEmit",
-    "test": "pnpm build && vitest run --exclude 'packages/mrjim-auth/test/browser/**/*.spec.ts' --exclude 'packages/mrjim-auth/test/contract/package-build.spec.ts' && vitest run packages/mrjim-auth/test/contract/package-build.spec.ts && playwright test",
+    "test": "pnpm build && pnpm test:bulk && pnpm test:package-lifecycle && pnpm playwright test",
+    "test:bulk": "MRJIM_AUTH_SERIAL_PACK_TESTS=0 vitest run --exclude 'packages/mrjim-auth/test/browser/**/*.spec.ts' --exclude 'packages/mrjim-auth/test/contract/package-build.spec.ts'",
+    "test:package-lifecycle": "vitest run packages/mrjim-auth/test/contract/package-build.spec.ts && MRJIM_AUTH_SERIAL_PACK_TESTS=1 pnpm vitest run packages/mrjim-auth/test/integration/migrations.spec.ts -t \"installs the packed package and executes its real shim-backed CLI\"",
     "lint": "tsc -p packages/mrjim-auth/tsconfig.json --noEmit",
     "docs:check": "node scripts/check-docs.mjs",
     "release:check": "node scripts/release-check.mjs"

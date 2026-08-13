@@ -44,7 +44,9 @@ run("pnpm", [
   "packages/mrjim-auth/test/contract/browser-bundle.spec.ts",
   "packages/mrjim-auth/test/integration/version-upgrade.spec.ts",
 ]);
-run("pnpm", ["test"]);
+run("pnpm", ["test:bulk"]);
+run("pnpm", ["test:package-lifecycle"]);
+run("pnpm", ["playwright", "test"]);
 run("pnpm", ["--filter", "express-api", "typecheck"]);
 run("pnpm", ["--filter", "express-api", "test"]);
 run("pnpm", ["--filter", "nextjs-app-router", "typecheck"]);
