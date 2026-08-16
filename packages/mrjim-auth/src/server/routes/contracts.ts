@@ -360,6 +360,7 @@ const authResult = (schema: ZodType) => z.object({ data: schema, error: z.null()
 const oauthCallbackQuery = [
   { name: "code", required: true, description: "Provider authorization code" },
   { name: "state", required: true, description: "Signed PKCE state" },
+  { name: "iss", required: false, description: "OIDC issuer hint" },
   { name: "scope", required: false, description: "Provider-granted OAuth scopes" },
   { name: "authuser", required: false, description: "Provider-selected account index" },
   { name: "prompt", required: false, description: "Provider authorization prompt result" },
