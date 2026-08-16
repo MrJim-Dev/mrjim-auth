@@ -313,6 +313,12 @@ export class OidcOAuthProvider implements OAuthProvider {
       const responseUrl = new URL(input.redirectUri);
       responseUrl.searchParams.set("code", input.code);
       responseUrl.searchParams.set("state", input.state);
+      // Google advertises the OIDC issuer response parameter as required. The
+      // provider boundary carries normalized code/state values, so restore the
+      // configured issuer before openid-client validates the authorization
+      // response. Without this, a valid Google callback is rejected before the
+      // token request is made.
+      responseUrl.searchParams.set("iss", this.issuer);
       const tokens = await authorizationCodeGrant(config, responseUrl, {
         expectedState: input.expectedState,
         expectedNonce: input.nonce,
