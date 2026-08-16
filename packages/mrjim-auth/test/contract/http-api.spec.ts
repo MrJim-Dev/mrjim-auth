@@ -348,6 +348,11 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     const callback = await auth.handle(request("/callback/google?code=provider-code&state=state"));
     expect(callback.status).toBe(303);
     expect(callback.headers.get("location")).toContain("code=callback-code");
+    const callbackWithGoogleMetadata = await auth.handle(request(
+      "/callback/google?code=provider-code&state=state&scope=openid%20email&authuser=0&prompt=consent",
+    ));
+    expect(callbackWithGoogleMetadata.status).toBe(303);
+    expect(callbackWithGoogleMetadata.headers.get("location")).toContain("code=callback-code");
     const exchange = await auth.handle(request("/exchange", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ code: "callback-code", code_verifier: "verifier", redirect_to: CALLBACK }),
