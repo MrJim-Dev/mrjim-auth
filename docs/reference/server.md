@@ -106,6 +106,12 @@ topology; forwarded host/protocol/IP values are ignored by default.
 
 ### Next.js request client
 
+The `mrjim-auth/nextjs/route` entrypoint exports `toNextRouteHandler`. It mounts
+the framework-neutral server directly in a Node.js App Router Route Handler;
+the consuming project exports the returned handler for the HTTP methods it
+supports. The request and response are passed through unchanged, so the route
+path must match the `baseUrl` path configured on the `AuthServer`.
+
 The `mrjim-auth/nextjs/server` entrypoint exports `createServerClient`. It
 requires a request-local `CookieAdapter`, optionally accepts request headers,
 and creates a cookie-backed client with browser refresh/URL detection disabled.
@@ -182,8 +188,8 @@ than trusting client-provided role or permission data.
 
 ## Hosting and dependencies
 
-No paid or hosted application is mandatory. The server runs in the project's
-Node deployment, uses its own PostgreSQL database and mailer, and can use the
-free/self-hostable adapters in this package. Express, Next.js, PostgreSQL, and
-an email delivery implementation are project choices rather than hidden hosted
-requirements.
+No central or separately hosted MrJim auth application is mandatory. The
+server runs inside the consuming project's Node deployment (or another
+project-owned backend boundary), uses that project's PostgreSQL database and
+mailer, and can use the free/self-hostable adapters in this package. The chosen
+runtime still needs network access to those project resources.

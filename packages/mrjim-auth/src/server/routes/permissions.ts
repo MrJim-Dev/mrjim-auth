@@ -369,7 +369,7 @@ function nativePromiseOutcome(value: unknown): NativePromiseOutcome | null {
   }
 }
 
-function snapshotResponsePermissions(value: unknown): string[] | null {
+export function snapshotResponsePermissions(value: unknown): string[] | null {
   const snapshot = newNullPrototypeArray<string>();
   if (!arrayIsArray(value)) return null;
 

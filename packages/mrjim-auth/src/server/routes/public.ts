@@ -146,12 +146,14 @@ export async function handlePublicRoute(
 
   if (path === "/verify") {
     const value = context.body as typeof verifyRequestSchema._output;
-    const result = await context.invoke(() => context.services.users.verifyOtp({
+    const input = {
       email: normalizeAndValidateEmail(value.email).normalized,
       token: value.token,
-      type: value.type,
       ...(value.redirect_to === undefined ? {} : { redirectTo: value.redirect_to }),
-    }, serviceContext(context)));
+    };
+    const result = await context.invoke(() => value.type === "signup"
+      ? context.services.users.confirmEmail(input, serviceContext(context))
+      : context.services.users.verifyOtp({ ...input, type: value.type }, serviceContext(context)));
     return service(result, mapPublicAuthData, publicAuthSchema);
   }
 

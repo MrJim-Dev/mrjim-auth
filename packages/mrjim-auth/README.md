@@ -10,4 +10,6 @@ reference, security checklist, compatibility matrix, and runnable examples.
 
 Runtime support: Node.js 24+ and PostgreSQL 15-17. PostgreSQL 18 validation is
 required before using the package on the current Courtera target. The package is ESM-only and
-has no Supabase runtime or mandatory paid/hosted service dependency.
+has no Supabase runtime, central MrJim auth host, or mandatory paid/hosted
+service dependency. Next.js projects can mount the server in their own App
+Router with `mrjim-auth/nextjs/route`.

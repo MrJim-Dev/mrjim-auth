@@ -7,6 +7,7 @@ import {
   identitiesDataSchema,
   nullDataSchema,
   permissionsDataSchema,
+  updatePasswordRequestSchema,
   updateUserRequestSchema,
   userDataSchema,
 } from "./contracts.js";
@@ -16,6 +17,7 @@ import {
   safeStringStartsWith,
   safeStringTrim,
 } from "../../shared/safe-intrinsics.js";
+import { snapshotResponsePermissions } from "./permissions.js";
 
 function service(
   result: unknown,
@@ -101,6 +103,22 @@ export async function handleUserRoute(
     return service(result, mapUser, userDataSchema);
   }
 
+  if (path === "/user/password" && context.request.method === "PUT") {
+    const value = context.body as typeof updatePasswordRequestSchema._output;
+    const revokeOtherSessions = value.revoke_other_sessions ?? false;
+    const result = await context.invoke(() => context.services.users.changePassword(
+      auth.subject!,
+      value.password,
+      {
+        currentPassword: value.current_password,
+        revokeOtherSessions,
+        ...(revokeOtherSessions ? { preserveSessionId: auth.session!.session_id } : {}),
+        context: serviceContext(context),
+      },
+    ));
+    return service(result, mapUser, userDataSchema);
+  }
+
   if (path === "/user/identities" && context.request.method === "GET") {
     const oauth = context.services.oauth;
     if (oauth === undefined) return service(authSuccess([]), mapIdentities, identitiesDataSchema);
@@ -134,9 +152,12 @@ export async function handleUserRoute(
     const permissions = await context.invoke(() => context.services.authorization.getPermissions(
       auth.authorizationSubject!.user_id,
       scope,
-      undefined,
+      auth.authorizationContext,
     ));
-    return service(authSuccess(permissions), mapPermissions, permissionsDataSchema);
+    const safePermissions =
+      snapshotResponsePermissions(permissions) ??
+      snapshotResponsePermissions([])!;
+    return service(authSuccess(safePermissions), mapPermissions, permissionsDataSchema);
   }
 
   if (path === "/logout" && context.request.method === "POST") {

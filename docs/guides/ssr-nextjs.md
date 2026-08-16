@@ -1,8 +1,10 @@
 # Next.js App Router and SSR
 
-`mrjim-auth` has two Next.js entry points:
+`mrjim-auth` has three Next.js entry points:
 
 - `mrjim-auth/nextjs` is the browser-safe singleton helper for Client Components.
+- `mrjim-auth/nextjs/route` mounts the project-owned auth server in an App
+  Router Route Handler.
 - `mrjim-auth/nextjs/server` creates a fresh request-local client backed by the
   current request's cookies.
 
@@ -21,22 +23,66 @@ workspace package in the application that uses it:
 pnpm add next react react-dom mrjim-auth
 ```
 
-For a self-hosted project, expose only the publishable key to the browser:
+For an embedded project, expose only the same-origin auth URL and publishable
+key to the browser:
 
 ```dotenv
-MRJIM_AUTH_URL=http://localhost:3001/auth/v1
+MRJIM_AUTH_URL=http://localhost:3000/auth/v1
 MRJIM_AUTH_PUBLISHABLE_KEY=publishable-local-key
 MRJIM_SITE_URL=http://localhost:3000
 
 # These two are safe to embed in a Client Component when a client-only flow is
 # intentionally desired. They are not used as the SSR authorization boundary.
-NEXT_PUBLIC_MRJIM_AUTH_URL=http://localhost:3001/auth/v1
+NEXT_PUBLIC_MRJIM_AUTH_URL=http://localhost:3000/auth/v1
 NEXT_PUBLIC_MRJIM_AUTH_PUBLISHABLE_KEY=publishable-local-key
 ```
 
 `MRJIM_AUTH_URL` must be the project's own auth endpoint. The auth server and
-PostgreSQL database can run locally, in a container, or on infrastructure the
-project controls. No paid auth host is required.
+PostgreSQL database can run inside the same project deployment or on
+infrastructure the project controls. No central MrJim auth host is required.
+
+## Embed the auth endpoint
+
+Compose one project-owned `AuthServer` in a server-only module using the
+project's PostgreSQL adapter, keys, mailer, redirects, and optional OAuth
+providers. Then mount it at the same path configured by `baseUrl`:
+
+```ts
+// app/auth/v1/[[...mrjimAuth]]/route.ts
+import { toNextRouteHandler } from "mrjim-auth/nextjs/route";
+import { authServer } from "@/lib/auth/server";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const handler = toNextRouteHandler(authServer);
+
+export {
+  handler as GET,
+  handler as POST,
+  handler as PUT,
+  handler as PATCH,
+  handler as DELETE,
+  handler as OPTIONS,
+};
+```
+
+The adapter delegates the standard Web `Request` directly to
+`AuthServer.handle()` and returns its standard Web `Response` unchanged. Keep
+the auth server, database pool, private keys, admin key, mailer, and AWS
+credentials in server-only modules. Never construct them in a Client Component.
+
+Each deployed project has its own configuration and normally its own database.
+The package does not inspect an untrusted request to choose another project's
+database. A deployment may deliberately share infrastructure, but tenant and
+credential isolation remain the application's responsibility.
+
+The Route Handler runs in the consuming project's server runtime. That runtime
+must be able to reach PostgreSQL and any private dependencies. For example, a
+Vercel deployment cannot reach a private RDS endpoint merely because the auth
+code is embedded; use an approved private-network connection, move the project
+runtime into the VPC, or keep a project-specific backend boundary that can
+reach RDS. Do not make RDS public to avoid that boundary.
 
 ## Browser client
 
@@ -49,7 +95,7 @@ Route Handler, or server-only module.
 import { createBrowserClient } from "mrjim-auth/nextjs";
 
 const client = createBrowserClient(
-  "http://localhost:3001/auth/v1",
+  "http://localhost:3000/auth/v1",
   "publishable-local-key",
   { auth: { storageKey: "web", flowType: "pkce" } },
 );

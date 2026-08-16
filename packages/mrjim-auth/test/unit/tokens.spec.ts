@@ -187,6 +187,23 @@ describe("TokenService", () => {
     }
   });
 
+  it("verifies access tokens when one private JWK is configured for signing and verification", async () => {
+    const key = generateEs256Key();
+    const privateJwk = await exportJWK(
+      await importPKCS8(key.privateKey, "ES256", { extractable: true }),
+    );
+    const provider: KeyProvider = {
+      getActiveKeyId: () => "active",
+      getSigningKey: () => privateJwk,
+      getVerificationKeys: () => new Map([["active", privateJwk]]),
+    };
+    const service = makeService(provider);
+
+    const token = await service.issueAccessToken(makeUser(), makeSession());
+
+    expect((await service.verifyAccessToken(token)).error).toBeNull();
+  });
+
   it("captures provider maps and redacts hostile provider-returned values", async () => {
     const key = generateEs256Key();
     const service = makeService(makeProvider(new Map([["active", key]])));

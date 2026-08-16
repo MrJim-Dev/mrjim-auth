@@ -114,5 +114,6 @@ export type {
   LockFunction,
   Session,
   SupportedStorage,
+  UpdatePasswordInput,
   User,
 } from "./shared/types.js";

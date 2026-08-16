@@ -1,8 +1,9 @@
 # Five-minute setup
 
-mrjim-auth is an SDK and server library, not a hosted identity service. Your
-project supplies PostgreSQL, an HTTP process, ES256 signing keys, opaque secret
-material, and a mail adapter.
+mrjim-auth is an SDK and server library, not a hosted identity service. It can
+run inside the consuming project's server routes. Your project supplies
+PostgreSQL, a server runtime, ES256 signing keys, opaque secret material, and a
+mail adapter.
 
 ## 1. Install
 

@@ -170,6 +170,7 @@ describe("browser-safe public auth client", () => {
       "startAutoRefresh",
       "stopAutoRefresh",
       "unlinkIdentity",
+      "updatePassword",
       "updateUser",
       "verifyOtp",
     ].sort());

@@ -1,6 +1,7 @@
 import {
   DeleteObjectsCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -57,6 +58,7 @@ describe("S3 storage adapter", () => {
       contentLength: 2048,
       checksumSha256: "qUiQTy8PR5uPgZdpSzAYSw0u0cHNKh7A+4XSmaGSpEc=",
       cacheControl: "public, max-age=31536000, immutable",
+      ifNoneMatch: "*",
     });
 
     expect(result).toEqual({
@@ -65,6 +67,7 @@ describe("S3 storage adapter", () => {
         "cache-control": "public, max-age=31536000, immutable",
         "content-length": "2048",
         "content-type": "image/webp",
+        "if-none-match": "*",
         "x-amz-checksum-sha256": "qUiQTy8PR5uPgZdpSzAYSw0u0cHNKh7A+4XSmaGSpEc=",
       },
     });
@@ -76,6 +79,7 @@ describe("S3 storage adapter", () => {
       ChecksumSHA256: "qUiQTy8PR5uPgZdpSzAYSw0u0cHNKh7A+4XSmaGSpEc=",
       ContentLength: 2048,
       ContentType: "image/webp",
+      IfNoneMatch: "*",
     });
   });
 
@@ -131,5 +135,91 @@ describe("S3 storage adapter", () => {
         Quiet: true,
       },
     });
+  });
+
+  it("uploads and downloads resolved objects without buffering unknown streams", async () => {
+    const commands: object[] = [];
+    const client = {
+      send: async (command: object) => {
+        commands.push(command);
+        if (command instanceof GetObjectCommand) {
+          return {
+            Body: {
+              transformToByteArray: async () => new Uint8Array([1, 2, 3]),
+            },
+            CacheControl: "private, max-age=60",
+            ContentLength: 3,
+            ContentType: "image/webp",
+          };
+        }
+        return {};
+      },
+    } as unknown as S3Client;
+    const adapter = createS3StorageAdapter({
+      client,
+      buckets: { media: { bucket: "courtera-production-assets", prefix: "media/" } },
+    });
+
+    await adapter.upload({
+      bucket: "media",
+      key: "venues/venue-1/photo.webp",
+      body: new Uint8Array([1, 2, 3]),
+      contentLength: 3,
+      contentType: "image/webp",
+      cacheControl: "private, max-age=60",
+      ifNoneMatch: "*",
+    });
+    const downloaded = await adapter.download({
+      bucket: "media",
+      key: "venues/venue-1/photo.webp",
+      maxBytes: 4,
+    });
+
+    expect(commands[0]).toBeInstanceOf(PutObjectCommand);
+    expect((commands[0] as PutObjectCommand).input).toMatchObject({
+      Bucket: "courtera-production-assets",
+      Key: "media/venues/venue-1/photo.webp",
+      ContentLength: 3,
+      ContentType: "image/webp",
+      CacheControl: "private, max-age=60",
+      IfNoneMatch: "*",
+    });
+    expect(downloaded).toEqual({
+      bytes: new Uint8Array([1, 2, 3]),
+      cacheControl: "private, max-age=60",
+      contentLength: 3,
+      contentType: "image/webp",
+    });
+    expect((commands[1] as GetObjectCommand).input.Range).toBe("bytes=0-4");
+  });
+
+  it("checks existence and exposes public URLs only for configured mappings", async () => {
+    let sentCommand: object | null = null;
+    const client = {
+      send: async (command: object) => {
+        sentCommand = command;
+        return {};
+      },
+    } as unknown as S3Client;
+    const adapter = createS3StorageAdapter({
+      client,
+      buckets: {
+        avatars: {
+          bucket: "courtera-production-assets",
+          prefix: "avatars/",
+          publicBaseUrl: "https://media.courtera.test/avatars",
+        },
+        private: { bucket: "courtera-production-assets", prefix: "private/" },
+      },
+    });
+
+    await expect(adapter.exists({ bucket: "avatars", key: "users/user-1/a.webp" })).resolves.toBe(true);
+    expect(sentCommand).toBeInstanceOf(HeadObjectCommand);
+    expect(adapter.getPublicUrl({ bucket: "avatars", key: "users/user-1/a.webp" })).toBe(
+      "https://media.courtera.test/avatars/users/user-1/a.webp",
+    );
+    expect(() => adapter.getPublicUrl({ bucket: "private", key: "receipt.webp" })).toThrow(
+      "storage bucket is not public",
+    );
   });
 });

@@ -54,9 +54,30 @@ const signedUrl = await adapter.createSignedReadUrl({
 });
 
 console.log(signedUrl);
+
+await adapter.upload({
+  bucket: "private-media",
+  key: "users/user-1/avatar.webp",
+  body: new Uint8Array([1, 2, 3]),
+  contentLength: 3,
+  contentType: "image/webp",
+  ifNoneMatch: "*",
+});
+
+const object = await adapter.download({
+  bucket: "private-media",
+  key: "users/user-1/avatar.webp",
+  maxBytes: 10 * 1024 * 1024,
+});
 ```
 
 The adapter uses the AWS SDK v3 default credential chain unless the supplied
 `S3Client` is configured otherwise. Prefer workload identity or short-lived
 assumed-role credentials. Logical aliases map to physical S3 buckets and fixed
 prefixes so applications do not expose provider topology to browser callers.
+The server adapter also provides bounded `download`, direct `upload`, `exists`,
+multi-object `remove`, and `getPublicUrl` for mappings with an explicit
+`publicBaseUrl`. Use `ifNoneMatch: "*"` for create-only writes so the S3 request
+itself prevents overwrite races; a preceding existence check alone is not an
+atomic upsert guard. Applications must authorize the logical alias, exact key,
+and operation before calling or signing any adapter method.

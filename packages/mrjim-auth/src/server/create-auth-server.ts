@@ -449,7 +449,7 @@ function createDefaultServices(
     clock,
   });
   const passwords = new PasswordService();
-  const users = new UserService({
+  const users: AuthServerServices["users"] = new UserService({
     repository,
     passwords,
     email,

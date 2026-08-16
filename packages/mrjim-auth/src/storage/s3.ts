@@ -1,6 +1,7 @@
 import {
   DeleteObjectsCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   type S3Client,
 } from "@aws-sdk/client-s3";
@@ -33,6 +34,7 @@ export interface SignedUploadInput extends SignedReadInput {
   readonly contentLength: number;
   readonly checksumSha256: string;
   readonly cacheControl?: string;
+  readonly ifNoneMatch?: "*";
 }
 
 export interface SignedUploadData {
@@ -45,10 +47,43 @@ export interface RemoveObjectsInput {
   readonly keys: readonly string[];
 }
 
+export interface ObjectInput {
+  readonly bucket: string;
+  readonly key: string;
+}
+
+export interface UploadObjectInput extends ObjectInput {
+  readonly body: Uint8Array;
+  readonly contentType: string;
+  readonly contentLength: number;
+  readonly cacheControl?: string;
+  readonly ifNoneMatch?: "*";
+}
+
+export interface DownloadObjectInput extends ObjectInput {
+  readonly maxBytes: number;
+}
+
+export interface DownloadObjectData {
+  readonly bytes: Uint8Array;
+  readonly contentType?: string;
+  readonly contentLength: number;
+  readonly cacheControl?: string;
+}
+
+export interface RemoveObjectsData {
+  readonly deleted: readonly string[];
+  readonly errors: readonly { readonly key: string; readonly code: string; readonly message: string }[];
+}
+
 export interface S3StorageAdapter {
   readonly createSignedReadUrl: (input: SignedReadInput) => Promise<string>;
   readonly createSignedUploadUrl: (input: SignedUploadInput) => Promise<SignedUploadData>;
-  readonly remove: (input: RemoveObjectsInput) => Promise<void>;
+  readonly download: (input: DownloadObjectInput) => Promise<DownloadObjectData>;
+  readonly exists: (input: ObjectInput) => Promise<boolean>;
+  readonly getPublicUrl: (input: ObjectInput) => string;
+  readonly remove: (input: RemoveObjectsInput) => Promise<RemoveObjectsData>;
+  readonly upload: (input: UploadObjectInput) => Promise<void>;
 }
 
 interface ResolvedBucket {
@@ -99,10 +134,20 @@ function validateMappings(value: S3StorageAdapterOptions["buckets"]): Readonly<R
     if (prefix !== "") {
       prefix = validateObjectKey(prefix.replace(/\/+$/u, "")) + "/";
     }
+    let publicBaseUrl: string | undefined;
+    if (mapping.publicBaseUrl !== undefined) {
+      const parsed = new URL(mapping.publicBaseUrl);
+      if (
+        (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
+        parsed.username !== "" || parsed.password !== "" ||
+        parsed.search !== "" || parsed.hash !== ""
+      ) throw new TypeError("storage public base URL is malformed");
+      publicBaseUrl = parsed.toString().replace(/\/+$/u, "");
+    }
     output[alias] = Object.freeze({
       bucket: mapping.bucket,
       prefix,
-      ...(mapping.publicBaseUrl === undefined ? {} : { publicBaseUrl: mapping.publicBaseUrl }),
+      ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     });
   }
   return Object.freeze(output);
@@ -152,7 +197,7 @@ export function createS3StorageAdapter(options: S3StorageAdapterOptions): S3Stor
     const uploadSigningOptions = command instanceof PutObjectCommand
       ? {
           ...signOptions,
-          signableHeaders: new Set(["cache-control", "content-length", "content-type"]),
+          signableHeaders: new Set(["cache-control", "content-length", "content-type", "if-none-match"]),
           unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
         }
       : signOptions;
@@ -184,6 +229,7 @@ export function createS3StorageAdapter(options: S3StorageAdapterOptions): S3Stor
       ContentLength: contentLength,
       ChecksumSHA256: checksumSha256,
       ...(cacheControl === undefined ? {} : { CacheControl: cacheControl }),
+      ...(input.ifNoneMatch === undefined ? {} : { IfNoneMatch: input.ifNoneMatch }),
     });
     const signedUrl = await signer(options.client, command, { expiresIn });
     const requiredHeaders = Object.freeze({
@@ -191,19 +237,99 @@ export function createS3StorageAdapter(options: S3StorageAdapterOptions): S3Stor
       "content-length": String(contentLength),
       "x-amz-checksum-sha256": checksumSha256,
       ...(cacheControl === undefined ? {} : { "cache-control": cacheControl }),
+      ...(input.ifNoneMatch === undefined ? {} : { "if-none-match": input.ifNoneMatch }),
     });
     return Object.freeze({ signedUrl, requiredHeaders });
   };
 
-  const remove = async (input: RemoveObjectsInput): Promise<void> => {
+  const upload = async (input: UploadObjectInput): Promise<void> => {
     const mapping = resolveBucket(mappings, input.bucket);
-    if (!Array.isArray(input.keys) || input.keys.length < 1 || input.keys.length > 1_000) throw new TypeError("storage delete keys are malformed");
-    const objects = input.keys.map((key) => ({ Key: resolveKey(mapping, key) }));
-    await options.client.send(new DeleteObjectsCommand({
+    const contentType = validateContentType(input.contentType);
+    const contentLength = validateContentLength(input.contentLength);
+    const cacheControl = validateCacheControl(input.cacheControl);
+    if (!(input.body instanceof Uint8Array) || input.body.byteLength !== contentLength) {
+      throw new TypeError("storage upload body is malformed");
+    }
+    await options.client.send(new PutObjectCommand({
       Bucket: mapping.bucket,
-      Delete: { Objects: objects, Quiet: true },
+      Key: resolveKey(mapping, input.key),
+      Body: input.body,
+      ContentLength: contentLength,
+      ContentType: contentType,
+      ...(cacheControl === undefined ? {} : { CacheControl: cacheControl }),
+      ...(input.ifNoneMatch === undefined ? {} : { IfNoneMatch: input.ifNoneMatch }),
     }));
   };
 
-  return Object.freeze({ createSignedReadUrl, createSignedUploadUrl, remove });
+  const download = async (input: DownloadObjectInput): Promise<DownloadObjectData> => {
+    const mapping = resolveBucket(mappings, input.bucket);
+    const maxBytes = validateContentLength(input.maxBytes);
+    const response = await options.client.send(new GetObjectCommand({
+      Bucket: mapping.bucket,
+      Key: resolveKey(mapping, input.key),
+      Range: `bytes=0-${maxBytes}`,
+    }));
+    if (typeof response.ContentLength === "number" && response.ContentLength > maxBytes) {
+      throw new RangeError("storage object exceeds download limit");
+    }
+    const body = response.Body;
+    if (!body || typeof body.transformToByteArray !== "function") {
+      throw new TypeError("storage download body is unavailable");
+    }
+    const bytes = await body.transformToByteArray();
+    if (bytes.byteLength > maxBytes) throw new RangeError("storage object exceeds download limit");
+    return Object.freeze({
+      bytes,
+      contentLength: bytes.byteLength,
+      ...(response.ContentType === undefined ? {} : { contentType: response.ContentType }),
+      ...(response.CacheControl === undefined ? {} : { cacheControl: response.CacheControl }),
+    });
+  };
+
+  const exists = async (input: ObjectInput): Promise<boolean> => {
+    const mapping = resolveBucket(mappings, input.bucket);
+    try {
+      await options.client.send(new HeadObjectCommand({
+        Bucket: mapping.bucket,
+        Key: resolveKey(mapping, input.key),
+      }));
+      return true;
+    } catch (error) {
+      const candidate = error as { readonly name?: unknown; readonly $metadata?: { readonly httpStatusCode?: unknown } };
+      if (candidate?.name === "NotFound" || candidate?.name === "NoSuchKey" || candidate?.$metadata?.httpStatusCode === 404) return false;
+      throw error;
+    }
+  };
+
+  const getPublicUrl = (input: ObjectInput): string => {
+    const mapping = resolveBucket(mappings, input.bucket);
+    if (mapping.publicBaseUrl === undefined) throw new TypeError("storage bucket is not public");
+    const base = mapping.publicBaseUrl.replace(/\/+$/u, "");
+    const encodedKey = validateObjectKey(input.key).split("/").map(encodeURIComponent).join("/");
+    return `${base}/${encodedKey}`;
+  };
+
+  const remove = async (input: RemoveObjectsInput): Promise<RemoveObjectsData> => {
+    const mapping = resolveBucket(mappings, input.bucket);
+    if (!Array.isArray(input.keys) || input.keys.length < 1 || input.keys.length > 1_000) throw new TypeError("storage delete keys are malformed");
+    const objects = input.keys.map((key) => ({ Key: resolveKey(mapping, key) }));
+    const response = await options.client.send(new DeleteObjectsCommand({
+      Bucket: mapping.bucket,
+      Delete: { Objects: objects, Quiet: true },
+    }));
+    const errors = (response.Errors ?? []).map((error) => Object.freeze({
+      key: typeof error.Key === "string" && error.Key.startsWith(mapping.prefix)
+        ? error.Key.slice(mapping.prefix.length)
+        : "",
+      code: error.Code ?? "Unknown",
+      message: error.Message ?? "S3 object deletion failed",
+    }));
+    const failed = new Set(errors.map((error) => error.key));
+    return Object.freeze({
+      deleted: Object.freeze(input.keys.filter((key) => !failed.has(key))),
+      errors: Object.freeze(errors),
+    });
+  };
+
+  return Object.freeze({ createSignedReadUrl, createSignedUploadUrl, download, exists, getPublicUrl, remove, upload });
 }

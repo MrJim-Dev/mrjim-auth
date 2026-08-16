@@ -90,6 +90,8 @@ export interface AuthenticatedSubject {
 
 export interface ChangePasswordOptions {
   readonly currentPassword?: string;
+  /** Defaults to the existing direct-service behavior of revoking sessions. */
+  readonly revokeOtherSessions?: boolean;
   /** Optional explicit preservation of the calling session only. */
   readonly preserveSessionId?: UUID;
   readonly context?: UserRequestContext | undefined;
@@ -635,6 +637,7 @@ export class UserService {
         password,
         options.currentPassword,
         options.preserveSessionId,
+        options.revokeOtherSessions,
         options.context,
       );
       return authSuccess({ user: updated });
@@ -748,6 +751,7 @@ export class UserService {
     password: string,
     currentPassword: string,
     preserveSessionId: UUID | undefined,
+    revokeOtherSessions: boolean | undefined,
     context: UserRequestContext | undefined,
   ): Promise<User> {
     void context;
@@ -759,7 +763,9 @@ export class UserService {
       const verified = await this.passwords.verify(currentPassword, current?.password_hash ?? null);
       if (!verified.valid) trustedFailure(invalidCredentials());
       await transaction.passwordCredentials.upsert(currentUser.id, passwordHash, now, { now });
-      await transaction.sessions.revokeUserSessions(currentUser.id, preserveSessionId, { now });
+      if (revokeOtherSessions !== false) {
+        await transaction.sessions.revokeUserSessions(currentUser.id, preserveSessionId, { now });
+      }
       const changed = await transaction.users.findByIdForUpdate(currentUser.id, { now });
       if (changed === null) trustedFailure(invalidCredentials());
       await transaction.operations.appendAudit({

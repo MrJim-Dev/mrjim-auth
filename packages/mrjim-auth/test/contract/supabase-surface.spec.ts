@@ -31,6 +31,7 @@ const clientMethodNames = [
   "setSession",
   "refreshSession",
   "updateUser",
+  "updatePassword",
   "getUserIdentities",
   "linkIdentity",
   "unlinkIdentity",
@@ -150,6 +151,7 @@ function createAuthFetch(): typeof fetch {
       case "/auth/v1/recover/verify":
         return jsonResponse({ user });
       case "/auth/v1/user":
+      case "/auth/v1/user/password":
         return userResponse();
       case "/auth/v1/user/identities":
         return request.method === "DELETE" ? jsonResponse(null) : jsonResponse({ identities: [identity] });
@@ -324,13 +326,14 @@ describe("Supabase-shaped public surface", () => {
       ["setSession", () => client.auth.setSession(session)],
       ["refreshSession", () => client.auth.refreshSession(session)],
       ["updateUser", () => client.auth.updateUser({ email: "new@example.com", data: { display_name: "Updated" } })],
+      ["updatePassword", () => client.auth.updatePassword({ currentPassword: "correct horse battery staple", password: "new correct horse battery staple", revokeOtherSessions: true })],
       ["getUserIdentities", () => client.auth.getUserIdentities()],
       ["linkIdentity", () => client.auth.linkIdentity({ provider: "google", options: { redirectTo, skipBrowserRedirect: true } })],
       ["unlinkIdentity", () => client.auth.unlinkIdentity({ id: identityId })],
       ["getPermissions", () => client.auth.getPermissions({ scope: { type: "organization", id: "org_123" } })],
       ["signOut", () => client.auth.signOut({ scope: "local" })],
     ];
-    expect(clientCalls.map(([name]) => name)).toEqual(clientMethodNames.slice(0, 19));
+    expect(clientCalls.map(([name]) => name)).toEqual(clientMethodNames.slice(0, 20));
     for (const [name, call] of clientCalls) {
       const result = await call();
       expect(result, `${name} must return an auth result`).toHaveProperty("error", null);

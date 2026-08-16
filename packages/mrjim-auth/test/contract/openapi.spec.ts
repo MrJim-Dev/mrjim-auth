@@ -62,8 +62,8 @@ describe("Task 9 deterministic OpenAPI contract", () => {
 
     expect(configured.openapi).toBe("3.1.0");
     expect(configured.servers).toEqual([{ url: BASE_URL }]);
-    expect(Object.keys(paths)).toHaveLength(29);
-    expect(operations(configured)).toHaveLength(38);
+    expect(Object.keys(paths)).toHaveLength(30);
+    expect(operations(configured)).toHaveLength(39);
     expect(Object.keys(paths).filter((path) => path.startsWith("/admin"))).toHaveLength(12);
     expect(paths["/admin/users"].get.security).toEqual([
       { secretKey: [] },

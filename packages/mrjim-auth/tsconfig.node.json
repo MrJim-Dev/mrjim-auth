@@ -10,6 +10,7 @@
     "src/server/index.ts",
     "src/postgres/index.ts",
     "src/adapters/express.ts",
+    "src/adapters/nextjs-route.ts",
     "src/adapters/nextjs-server.ts",
     "src/testing/index.ts",
     "src/storage/s3.ts",

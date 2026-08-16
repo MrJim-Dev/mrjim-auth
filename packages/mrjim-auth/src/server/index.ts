@@ -19,6 +19,7 @@ export {
   EmailService,
   type NormalizedEmail,
 } from "./email.js";
+export type { MailMessage, Mailer } from "../shared/contracts.js";
 export {
   PasswordService,
   ARGON2ID_PASSWORD_POLICY,

@@ -135,7 +135,10 @@ export async function importEs256Key(
       throw new AuthConfigurationError("ES256 signing key material is invalid");
     }
     try {
-      return await importJWK(jwk, ES256_ALGORITHM);
+      return await importJWK(
+        purpose === "verification" ? publicJwkMaterial(jwk, keyId) : jwk,
+        ES256_ALGORITHM,
+      );
     } catch {
       throw new AuthConfigurationError("ES256 JWK import failed");
     }

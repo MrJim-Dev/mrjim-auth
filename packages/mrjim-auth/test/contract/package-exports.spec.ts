@@ -26,6 +26,7 @@ const requiredExportKeys = [
   "./postgres",
   "./express",
   "./nextjs",
+  "./nextjs/route",
   "./nextjs/server",
   "./client/pkce",
   "./storage",
@@ -171,6 +172,7 @@ describe("package export boundaries", () => {
       "startAutoRefresh",
       "stopAutoRefresh",
       "unlinkIdentity",
+      "updatePassword",
       "updateUser",
       "verifyOtp",
     ].sort());
@@ -320,6 +322,7 @@ describe("package export boundaries", () => {
   it("exposes only the bounded framework adapter functions", async () => {
     expect(Object.keys(await import("mrjim-auth/express"))).toEqual(["toExpressHandler"]);
     expect(Object.keys(await import("mrjim-auth/nextjs"))).toEqual(["createBrowserClient"]);
+    expect(Object.keys(await import("mrjim-auth/nextjs/route"))).toEqual(["toNextRouteHandler"]);
     expect(Object.keys(await import("mrjim-auth/nextjs/server"))).toEqual(["createServerClient"]);
   });
 
@@ -349,7 +352,7 @@ describe("package export boundaries", () => {
   it("does not expose unfinished behavior from later-task subpaths", async () => {
     for (const exportKey of requiredExportKeys
       .slice(1)
-      .filter((key) => key !== "./postgres" && key !== "./server" && key !== "./express" && key !== "./nextjs" && key !== "./nextjs/server" && key !== "./client/pkce" && key !== "./storage" && key !== "./storage/s3" && key !== "./testing")) {
+      .filter((key) => key !== "./postgres" && key !== "./server" && key !== "./express" && key !== "./nextjs" && key !== "./nextjs/route" && key !== "./nextjs/server" && key !== "./client/pkce" && key !== "./storage" && key !== "./storage/s3" && key !== "./testing")) {
       expect(Object.keys(await import(packageSpecifier(exportKey)))).toEqual([]);
     }
   });

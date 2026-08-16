@@ -12,6 +12,7 @@ import type {
   JsonObject,
   Session,
   SupportedStorage,
+  UpdatePasswordInput,
   User,
   LockFunction,
 } from "../shared/types.js";
@@ -69,7 +70,7 @@ const MAX_PROVIDER = 128;
 const AUTO_REFRESH_SKEW_MS = 30_000;
 const MIN_RETRY_MS = 1_000;
 
-export type EmailOtpType = "emailOtp" | "magicLink" | "email_otp" | "magic_link";
+export type EmailOtpType = "emailOtp" | "magicLink" | "email_otp" | "magic_link" | "signup";
 export type ResendType = "signup" | "recovery";
 export type SignOutScope = "local" | "global" | "others";
 
@@ -176,6 +177,8 @@ export interface UpdateUserAttributes {
   readonly redirectTo?: string;
 }
 
+export type { UpdatePasswordInput } from "../shared/types.js";
+
 /** Optional project-defined authorization scope. */
 export interface PermissionScope {
   /** Scope kind such as `organization`. */
@@ -233,8 +236,10 @@ export interface AuthNamespace {
   readonly setSession: (session: Session) => Promise<AuthResult<SessionData>>;
   /** Rotates a refresh token under the configured cross-context lock. */
   readonly refreshSession: (session?: Session) => Promise<AuthResult<SessionData>>;
-  /** Updates email or user metadata; password/phone require a future server route. */
+  /** Updates email or user metadata; use updatePassword for passwords; phone remains unsupported. */
   readonly updateUser: (attributes: UpdateUserAttributes) => Promise<AuthResult<{ readonly user: User }>>;
+  /** Changes the authenticated user's password after current-password proof. */
+  readonly updatePassword: (input: UpdatePasswordInput) => Promise<AuthResult<{ readonly user: User }>>;
   /** Returns linked identities with provider secrets removed. */
   readonly getUserIdentities: () => Promise<AuthResult<{ readonly identities: readonly Identity[] }>>;
   /** Starts an authenticated OAuth/OIDC identity-link transaction. */
@@ -390,7 +395,9 @@ function snapshotClientOptions(options: unknown): SnapshotClientOptions {
   if (typeof auth.storageKey !== "string" || auth.storageKey.length < 1 || auth.storageKey.length > MAX_STORAGE_KEY || safeStringTrim(auth.storageKey) !== auth.storageKey || !/^[A-Za-z0-9._-]+$/u.test(auth.storageKey)) throw new AuthConfigurationError("auth.storageKey is malformed");
   if (auth.lock !== undefined && typeof auth.lock !== "function") throw new AuthConfigurationError("auth.lock is malformed");
   if (auth.debug !== undefined && typeof auth.debug !== "boolean" && typeof auth.debug !== "function") throw new AuthConfigurationError("auth.debug is malformed");
-  const globalFetch = globalRecord === undefined ? clientGlobal.fetch : optionValue(globalRecord, "fetch", "global.fetch");
+  const fetchProperty = globalRecord === undefined ? undefined : ownData(globalRecord, "fetch");
+  if (fetchProperty !== undefined && !fetchProperty.ok) throw new AuthConfigurationError("global.fetch is malformed");
+  const globalFetch = fetchProperty?.present ? fetchProperty.value : clientGlobal.fetch;
   if (typeof globalFetch !== "function") throw new AuthConfigurationError("global.fetch is malformed");
   return {
     auth: Object.freeze(auth),
@@ -404,18 +411,22 @@ function requiredString(value: object, key: string, label: string, maximum: numb
   return trimString(property.value, label, maximum);
 }
 
-function recoveryPassword(value: object): string {
-  const password = requiredString(value, "password", "password", MAX_PASSWORD);
+function passwordValue(value: object, key: string, label: string): string {
+  const password = requiredString(value, key, label, MAX_PASSWORD);
   let encoded: unknown;
   try {
     encoded = invoke<unknown>(clientEncode, clientEncoder, [password]);
   } catch {
-    throw new AuthProgrammingError("password is malformed");
+    throw new AuthProgrammingError(`${label} is malformed`);
   }
   if (password.length < 8 || !(encoded instanceof clientUint8Array) || encoded.byteLength > MAX_PASSWORD) {
-    throw new AuthProgrammingError("password is malformed");
+    throw new AuthProgrammingError(`${label} is malformed`);
   }
   return password;
+}
+
+function recoveryPassword(value: object): string {
+  return passwordValue(value, "password", "password");
 }
 
 function optionalString(value: object, key: string, label: string, maximum: number): string | undefined {
@@ -442,9 +453,10 @@ function redirectFrom(value: object | undefined): string | undefined {
   return value === undefined ? undefined : optionalString(value, "redirectTo", "redirectTo", 2048);
 }
 
-function wireOtpType(value: unknown): "magic_link" | "email_otp" {
+function wireOtpType(value: unknown): "magic_link" | "email_otp" | "signup" {
   if (value === undefined || value === "emailOtp" || value === "email_otp") return "email_otp";
   if (value === "magicLink" || value === "magic_link") return "magic_link";
+  if (value === "signup") return "signup";
   throw new AuthProgrammingError("OTP type is malformed");
 }
 
@@ -1194,6 +1206,34 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
     });
   };
 
+  const updatePassword = (input: UpdatePasswordInput): Promise<AuthResult<{ readonly user: User }>> => {
+    const value = validateInput(input, "updatePassword input");
+    const currentPassword = passwordValue(value, "currentPassword", "current password");
+    const password = recoveryPassword(value);
+    const revokeOtherSessionsValue = optionValue(value, "revokeOtherSessions", "revokeOtherSessions");
+    if (revokeOtherSessionsValue !== undefined && typeof revokeOtherSessionsValue !== "boolean") {
+      throw new AuthProgrammingError("revokeOtherSessions is malformed");
+    }
+    return contain(async () => {
+      await ensureReady();
+      const sessionValue = await readLatest();
+      if (sessionValue === null) return authFailure(expectedError("unauthorized", 401, "Authenticated session is required"));
+      const body = {
+        current_password: currentPassword,
+        password,
+        ...(revokeOtherSessionsValue === undefined ? {} : { revoke_other_sessions: revokeOtherSessionsValue }),
+      };
+      const result = await resultCall(
+        () => transport.request({ method: "PUT", path: "/user/password", body, bearer: sessionValue.access_token, operation: "updatePassword" }),
+        (response) => ({ user: copyUserResponse(response) }),
+      );
+      if (result.error !== null) return result;
+      const next = freeze({ ...sessionValue, user: result.data.user });
+      if (!await commit(next, "USER_UPDATED")) return authFailure(internalError());
+      return authSuccess({ user: result.data.user });
+    });
+  };
+
   const getUserIdentities = (): Promise<AuthResult<{ readonly identities: readonly Identity[] }>> => contain(async () => {
     await ensureReady();
     const sessionValue = await readLatest();
@@ -1290,6 +1330,7 @@ export function createAuthClient(baseUrl: string, publishableKey: string | undef
     setSession,
     refreshSession,
     updateUser,
+    updatePassword,
     getUserIdentities,
     linkIdentity,
     unlinkIdentity,

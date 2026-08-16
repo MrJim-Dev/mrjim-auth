@@ -113,6 +113,16 @@ describe("Next.js browser and SSR adapter contracts", () => {
     expect(second.cookies).toEqual([]);
   });
 
+  it("uses the runtime fetch when the server adapter configures headers without a fetch override", async () => {
+    const jar = createCookieJar();
+    const client = createServerClient(AUTH_URL, KEY, {
+      cookies: jar.adapter,
+      headers: { "x-request-id": "runtime-fetch-contract" },
+    });
+
+    await expect(client.auth.getSession()).resolves.toEqual({ data: { session: null }, error: null });
+  });
+
   it("persists a rotated session with secure bounded cookie attributes and removes stale chunks", async () => {
     const jar = createCookieJar([
       { name: "mrjim-auth.0", value: "stale" },

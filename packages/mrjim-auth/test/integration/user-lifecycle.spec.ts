@@ -628,14 +628,55 @@ describe("Task 6 user lifecycle", () => {
     );
     expect(wrongCurrent).toMatchObject({ data: null });
 
+    const secondSession = data(await service.users.signIn({ email: created.user.email ?? "", password: PASSWORD }));
+    if (secondSession.session === null) throw new Error("expected second password session");
+    const authenticatedCreated = await service.sessions.authorizeSession(created.session);
+    if (authenticatedCreated.data === null) throw new Error("expected current session authorization");
+
     const changed = await (service.users as unknown as { changePassword: (subject: unknown, password: string, options: unknown) => Promise<unknown> }).changePassword(
       { session: created.session },
       "new password for self service",
-      { currentPassword: PASSWORD },
+      { currentPassword: PASSWORD, preserveSessionId: authenticatedCreated.data.session_id },
     );
     expect(changed).toMatchObject({ error: null });
+    expect((await service.sessions.authorizeSession(created.session)).error).toBeNull();
+    expect((await service.sessions.authorizeSession(secondSession.session)).data).toBeNull();
     expect((await service.users.signIn({ email: created.user.email ?? "", password: PASSWORD })).data).toBeNull();
     expect((await service.users.signIn({ email: created.user.email ?? "", password: "new password for self service" })).error).toBeNull();
+    const auditRows = await disposable?.pool.query(
+      "SELECT action, metadata, user_agent, ip_address FROM auth.audit_log WHERE target_id = $1 AND action = 'user.password_changed'",
+      [created.user.id],
+    );
+    const auditText = JSON.stringify(auditRows?.rows ?? []);
+    expect(auditRows?.rows).toHaveLength(1);
+    expect(auditText).not.toContain(PASSWORD);
+    expect(auditText).not.toContain("new password for self service");
+  });
+
+  it("keeps sessions for explicit no-revocation and preserves direct revoke-all defaults", async () => {
+    const service = services({ requireEmailConfirmation: false, concealUserExistence: false });
+    const created = data(await service.users.signUp({ email: "password-revocation@example.com", password: PASSWORD }));
+    if (created.user === null || created.session === null) throw new Error("expected password revocation user");
+    const secondSession = data(await service.users.signIn({ email: created.user.email ?? "", password: PASSWORD }));
+    if (secondSession.session === null) throw new Error("expected second password revocation session");
+
+    const noRevocation = await (service.users as unknown as { changePassword: (subject: unknown, password: string, options: unknown) => Promise<unknown> }).changePassword(
+      { session: created.session },
+      "first replacement password",
+      { currentPassword: PASSWORD, revokeOtherSessions: false },
+    );
+    expect(noRevocation).toMatchObject({ error: null });
+    expect((await service.sessions.authorizeSession(created.session)).error).toBeNull();
+    expect((await service.sessions.authorizeSession(secondSession.session)).error).toBeNull();
+
+    const defaultRevocation = await (service.users as unknown as { changePassword: (subject: unknown, password: string, options: unknown) => Promise<unknown> }).changePassword(
+      { session: created.session },
+      "second replacement password",
+      { currentPassword: "first replacement password" },
+    );
+    expect(defaultRevocation).toMatchObject({ error: null });
+    expect((await service.sessions.authorizeSession(created.session)).data).toBeNull();
+    expect((await service.sessions.authorizeSession(secondSession.session)).data).toBeNull();
   });
 
   it("does not activate an email change until its exact proof is consumed", async () => {

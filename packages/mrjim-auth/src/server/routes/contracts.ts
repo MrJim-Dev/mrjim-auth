@@ -5,6 +5,7 @@ import type { JsonObject, Session, User } from "../../shared/types.js";
 import type { AdminService } from "../admin-service.js";
 import type {
   AuthenticatedSubject,
+  ChangePasswordOptions,
   OtpInput,
   PublicAuthData,
   ResendInput,
@@ -162,7 +163,7 @@ export const otpRequestSchema = z.object({
 export const verifyRequestSchema = z.object({
   email: emailString,
   token: nonEmptyString,
-  type: z.enum(["magic_link", "email_otp"]),
+  type: z.enum(["magic_link", "email_otp", "signup"]),
   redirect_to: redirectString.optional(),
 }).strict();
 
@@ -192,6 +193,13 @@ export const updateUserRequestSchema = z.object({
   email: emailString.optional(),
   user_metadata: jsonObject.optional(),
   redirect_to: redirectString.optional(),
+}).strict();
+
+/** Strict wire request for an authenticated current-password change. */
+export const updatePasswordRequestSchema = z.object({
+  current_password: passwordString,
+  password: recoveryPasswordString,
+  revoke_other_sessions: z.boolean().optional(),
 }).strict();
 
 /** Strict wire request for logout by session or refresh token. */
@@ -291,10 +299,12 @@ export interface AuthServerServices {
     signIn(input: SignInInput, context?: UserRequestContext): unknown;
     signInWithOtp(input: OtpInput, context?: UserRequestContext): unknown;
     verifyOtp(input: VerifyOtpInput, context?: UserRequestContext): unknown;
+    confirmEmail(input: { readonly email: string; readonly token: string; readonly redirectTo?: string }, context?: UserRequestContext): unknown;
     resetPasswordForEmail(email: string, options?: { readonly redirectTo?: string }, context?: UserRequestContext): unknown;
     resetPassword(input: { readonly email: string; readonly token: string; readonly password: string; readonly redirectTo?: string }, context?: UserRequestContext): unknown;
     resend(input: ResendInput, context?: UserRequestContext): unknown;
     updateUser(subject: AuthenticatedSubject, patch: UpdateUserInput, context?: UserRequestContext): unknown;
+    changePassword(subject: AuthenticatedSubject, password: string, options?: ChangePasswordOptions): unknown;
   };
   readonly sessions: {
     refresh(refreshToken: string, context?: SessionContext): unknown;
@@ -362,6 +372,7 @@ export const routeContracts: readonly RouteContract[] = Object.freeze([
   { method: "POST", path: "/exchange", operationId: "exchangeCodeForSession", security: "api_key", body: exchangeRequestSchema, response: authResult(exchangeDataSchema), example: { code: "callback-code", code_verifier: "verifier" } },
   { method: "GET", path: "/user", operationId: "getUser", security: "user", response: authResult(userDataSchema) },
   { method: "PUT", path: "/user", operationId: "updateUser", security: "user", body: updateUserRequestSchema, response: authResult(userDataSchema), example: { user_metadata: { display_name: "Updated" } } },
+  { method: "PUT", path: "/user/password", operationId: "updatePassword", security: "user", body: updatePasswordRequestSchema, response: authResult(userDataSchema), example: { current_password: "correct horse battery staple", password: "new correct horse battery staple", revoke_other_sessions: true } },
   { method: "GET", path: "/user/identities", operationId: "getUserIdentities", security: "user", response: authResult(identitiesDataSchema) },
   { method: "DELETE", path: "/user/identities/{id}", operationId: "unlinkIdentity", security: "user", response: authResult(nullDataSchema) },
   { method: "GET", path: "/user/permissions", operationId: "getUserPermissions", security: "user", query: [{ name: "scope_type", required: false, description: "Scope type" }, { name: "scope_id", required: false, description: "Scope identifier" }], response: authResult(permissionsDataSchema) },

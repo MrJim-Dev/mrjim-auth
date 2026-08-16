@@ -1,5 +1,6 @@
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
+import { createClient } from "../../src/index.js";
 import { AuthConfigurationError } from "../../src/shared/errors.js";
 import { AuthServer } from "../../src/server/auth-server.js";
 import { createAdminClient } from "../../src/server/admin.js";
@@ -155,10 +156,18 @@ function makeOptions(calls: Array<{ readonly name: string; readonly input: unkno
     signIn: async (input: unknown) => { calls.push({ name: "signIn", input }); return success({ user: user(), session: session() }); },
     signInWithOtp: async (input: unknown) => { calls.push({ name: "signInWithOtp", input }); return success({ user: null, session: null }); },
     verifyOtp: async (input: unknown) => { calls.push({ name: "verifyOtp", input }); return success({ user: user(), session: session() }); },
+    confirmEmail: async (input: unknown) => { calls.push({ name: "confirmEmail", input }); return success({ user: user(), session: session() }); },
     resetPasswordForEmail: async (input: unknown) => { calls.push({ name: "resetPasswordForEmail", input }); return success({ sent: true }); },
     resetPassword: async (input: unknown) => { calls.push({ name: "resetPassword", input }); return success({ user: user() }); },
     resend: async (input: unknown) => { calls.push({ name: "resend", input }); return success({ sent: true }); },
     updateUser: async (_subject: unknown, input: unknown) => { calls.push({ name: "updateUser", input }); return success({ user: user() }); },
+    changePassword: async (subject: unknown, password: unknown, options: unknown) => {
+      calls.push({ name: "changePassword", input: { subject, password, options } });
+      if (typeof options === "object" && options !== null && (options as { readonly currentPassword?: unknown }).currentPassword === "wrong current password") {
+        return { data: null, error: { code: "invalid_credentials", status: 401, message: "Invalid login credentials" } };
+      }
+      return success({ user: user() });
+    },
   };
   const sessions = {
     refresh: async (input: unknown) => { calls.push({ name: "refresh", input }); return success(session()); },
@@ -293,6 +302,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     const cases: readonly [string, unknown, string][] = [
       ["/otp", { email: "USER@example.com", options: { type: "email_otp", redirect_to: CALLBACK } }, "signInWithOtp"],
       ["/verify", { email: "USER@example.com", token: "123456", type: "email_otp", redirect_to: CALLBACK }, "verifyOtp"],
+      ["/verify", { email: "USER@example.com", token: "signup-token", type: "signup", redirect_to: CALLBACK }, "confirmEmail"],
       ["/recover", { email: "USER@example.com", redirect_to: CALLBACK }, "resetPasswordForEmail"],
       ["/recover/verify", { email: "USER@example.com", token: "recovery-token", password: "new correct horse battery staple", redirect_to: CALLBACK }, "resetPassword"],
       ["/resend", { type: "signup", email: "USER@example.com", options: { redirect_to: CALLBACK } }, "resend"],
@@ -429,6 +439,124 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     const permissions = await auth.handle(request("/user/permissions", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } }));
     expect(permissions.status).toBe(200);
     expect((await body(permissions)).data.permissions).toEqual(["invoice.read"]);
+  });
+
+  it("passes the owned authorization context and exposes password updates through the client", async () => {
+    const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+    const options = makeOptions(calls) as any;
+    let permissionContext: unknown;
+    options.services.authorization.getPermissions = async (_userId: unknown, _scope: unknown, context: unknown) => {
+      permissionContext = context;
+      return [];
+    };
+    const auth = serverModule.createAuthServer(options);
+
+    const permissions = await auth.handle(request("/user/permissions", {
+      headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "x-request-id": "task1-permissions" },
+    }));
+    expect(permissions.status).toBe(200);
+    expect(await body(permissions)).toEqual({ data: { permissions: [] }, error: null });
+    expect(permissionContext).toMatchObject({ subject: { user_id: USER_ID, request_id: "task1-permissions" } });
+
+    const unauthenticated = await auth.handle(request("/user/password", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ current_password: "correct horse battery staple", password: "new correct horse battery staple" }),
+    }));
+    expect(unauthenticated.status).toBe(401);
+
+    const wrongCurrent = await auth.handle(request("/user/password", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ current_password: "wrong current password", password: "new correct horse battery staple" }),
+    }));
+    expect(wrongCurrent.status).toBe(401);
+    const wrongBody = await body(wrongCurrent);
+    expect(wrongBody.error).toMatchObject({ code: "invalid_credentials" });
+    expect(JSON.stringify(wrongBody)).not.toContain("wrong current password");
+    expect(JSON.stringify(wrongBody)).not.toContain("new correct horse battery staple");
+
+    const client = createClient(BASE_URL, PUBLISHABLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, skipAutoInitialize: true },
+      global: { fetch: (input, init) => auth.handle(new Request(input, init)) },
+    });
+    await expect(client.auth.setSession(session() as any)).resolves.toMatchObject({ error: null });
+    const changed = await client.auth.updatePassword({
+      currentPassword: "correct horse battery staple",
+      password: "new correct horse battery staple",
+      revokeOtherSessions: true,
+    });
+    expect(changed).toMatchObject({ data: { user: { id: USER_ID } }, error: null });
+    expect(JSON.stringify(changed)).not.toContain("correct horse battery staple");
+    const passwordCall = calls.at(-1);
+    expect(passwordCall?.name).toBe("changePassword");
+    expect(passwordCall?.input).toMatchObject({
+      password: "new correct horse battery staple",
+      options: { currentPassword: "correct horse battery staple", preserveSessionId: SESSION_ID, revokeOtherSessions: true },
+    });
+    expect(await client.auth.getSession()).toMatchObject({
+      data: { session: { access_token: ACCESS_TOKEN } },
+      error: null,
+    });
+    client.auth.dispose();
+  });
+
+  it("serializes hardened permission arrays without exposing a thenable response", async () => {
+    const options = makeOptions([]) as any;
+    const hardened = ["invoice.read"];
+    Object.defineProperty(hardened, "then", {
+      configurable: false,
+      enumerable: false,
+      value: undefined,
+      writable: false,
+    });
+    options.services.authorization.getPermissions = async () => Object.freeze(hardened);
+    const auth = serverModule.createAuthServer(options);
+    const response = await auth.handle(request("/user/permissions", {
+      headers: { authorization: `Bearer ${ACCESS_TOKEN}` },
+    }));
+    expect(response.status).toBe(200);
+    expect(await body(response)).toEqual({ data: { permissions: ["invoice.read"] }, error: null });
+  });
+
+  it("does not revoke sessions when password-update revocation is omitted or false", async () => {
+    const calls: Array<{ readonly name: string; readonly input: unknown }> = [];
+    const auth = serverModule.createAuthServer(makeOptions(calls));
+    const client = createClient(BASE_URL, PUBLISHABLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, skipAutoInitialize: true },
+      global: { fetch: (input, init) => auth.handle(new Request(input, init)) },
+    });
+    await expect(client.auth.setSession(session() as any)).resolves.toMatchObject({ error: null });
+
+    const omitted = await client.auth.updatePassword({
+      currentPassword: "correct horse battery staple",
+      password: "first replacement password",
+    });
+    expect(omitted).toMatchObject({ error: null });
+    expect(calls.at(-1)?.input).toMatchObject({
+      options: { currentPassword: "correct horse battery staple", revokeOtherSessions: false },
+    });
+    expect(calls.at(-1)?.input).not.toMatchObject({ options: { preserveSessionId: expect.anything() } });
+    expect(await client.auth.getSession()).toMatchObject({
+      data: { session: { access_token: ACCESS_TOKEN } },
+      error: null,
+    });
+
+    const explicitFalse = await client.auth.updatePassword({
+      currentPassword: "first replacement password",
+      password: "second replacement password",
+      revokeOtherSessions: false,
+    });
+    expect(explicitFalse).toMatchObject({ error: null });
+    expect(calls.at(-1)?.input).toMatchObject({
+      options: { currentPassword: "first replacement password", revokeOtherSessions: false },
+    });
+    expect(calls.at(-1)?.input).not.toMatchObject({ options: { preserveSessionId: expect.anything() } });
+    expect(await client.auth.getSession()).toMatchObject({
+      data: { session: { access_token: ACCESS_TOKEN } },
+      error: null,
+    });
+    client.auth.dispose();
   });
 
   it("covers update, identities, unlink, and logout dispatch", async () => {
@@ -892,7 +1020,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
 
     const auth = serverModule.createAuthServer(options);
     const serviceMethods: Record<string, readonly string[]> = {
-      users: ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resetPassword", "resend", "updateUser"],
+      users: ["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resetPassword", "resend", "updateUser", "changePassword"],
       sessions: ["refresh", "authorizeSession", "signOut", "revokeRefreshToken"],
       tokens: ["verifyAccessToken", "jwks"],
       authorization: ["getPermissions", "authorize"],
@@ -933,6 +1061,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
       ["exchange", auth.handle(jsonRequest("/exchange", { code: "callback-code", code_verifier: "verifier" })), 200],
       ["getUser", auth.handle(request("/user", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } })), 200],
       ["updateUser", auth.handle(request("/user", { method: "PUT", headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ user_metadata: { display_name: "Updated" } }) })), 200],
+      ["updatePassword", auth.handle(request("/user/password", { method: "PUT", headers: { authorization: `Bearer ${ACCESS_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ current_password: "correct horse battery staple", password: "new correct horse battery staple", revoke_other_sessions: true }) })), 200],
       ["identities", auth.handle(request("/user/identities", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } })), 200],
       ["unlinkIdentity", auth.handle(request(`/user/identities/${IDENTITY_ID}`, { method: "DELETE", headers: { authorization: `Bearer ${ACCESS_TOKEN}` } })), 200],
       ["permissions", auth.handle(request("/user/permissions", { headers: { authorization: `Bearer ${ACCESS_TOKEN}` } })), 200],
@@ -948,7 +1077,7 @@ describe("Task 9 framework-neutral HTTP contract", () => {
     expect(subject).toMatchObject({ user_id: USER_ID });
     expect(signUpReceiver).toBe(options.services.users);
     expect(lookupReceiver).toBe(options.database.operations);
-    expect(calls.map(({ name }) => name)).toEqual(expect.arrayContaining(["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resetPassword", "resend", "refresh", "updateUser", "signOut", "revokeRefreshToken", "authorize", "callback", "exchangeCode", "unlinkIdentity"]));
+    expect(calls.map(({ name }) => name)).toEqual(expect.arrayContaining(["signUp", "signIn", "signInWithOtp", "verifyOtp", "resetPasswordForEmail", "resetPassword", "resend", "refresh", "updateUser", "changePassword", "signOut", "revokeRefreshToken", "authorize", "callback", "exchangeCode", "unlinkIdentity"]));
   });
 
   it("rejects accessor and thenable service values without invoking them", () => {

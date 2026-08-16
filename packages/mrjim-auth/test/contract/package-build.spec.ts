@@ -71,6 +71,7 @@ describe.sequential("package build and pack lifecycle", () => {
       "dist/index.js",
       "dist/index.d.ts",
       "dist/server/index.js",
+      "dist/adapters/nextjs-route.js",
       "dist/storage/index.js",
       ...MIGRATIONS.map((migration) => `dist/postgres/migrations/${migration.fileName}`),
     ];

@@ -624,6 +624,16 @@ export interface User {
   deleted_at: IsoTimestamp | null;
 }
 
+/** Current-password proof and replacement password for an authenticated update. */
+export interface UpdatePasswordInput {
+  /** The password currently proving ownership of the authenticated account. */
+  currentPassword: string;
+  /** The replacement password accepted by project password policy. */
+  password: string;
+  /** When true, keep this session and revoke the user's other sessions. */
+  revokeOtherSessions?: boolean;
+}
+
 /**
  * A linked login identity with provider-safe profile data.
  *

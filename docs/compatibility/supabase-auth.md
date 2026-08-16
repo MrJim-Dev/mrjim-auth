@@ -34,7 +34,7 @@ The only status labels in this matrix are `Compatible`, `Different`, and
 | `auth.signUp` | Compatible | Email/password signup with optional redirect and JSON user metadata; session may be `null` pending confirmation. |
 | `auth.signInWithPassword` | Compatible | Email/password sign-in returning `{ user, session }`. |
 | `auth.signInWithOtp` | Compatible | Magic link or email OTP issuance; the `type` aliases are accepted. |
-| `auth.verifyOtp` | Compatible | Verifies a purpose-bound email OTP or magic-link token. |
+| `auth.verifyOtp` | Compatible | Verifies a purpose-bound signup confirmation, email OTP, or magic-link token. Use `type: "signup"` for the confirmation token issued by `signUp`. |
 | `auth.signInWithOAuth` | Compatible | Starts provider authorization using authorization-code PKCE. |
 | `auth.exchangeCodeForSession` | Compatible | Exchanges a callback code using the locally stored PKCE verifier. |
 | `auth.resetPasswordForEmail` | Compatible | Non-enumerating recovery-message request. |

@@ -121,7 +121,7 @@ The `auth` namespace has 23 methods/events. Every async method below resolves a
 | `signUp` | `signUp(input: SignUpInput)` | `{ user, session }`; either can be `null` when email confirmation is required. |
 | `signInWithPassword` | `signInWithPassword(input: PasswordSignInInput)` | `{ user, session }`. |
 | `signInWithOtp` | `signInWithOtp(input: OtpSignInInput)` | `{ user, session }`; normally both are `null` until verification. |
-| `verifyOtp` | `verifyOtp(input: VerifyOtpInput)` | `{ user, session }`; a session is issued when verification authenticates the user. |
+| `verifyOtp` | `verifyOtp(input: VerifyOtpInput)` | `{ user, session }`; supports `email_otp`, `magic_link`, and signup confirmation via `type: "signup"`. A session is issued when verification authenticates the user. |
 | `signInWithOAuth` | `signInWithOAuth(input: OAuthInput)` | `{ provider, url }`; the URL is the project/provider authorization URL. |
 | `exchangeCodeForSession` | `exchangeCodeForSession(code: string)` | `{ user, session }`. Uses the stored PKCE verifier. |
 | `resetPasswordForEmail` | `resetPasswordForEmail(email: string, options?: RecoveryOptions)` | `{ sent: true }`; the response is non-enumerating. |
