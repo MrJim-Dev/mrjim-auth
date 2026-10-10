@@ -326,6 +326,7 @@ export class UserService {
         return created;
       }), rethrowTrusted);
 
+      let authenticatedUser = user;
       let session: Session | null = null;
       if (this.requireEmailConfirmation) {
         const delivery = await trustedAsync(() => this.oneTimeTokens.issue({
@@ -340,7 +341,11 @@ export class UserService {
         if (deliveryFailure !== null) return deliveryFailure;
       } else {
         if (this.sessions === undefined) throw new AuthConfigurationError("session service is required when confirmation is disabled");
-        const createdSession = await this.sessions.create(user, contextOptions(context));
+        authenticatedUser = await adapterCall(() => this.repository.users.update(user.id, {
+          email_confirmed_at: now,
+          confirmed_at: now,
+        }, { now }));
+        const createdSession = await this.sessions.create(authenticatedUser, contextOptions(context));
         if (createdSession.error !== null) return authFailure(createdSession.error);
         session = createdSession.data;
       }
@@ -352,7 +357,12 @@ export class UserService {
         }
         throw error;
       }
-      return authSuccess(publicData(user, session, this.concealUserExistence));
+      // A no-confirmation signup is an authenticated operation by policy. The
+      // new account's session must be returned so clients can persist it and
+      // continue into the application. Keep enumeration resistance for the
+      // confirmation-required policy, where the public result is intentionally
+      // indistinguishable from an existing account.
+      return authSuccess(publicData(authenticatedUser, session, this.concealUserExistence && this.requireEmailConfirmation));
     } catch (error) {
       if (await this.concealOperationalFailure(error, "signup", "confirmation", context)) {
         await this.passwords.hash(input.password);

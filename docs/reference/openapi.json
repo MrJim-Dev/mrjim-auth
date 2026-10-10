@@ -9077,6 +9077,42 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "OIDC issuer hint",
+            "in": "query",
+            "name": "iss",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Provider-granted OAuth scopes",
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Provider-selected account index",
+            "in": "query",
+            "name": "authuser",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Provider authorization prompt result",
+            "in": "query",
+            "name": "prompt",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

@@ -292,6 +292,30 @@ describe("Task 6 user lifecycle", () => {
     expect(signedInData.session.user.email).toBe("Café+tag@Example.com");
   });
 
+  it("supports password signup without confirmation mail and starts a confirmed session", async () => {
+    const service = services({ requireEmailConfirmation: false });
+    const signup = data(await service.users.signUp({
+      email: "no-confirmation@example.com",
+      password: PASSWORD,
+      options: { redirectTo: CALLBACK },
+    }));
+
+    if (signup.user === null || signup.session === null) throw new Error("expected immediate signup authentication");
+    expect(signup.user.email_confirmed_at).not.toBeNull();
+    expect(signup.user.confirmed_at).toBe(signup.user.email_confirmed_at);
+    expect(service.mailer.latest("confirmation")).toBeNull();
+
+    const persisted = await service.repository.users.findById(signup.user.id);
+    expect(persisted?.email_confirmed_at).not.toBeNull();
+    expect(persisted?.confirmed_at).toBe(persisted?.email_confirmed_at);
+
+    const signedIn = data(await service.users.signIn({
+      email: "no-confirmation@example.com",
+      password: PASSWORD,
+    }));
+    expect(signedIn.session).not.toBeNull();
+  });
+
   it("rehashes a valid lower-cost Argon2id credential after password sign-in", async () => {
     const service = services({ requireEmailConfirmation: false, concealUserExistence: false, passwordPolicy: { memoryCost: 128 * 1024 } });
     const signup = data(await service.users.signUp({ email: "rehash@example.com", password: PASSWORD }));

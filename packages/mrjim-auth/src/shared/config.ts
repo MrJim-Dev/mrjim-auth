@@ -425,6 +425,11 @@ export const authServerOptionsSchema = z
       allowed: z.array(redirectSchema).min(1),
     }),
     authorization: authorizationSchema.optional(),
+    /**
+     * Project policy for password signup. When disabled, signup creates a
+     * confirmed user and returns a session without sending confirmation mail.
+     */
+    requireEmailConfirmation: z.boolean().optional(),
     accessTokenTtlSeconds: z.number().int().min(300).max(3_600).default(900),
     refreshTokenTtlSeconds: z
       .number()

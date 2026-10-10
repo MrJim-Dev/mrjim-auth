@@ -63,6 +63,7 @@ const SERVER_OPTION_MEMBERS = [
   "oauth",
   "redirects",
   "authorization",
+  "requireEmailConfirmation",
   "accessTokenTtlSeconds",
   "refreshTokenTtlSeconds",
 ] as const;
@@ -458,6 +459,7 @@ function createDefaultServices(
     sessions,
     ...(options.rateLimiter === undefined ? {} : { rateLimiter: options.rateLimiter }),
     ...(options.authorization?.defaultRoleKeys === undefined ? {} : { defaultRoleKeys: options.authorization.defaultRoleKeys }),
+    requireEmailConfirmation: options.requireEmailConfirmation ?? true,
     clock,
   });
   const authorizationOptions: AuthorizationServiceOptions = { repository, clock };
