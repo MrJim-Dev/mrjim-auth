@@ -1,6 +1,9 @@
 import { spawnSync } from "node:child_process";
 
 const root = new URL("../", import.meta.url);
+// pnpm and npx are .cmd shims on Windows, which spawnSync can only run through
+// a shell. All arguments here are fixed strings, so the shell adds no risk.
+const shell = process.platform === "win32";
 
 function run(command, args, extra = {}) {
   console.log(`\n> ${command} ${args.join(" ")}`);
@@ -9,6 +12,7 @@ function run(command, args, extra = {}) {
     env: { ...process.env, ...extra },
     encoding: "utf8",
     stdio: "inherit",
+    shell,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
@@ -20,6 +24,7 @@ function capture(command, args) {
     cwd: root,
     env: process.env,
     encoding: "utf8",
+    shell,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {

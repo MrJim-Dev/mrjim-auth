@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { chmod, cp, lstat, mkdir, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,9 +31,12 @@ if (existingDist && !existingDist.isDirectory()) {
 }
 await rm(distRoot, { recursive: true, force: true });
 
-const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+// Run the TypeScript compiler with the current Node binary. Spawning pnpm.cmd
+// fails with EINVAL on Windows since Node's CVE-2024-27980 fix, which broke
+// installing this package from git on Windows.
+const tscPath = createRequire(resolve(packageRoot, "package.json")).resolve("typescript/bin/tsc");
 function runTypeScript(configPath) {
-  const result = spawnSync(pnpmCommand, ["exec", "tsc", "-p", configPath], {
+  const result = spawnSync(process.execPath, [tscPath, "-p", configPath], {
     cwd: workspaceRoot,
     stdio: "inherit",
   });
